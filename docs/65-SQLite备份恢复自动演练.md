@@ -24,6 +24,7 @@
 8. 使用 SQLite Backup API 恢复到新的临时数据库；
 9. 对恢复库重复检查，并比较结构摘要、逻辑摘要、总记录数、Nonce 数和各记录类型数量；
 10. 无论成功或失败都清理临时恢复目录，原备份不修改、不删除。
+11. CLI 先完整解析位置参数与 `--report`（二者顺序均可），再规范化真实路径；若报告路径与输入备份为同一路径、符号链接别名或同一硬链接，立即拒绝，且在校验和写入前不触碰原备份。
 
 成功报告只包含备份文件名、字节数、文件摘要、逻辑摘要、表名和数量，不包含订单内容、密钥、Session、支付凭据或上游 CDK。
 
@@ -34,7 +35,10 @@
 ```sh
 npm run build
 npm run backup:verify -- /path/to/backup.sqlite --report /path/to/report.json
+# 也支持：npm run backup:verify -- --report /path/to/report.json /path/to/backup.sqlite
 ```
+
+报告路径绝不能指向备份自身。冲突时命令以非零状态退出并报告 `sqlite_backup_report_path_conflict`，不会用 JSON 覆盖 SQLite 文件。
 
 服务器验证最新每日快照：
 

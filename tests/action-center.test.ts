@@ -32,8 +32,8 @@ describe("platform action center", () => {
     }});
     expect(response.statusCode).toBe(200);
     expect(response.json().data).toMatchObject({
-      counts: {tasks: 0, refunds: 0, settlements: 0, tickets: 0},
-      tasks: [], refunds: [], settlements: [], tickets: [],
+      counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, tickets: 0},
+      tasks: [], refunds: [], refundReviews: [], settlements: [], tickets: [],
       worker: {status: "missing", failedLanes: [], stuckLanes: []},
     });
 
@@ -65,6 +65,10 @@ describe("platform action center", () => {
     runtime.repository.insertRefund({id: "rf_pending", merchantId: merchant.id, orderId: "missing-order", merchantRefundNo: "test-refund",
       type: "full", amountMinor: 100n, status: "requested", reason: "测试退款", failureCode: null, providerRefundNo: null,
       createdAt: now, refundedAt: null});
+    runtime.repository.saveOperations("refund_reconciliation",{id:"refund-reconciliation:missing-order",merchantId:merchant.id,
+      orderId:"missing-order",provider:"alipay_page",status:"reviewing",reportedMinor:500n,recordedMinor:100n,differenceMinor:400n,
+      providerReferenceFingerprint:"0123456789abcdef0123456789abcdef",legacyTicketIds:[],version:1,firstDetectedAt:now,
+      lastCheckedAt:now,resolvedAt:null},true);
 
     const login = await loginPlatform(app, "action-admin", "test-action-center-password", "https://admin.tibo.ink");
     const query = vi.spyOn(runtime.repository as unknown as {queryRecords: (...args: unknown[]) => unknown}, "queryRecords");
@@ -72,8 +76,9 @@ describe("platform action center", () => {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
     expect(response.statusCode).toBe(200);
-    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, settlements: 1, tickets: 1, invoices: 1}});
+    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, tickets: 1, invoices: 1},
+      refundReviews:[{orderId:"missing-order",reportedAmount:"5.00",recordedAmount:"1.00",differenceAmount:"4.00",status:"reviewing"}]});
     expect(response.json().data.tickets.map((item: {id: string}) => item.id)).toEqual(["tk_agent_pending"]);
-    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["refund", "daily_settlement", "ticket", "invoice_application"]));
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["refund","refund_reconciliation", "daily_settlement", "ticket", "invoice_application"]));
   });
 });

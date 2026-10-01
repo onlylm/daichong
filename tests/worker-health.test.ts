@@ -35,6 +35,11 @@ describe("durable worker health", () => {
       expect(missing.statusCode).toBe(503);
       expect(missing.json()).toMatchObject({status: "missing", failures: 0, stuck: 0});
 
+      new WorkerHealthReporter(runtime.repository, ["payment"], () => new Date(Date.now()-60_000)).persist();
+      const stopped = await app.inject({url: "/health/worker"});
+      expect(stopped.statusCode).toBe(503);
+      expect(stopped.json()).toMatchObject({status: "stale", failures: 0, stuck: 0});
+
       new WorkerHealthReporter(runtime.repository, ["payment"]).persist();
       const healthy = await app.inject({url: "/health/worker"});
       expect(healthy.statusCode).toBe(200);

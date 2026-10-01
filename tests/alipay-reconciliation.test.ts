@@ -7,6 +7,7 @@ import {AlipayPagePaymentProvider, AlipayPaymentService, type AlipayClient} from
 import {RefundService} from "../src/modules/refund-service.js";
 import type {Order, TenantContext} from "../src/domain/model.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
+import {refundReconciliationId} from "../src/domain/provider-refund-review.js";
 
 describe("Alipay payment reconciliation", () => {
   const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "memory", LOG_LEVEL: "silent",
@@ -73,19 +74,17 @@ describe("Alipay payment reconciliation", () => {
     expect(heldPreview.statusCode).toBe(409);
     expect(heldPreview.json().error.code).toBe("recharge_result_unconfirmed");
     expect(runtime.repository.listRefundsForOrder(paid.merchantId, paid.id)).toHaveLength(0);
-    const cases=runtime.repository.listOperations("ticket",paid.merchantId).filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"));
-    expect(cases).toHaveLength(1);
-    const discrepancy=cases[0]!;
-    expect(discrepancy).toMatchObject({status:"in_progress",priority:"urgent",category:"refund"});
+    const discrepancy=runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))!;
+    expect(discrepancy).toMatchObject({status:"reviewing",reportedMinor:13_500n,recordedMinor:0n,differenceMinor:13_500n});
+    expect(runtime.repository.listOperations("ticket",paid.merchantId)
+      .filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"))).toHaveLength(0);
 
-    runtime.repository.saveOperations("ticket",{...discrepancy,status:"resolved",version:discrepancy.version+1,
-      publicVersion:discrepancy.publicVersion+1,updatedAt:new Date()});
     expect((await app.inject({method:"POST",url:"/public/cdk/preview",payload:{code:voucher.publicCode}})).statusCode).toBe(409);
     runtime.refunds.syncProviderRefund(paid.id,paid.saleAmountMinor,`alipay-query:${tradeNo}:135.00`);
-    expect(runtime.repository.getOperations("ticket",discrepancy.id)?.status).toBe("in_progress");
+    expect(runtime.repository.getOperations("refund_reconciliation",discrepancy.id)?.status).toBe("reviewing");
 
     await alipay.reconcile(paid.id);
-    expect(runtime.repository.listOperations("ticket",paid.merchantId).filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"))).toHaveLength(1);
+    expect(runtime.repository.listOperations("refund_reconciliation",paid.merchantId)).toHaveLength(1);
   });
 
   it("closes an unpaid order when Alipay reports TRADE_CLOSED without requiring a trade number", async () => {
@@ -96,6 +95,28 @@ describe("Alipay payment reconciliation", () => {
     await alipay.reconcile(order.id);
     expect(runtime.repository.findOrderInternal(order.id)?.paymentStatus).toBe("closed");
     expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)?.status).toBe("closed");
+  });
+
+  it("migrates legacy refund system cases without deleting their messages", async()=>{
+    const created=await orderWithAlipayAttempt(),paid=runtime.payment.markPaid(created.merchantId,created.id,
+      {channel:"alipay_page",providerRef:"2026100100000099",receivedMinor:created.saleAmountMinor}),now=new Date();
+    const ticketId="case_legacy_refund_review";
+    runtime.repository.saveOperations("ticket",{id:ticketId,merchantId:paid.merchantId,orderId:paid.id,category:"refund",
+      title:"旧退款差异工单",status:"in_progress",assigneeId:null,version:1,publicVersion:1,createdBy:"system",
+      systemCase:{issueKey:`refund-reconcile:${paid.id}:1000`,entityId:`provider-refund:${paid.id}`},priority:"urgent",
+      dueAt:new Date(now.getTime()+30_000),createdAt:now,updatedAt:now},true);
+    runtime.repository.saveOperations("ticket_message",{id:"legacy-refund-message",merchantId:paid.merchantId,ticketId,
+      actorId:"system",author:"platform",internal:false,body:"原有沟通记录必须保留",createdAt:now},true);
+
+    runtime.refundReconciliations.observe({merchantId:paid.merchantId,orderId:paid.id,reportedMinor:1_000n,recordedMinor:0n,
+      providerReference:"alipay-query:legacy:10.00"});
+
+    expect(runtime.repository.getOperations("ticket",ticketId)?.status).toBe("resolved");
+    const messages=runtime.repository.listOperations("ticket_message",paid.merchantId).filter(item=>item.ticketId===ticketId);
+    expect(messages.map(item=>item.body)).toContain("原有沟通记录必须保留");
+    expect(messages.some(item=>item.internal&&item.body.includes("独立财务核对记录"))).toBe(true);
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+      .toMatchObject({status:"reviewing",legacyTicketIds:[ticketId]});
   });
 
   it("deduplicates cumulative discrepancy cases without creating financial entries", async () => {
@@ -125,8 +146,12 @@ describe("Alipay payment reconciliation", () => {
     runtime.repository.updatePaymentAttempt({...secondAttempt, nextCheckAt: new Date(0)});
     await service(result("25.00")).reconcile(paid.id);
     expect(runtime.repository.listRefundsForOrder(paid.merchantId, paid.id)).toHaveLength(0);
-    const cases=runtime.repository.listOperations("ticket",paid.merchantId).filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"));
-    expect(cases).toHaveLength(2);
+    const cases=runtime.repository.listOperations("refund_reconciliation",paid.merchantId);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]).toMatchObject({status:"reviewing",reportedMinor:2_500n,recordedMinor:0n,differenceMinor:2_500n});
+    const events=runtime.repository.listOperations("refund_reconciliation_event",paid.merchantId)
+      .filter(item=>item.orderId===paid.id);
+    expect(events.map(item=>item.action)).toEqual(["detected","amount_updated"]);
   });
 
   it("re-reads local totals inside the transaction when manual posting interleaves with worker reconciliation", async () => {
@@ -152,8 +177,7 @@ describe("Alipay payment reconciliation", () => {
     expect(order.ordinaryRefundedMinor).toBe(2_000n);
     expect(order.priceAdjustmentRefundedMinor).toBe(0n);
     expect(runtime.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
-    expect(runtime.repository.listOperations("ticket",paid.merchantId)
-      .filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"))).toHaveLength(0);
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))).toBeNull();
   });
 
   it("serializes the same manual-versus-worker interleave on the SQLite repository", async () => {
@@ -187,8 +211,7 @@ describe("Alipay payment reconciliation", () => {
       transactionSpy.mockRestore();
       expect(sqlite.repository.findOrderInternal(paid.id)).toMatchObject({ordinaryRefundedMinor:2_000n,priceAdjustmentRefundedMinor:0n});
       expect(sqlite.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
-      expect(sqlite.repository.listOperations("ticket",paid.merchantId)
-        .filter(item=>item.systemCase?.issueKey.startsWith("refund-reconcile:"))).toHaveLength(0);
+      expect(sqlite.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))).toBeNull();
     }finally{sqlite.close();}
   });
 
@@ -228,13 +251,11 @@ describe("Alipay payment reconciliation", () => {
     expect(runtime.refunds.syncProviderRefund(paid.id,1_000n,providerReference)).toBeNull();
     expect(runtime.repository.findRefund(paid.merchantId,adjustment.id)).toMatchObject({status:"requested",type:"price_adjustment"});
     expect(runtime.repository.findOrderInternal(paid.id)).toMatchObject({ordinaryRefundedMinor:0n,priceAdjustmentRefundedMinor:0n});
-    const issue=runtime.repository.listOperations("ticket",paid.merchantId)
-      .find(item=>item.systemCase?.issueKey===`refund-reconcile:${paid.id}:1000`)!;
-    expect(issue).toMatchObject({status:"in_progress",priority:"urgent"});
+    const issue=runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))!;
+    expect(issue).toMatchObject({status:"reviewing",reportedMinor:1_000n,recordedMinor:0n,differenceMinor:1_000n});
     expect((await app.inject({method:"POST",url:"/public/cdk/preview",payload:{code:voucher.publicCode}})).statusCode).toBe(410);
-    const messages=runtime.repository.listOperations("ticket_message",paid.merchantId).filter(item=>item.ticketId===issue.id);
-    expect(messages.some(item=>item.internal&&item.body.includes("out_request_no"))).toBe(true);
-    expect(messages.map(item=>item.body).join("\n")).not.toContain(providerReference);
+    expect(issue.providerReferenceFingerprint).toMatch(/^[a-f0-9]{32}$/);
+    expect(JSON.stringify(issue,(_key,value)=>typeof value==="bigint"?value.toString():value)).not.toContain(providerReference);
 
     const mismatched=service({code:"10000",refund_status:"REFUND_SUCCESS",out_trade_no:paid.id,
       out_request_no:"another-refund-request",refund_amount:"10.00",total_amount:"135.00",trade_no:tradeNo});
@@ -248,8 +269,8 @@ describe("Alipay payment reconciliation", () => {
       execute:vi.fn().mockRejectedValue(new Error("result unknown")),
       query:(orderId,refund)=>exactQuery.queryRefund(orderId,refund.id,refund.amountMinor),
     },undefined,{
-      discrepancy:input=>runtime.notifications.openProviderRefundDiscrepancy(input),
-      recorded:input=>runtime.notifications.resolveProviderRefundDiscrepancies(input),
+      discrepancy:input=>runtime.refundReconciliations.observe(input),
+      recorded:input=>runtime.refundReconciliations.recorded(input),
     });
     expect(await exactRefunds.approve(finance,adjustment.id)).toMatchObject({status:"processing"});
     const processing=runtime.repository.findRefund(paid.merchantId,adjustment.id)!;
@@ -257,7 +278,7 @@ describe("Alipay payment reconciliation", () => {
     await exactRefunds.reconcileOne();
     expect(runtime.repository.findRefund(paid.merchantId,adjustment.id)).toMatchObject({status:"succeeded",type:"price_adjustment"});
     expect(runtime.repository.findOrderInternal(paid.id)).toMatchObject({ordinaryRefundedMinor:0n,priceAdjustmentRefundedMinor:1_000n});
-    expect(runtime.repository.getOperations("ticket",issue.id)?.status).toBe("resolved");
+    expect(runtime.repository.getOperations("refund_reconciliation",issue.id)?.status).toBe("resolved");
     expect((await app.inject({method:"POST",url:"/public/cdk/preview",payload:{code:voucher.publicCode}})).statusCode).toBe(200);
   });
 });

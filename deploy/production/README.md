@@ -34,9 +34,16 @@ sudo docker compose -f compose.production.infra.yaml up -d
 sudo sh deploy/production/verify-infrastructure.sh
 sudo sh deploy/backup-prelaunch.sh
 sudo sh deploy/production/healthcheck.sh
+sudo install -m 0644 deploy/production/systemd/quefa-healthcheck.service /etc/systemd/system/
+sudo install -m 0644 deploy/production/systemd/quefa-healthcheck.timer /etc/systemd/system/
+sudo install -m 0644 deploy/production/systemd/quefa-health-alert@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now quefa-healthcheck.timer
 ```
 
-`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份并保存 SHA-256 清单；`quefa-restore-test.timer` 每周把最新快照恢复到隔离临时库，对比结构摘要、逻辑摘要、记录总数、分类数量、JSON 与外键，报告保存在快照旁且不会替换实时账本。未来 PostgreSQL 演练保留在 `verify-postgres-backup-restore.sh`，不能用它代替当前 SQLite 主账本的恢复验证。上线真实收款前仍须增加异机加密备份、缩短 RPO 并接入外部告警。
+`healthcheck.sh` 同时检查 API 就绪、Worker 持久化心跳、Worker 容器和公开路由边界；失败会触发独立 journald 告警事件。可在 root 所有、权限 `0600` 的 `/opt/recharge-platform/config/health-alert.env` 中配置 HTTPS `HEALTH_ALERT_WEBHOOK_URL`，向现有运维通知入口发送最小化告警。
+
+`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份并保存 SHA-256 清单；`quefa-restore-test.timer` 每周把最新快照恢复到隔离临时库，对比结构摘要、逻辑摘要、记录总数、分类数量、JSON 与外键，报告保存在快照旁且不会替换实时账本。未来 PostgreSQL 演练保留在 `verify-postgres-backup-restore.sh`，不能用它代替当前 SQLite 主账本的恢复验证。上线真实收款前仍须增加异机加密备份并缩短 RPO。
 
 手工验证指定快照：
 

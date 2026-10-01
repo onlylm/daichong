@@ -100,6 +100,15 @@ function workspaceRefunds(runtime:Runtime,refunds:Refund[]) {
   });
 }
 
+function workspaceRefundReconciliations(runtime:Runtime,values:ReturnType<Runtime["refundReconciliations"]["page"]>["data"]){
+  const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
+  return values.map(value=>{const merchant=merchantMap.get(value.merchantId);return{id:value.id,merchantId:value.merchantId,
+    merchantName:merchant?.name??"",partnerId:merchant?.partnerId??"",orderId:value.orderId,status:value.status,
+    reportedAmount:minorToMoney(value.reportedMinor),recordedAmount:minorToMoney(value.recordedMinor),
+    differenceAmount:minorToMoney(value.differenceMinor),firstDetectedAt:value.firstDetectedAt,lastCheckedAt:value.lastCheckedAt,
+    resolvedAt:value.resolvedAt,legacyTicketIds:value.legacyTicketIds};});
+}
+
 export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig, runtime: Runtime): void {
   const adminBaseUrl = config.adminBaseUrl ?? config.publicBaseUrl;
   const origins = new Set([new URL(config.publicBaseUrl).origin, new URL(adminBaseUrl).origin]);
@@ -136,20 +145,28 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const canReadWallet = permissions.has("*") || permissions.has("wallet.read");
     const taskPage = runtime.notifications.tasksPage(actor, 1, 8);
     const refundPage = canReviewWallet ? runtime.refunds.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
+    const refundReviewPage = canReviewWallet ? runtime.refundReconciliations.page(actor, 1, 8, "reviewing") : {data: [], meta: {total: 0}};
     const settlementPage = canReadWallet ? runtime.dailySettlements.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
     const ticketPage = runtime.support.pendingAgentPage(actor, 8);
     const invoicePage = permissions.has("*") || permissions.has("invoices.manage")
       ? runtime.invoices.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
     return wire({data: {
-      counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total,
+      counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total, refundReviews: refundReviewPage.meta.total,
         settlements: settlementPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
       tasks: taskPage.data,
       refunds: workspaceRefunds(runtime, refundPage.data),
+      refundReviews: workspaceRefundReconciliations(runtime,refundReviewPage.data),
       settlements: settlementPage.data,
       tickets: ticketPage.data,
       invoices: invoicePage.data,
       worker: readWorkerHealth(runtime.repository),
     }});
+  });
+  app.get("/workspace/api/refund-reconciliations", async request => {
+    const query=z.object({page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(20),
+      status:z.enum(["reviewing","resolved","all"]).default("reviewing")}).parse(request.query);
+    const result=runtime.refundReconciliations.page(account(request),query.page,query.limit,query.status);
+    return wire({data:workspaceRefundReconciliations(runtime,result.data),meta:result.meta});
   });
   app.get("/workspace/api/finance/costs", async request => {
     const query=z.object({page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(20),
@@ -286,6 +303,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     requireTenantScope(actor, order.merchantId);
     const merchant = runtime.repository.findMerchantById(order.merchantId);
     const permissions = new Set(permissionList(actor));
+    const refundReview=runtime.repository.getOperations("refund_reconciliation",`refund-reconciliation:${order.id}`);
     return wire({
       data: {...workspaceOrderDetail(
         runtime.repository,
@@ -293,7 +311,12 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         order.id,
         runtime.agents.profile(order.merchantId).orderVisibility ?? [],
         merchant?.name ?? null,
-      ), costAccounting: runtime.costs.view(actor, order.id),
+      ), refundReconciliation:refundReview?isPlatform(actor)?{
+        id:refundReview.id,status:refundReview.status,reportedAmount:minorToMoney(refundReview.reportedMinor),
+        recordedAmount:minorToMoney(refundReview.recordedMinor),differenceAmount:minorToMoney(refundReview.differenceMinor),
+        firstDetectedAt:refundReview.firstDetectedAt,lastCheckedAt:refundReview.lastCheckedAt,resolvedAt:refundReview.resolvedAt,
+      }:{status:refundReview.status,lastCheckedAt:refundReview.lastCheckedAt}:null,
+        costAccounting: runtime.costs.view(actor, order.id),
         invoiceApplication: permissions.has("*") || permissions.has("invoices.read") ? runtime.invoices.forOrder(actor, order.id) : null,
         canApplyInvoice: !isPlatform(actor) && (permissions.has("*") || permissions.has("invoices.write"))
           && ["paid", "partially_refunded"].includes(order.paymentStatus)},

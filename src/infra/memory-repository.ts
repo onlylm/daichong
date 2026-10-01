@@ -237,6 +237,10 @@ export class MemoryRepository implements Repository {
   listProcessableFulfillments(limit: number, now: Date): Fulfillment[] {
     return [...this.fulfillments.values()]
       .filter((item) => ["queued", "running"].includes(item.status) && (item.nextCheckAt ?? item.createdAt) <= now)
+      // A reconciliation lock prevents a new upstream submission, but a task
+      // already submitted upstream must continue polling to a terminal fact.
+      .filter((item) => item.status === "running" || !this.listOperations("refund_reconciliation", item.merchantId)
+        .some(review => review.orderId === item.orderId && review.status === "reviewing" && review.differenceMinor > 0n))
       .sort((a, b) => (a.nextCheckAt ?? a.createdAt).getTime() - (b.nextCheckAt ?? b.createdAt).getTime())
       .slice(0, limit)
       .map(clone);

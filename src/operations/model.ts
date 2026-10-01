@@ -105,6 +105,26 @@ export interface WalletWithdrawal extends BaseRecord {
   createdAt: Date; updatedAt: Date;
 }
 export interface WalletCredit extends BaseRecord {merchantId: string; orderId: string; recognizedMinor: bigint; createdAt: Date}
+/**
+ * A provider trade query only proves a cumulative refunded amount. Until an
+ * exact provider refund request is bound to the local ledger, the difference
+ * is a finance reconciliation fact rather than a support ticket.
+ */
+export interface RefundReconciliation extends BaseRecord {
+  merchantId: string; orderId: string; provider: "alipay_page";
+  status: "reviewing" | "resolved";
+  reportedMinor: bigint; recordedMinor: bigint; differenceMinor: bigint;
+  providerReferenceFingerprint: string;
+  /** Historical system tickets are retained for traceability, never used as business state. */
+  legacyTicketIds: string[];
+  version: number; firstDetectedAt: Date; lastCheckedAt: Date; resolvedAt: Date | null;
+}
+export interface RefundReconciliationEvent extends BaseRecord {
+  merchantId: string; reconciliationId: string; orderId: string;
+  action: "detected" | "amount_updated" | "reopened" | "resolved" | "legacy_ticket_migrated";
+  reportedMinor: bigint; recordedMinor: bigint; differenceMinor: bigint;
+  createdAt: Date;
+}
 export interface InvoiceApplication extends BaseRecord {
   merchantId: string; orderId: string; requestKey: string;
   titleType: "enterprise"; invoiceTitle: string;
@@ -148,6 +168,7 @@ export interface OperationsRecords {
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
+  refund_reconciliation: RefundReconciliation; refund_reconciliation_event: RefundReconciliationEvent;
   invoice_application: InvoiceApplication; invoice_fee_payment: InvoiceFeePayment;
   daily_settlement: DailySettlementStatement;
   api_access: ApiAccess;

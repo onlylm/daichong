@@ -39,6 +39,28 @@ describe("SQLite backup restore rehearsal", () => {
       {cwd:process.cwd(),encoding:"utf8"});
     expect(cli.status,cli.stderr).toBe(0);
     expect(JSON.parse(readFileSync(cliReport,"utf8"))).toMatchObject({status:"ok",backupFile:"snapshot.sqlite"});
+
+    const reportFirst=join(folder,"cli-report-first.json");
+    const reordered=spawnSync(process.execPath,["--import","tsx","src/cli/verify-sqlite-backup.ts","--report",reportFirst,snapshot],
+      {cwd:process.cwd(),encoding:"utf8"});
+    expect(reordered.status,reordered.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(reportFirst,"utf8"))).toMatchObject({status:"ok",backupFile:"snapshot.sqlite"});
+  });
+
+  it("rejects a report path that aliases the backup and preserves every input byte",()=>{
+    const folder=mkdtempSync(join(tmpdir(),"quefa-backup-conflict-"));folders.push(folder);
+    const source=join(folder,"source.sqlite"),snapshot=join(folder,"snapshot.sqlite");
+    const runtime=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:source,LOG_LEVEL:"silent"}));
+    runtime.repository.consumeNonce("conflict-test-nonce",Date.now()+60_000,Date.now());
+    runtime.close();copyFileSync(source,snapshot);
+    const before=readFileSync(snapshot);
+
+    const cli=spawnSync(process.execPath,["--import","tsx","src/cli/verify-sqlite-backup.ts","--report",snapshot,snapshot],
+      {cwd:process.cwd(),encoding:"utf8"});
+
+    expect(cli.status).not.toBe(0);
+    expect(cli.stderr).toContain("sqlite_backup_report_path_conflict");
+    expect(readFileSync(snapshot)).toEqual(before);
   });
 
   it("rejects a truncated backup instead of producing a successful report", async () => {

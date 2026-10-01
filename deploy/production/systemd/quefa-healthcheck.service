@@ -3,6 +3,7 @@ Description=Verify Quefa public and private runtime health
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
+OnFailure=quefa-health-alert@%n.service
 
 [Service]
 Type=oneshot

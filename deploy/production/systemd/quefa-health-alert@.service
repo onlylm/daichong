@@ -1,0 +1,14 @@
+[Unit]
+Description=Notify operators that Quefa health verification failed (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/recharge-platform/current/deploy/production/health-alert.sh %i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/recharge-platform/current
+ReadOnlyPaths=/opt/recharge-platform/config

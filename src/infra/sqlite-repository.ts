@@ -505,6 +505,9 @@ export class SqliteRepository implements Repository {
       AND CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)=0
       AND NOT EXISTS(SELECT 1 FROM sandbox_records r WHERE r.kind='refund' AND r.merchant_id=o.merchant_id
         AND json_extract(r.payload,'$.orderId')=o.id AND json_extract(r.payload,'$.status') IN ('requested','approved','processing'))
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records rr WHERE rr.kind='ops_refund_reconciliation' AND rr.merchant_id=o.merchant_id
+        AND json_extract(rr.payload,'$.orderId')=o.id AND json_extract(rr.payload,'$.status')='reviewing'
+        AND CAST(COALESCE(json_extract(rr.payload,'$.differenceMinor.__bigint'),'0') AS INTEGER)>0)
       AND (v.id IS NULL OR (json_extract(v.payload,'$.status')='issuing'
         AND COALESCE(json_extract(v.payload,'$.nextAttemptAt'),json_extract(v.payload,'$.createdAt'))<=?))
       ORDER BY json_extract(o.payload,'$.createdAt') ASC,o.id ASC LIMIT ?`).all(now.toISOString(),Math.min(100,Math.max(1,limit)))
@@ -654,6 +657,10 @@ export class SqliteRepository implements Repository {
       WHERE f.kind='fulfillment' AND json_extract(f.payload,'$.status') IN ('queued','running')
       AND COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt'))<=?
       AND (json_extract(f.payload,'$.status')!='queued' OR COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 OR COALESCE(json_extract(f.payload,'$.liveSubmissionApproved'),0)=1)
+      AND (json_extract(f.payload,'$.status')='running' OR NOT EXISTS(
+        SELECT 1 FROM sandbox_records rr WHERE rr.kind='ops_refund_reconciliation' AND rr.merchant_id=f.merchant_id
+        AND json_extract(rr.payload,'$.orderId')=json_extract(f.payload,'$.orderId') AND json_extract(rr.payload,'$.status')='reviewing'
+        AND CAST(COALESCE(json_extract(rr.payload,'$.differenceMinor.__bigint'),'0') AS INTEGER)>0))
       ORDER BY COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt')),f.id LIMIT ?`).all(now.toISOString(),limit).map(r=>decode<Fulfillment>(String(r.payload)));
   }
   findFulfillmentByUpstreamClientRequestId(clientRequestId: string): Fulfillment | null {

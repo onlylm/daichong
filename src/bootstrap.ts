@@ -35,6 +35,7 @@ import {DailySettlementService} from "./operations/daily-settlements.js";
 import {InvoiceService} from "./operations/invoices.js";
 import {queryRecords} from "./infra/record-query.js";
 import {InvoiceAlipayService} from "./modules/invoice-alipay.js";
+import {RefundReconciliationService} from "./modules/refund-reconciliation-service.js";
 
 export function createRuntime(config: AppConfig) {
   LiveTestPolicy.validate(config);
@@ -117,6 +118,7 @@ export function createRuntime(config: AppConfig) {
   const orders = new OrderService(repository, catalog, paymentProvider, config.publicBaseUrl, portalTokens, livePolicy, wallets);
   const fulfillments = new FulfillmentService(repository, cipher, webhooks, upstream, livePolicy, orderId => wallets.reconcileOrderEarnings(orderId));
   const cdk = new CdkService(repository, cipher, upstream, webhooks, livePolicy);
+  const refundReconciliations = new RefundReconciliationService(repository);
   const refundExecutor = alipay ? {
     providerFor: (orderId: string) => {
       const order = repository.findOrderInternal(orderId);
@@ -130,8 +132,8 @@ export function createRuntime(config: AppConfig) {
     wallets.reconcileOrderEarnings(orderId);
     fulfillments.closeRefundedOrder(orderId);
   }, {
-    discrepancy: input => notifications.openProviderRefundDiscrepancy(input),
-    recorded: input => notifications.resolveProviderRefundDiscrepancies(input),
+    discrepancy: input => refundReconciliations.observe(input),
+    recorded: input => refundReconciliations.recorded(input),
   });
   alipay?.setExternalRefundHandler((orderId, refundedMinor, providerReference) => {
     refunds.syncProviderRefund(orderId, refundedMinor, providerReference);
@@ -143,7 +145,7 @@ export function createRuntime(config: AppConfig) {
 
   return {
     repository, notifications, merchantService, accessControl, catalog, payment, alipay, livePolicy, orders, fulfillments, cdk, portalTokens, upstream, supplierManagement, refunds, settlements, webhooks, ledger, audit, authenticator,
-    wallets, walletAlipay, accounts, support, announcements, agents, apiAccess, paymentSettings, dujiaopay, costs, dailySettlements,
+    wallets, walletAlipay, accounts, support, announcements, agents, apiAccess, paymentSettings, dujiaopay, costs, dailySettlements, refundReconciliations,
     invoices, invoiceAlipay,
     close: () => repository.close?.(),
   };

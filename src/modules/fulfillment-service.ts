@@ -126,7 +126,7 @@ export class FulfillmentService {
       const due = this.repository.listProcessableFulfillments(20, now)
         .find((item) => {
           if (item.leaseUntil && item.leaseUntil > now) return false;
-          if (hasUnreconciledProviderRefund(this.repository, item.merchantId, item.orderId)) return false;
+          if (item.status === "queued" && hasUnreconciledProviderRefund(this.repository, item.merchantId, item.orderId)) return false;
           if (item.status !== "queued" || !this.livePolicy) return true;
           const order = this.repository.findOrderInternal(item.orderId);
           return !!order && this.livePolicy.canFulfill(order)
