@@ -11,6 +11,23 @@ import {queryRecords} from "../src/infra/record-query.js";
 import type {Repository} from "../src/infra/repository.js";
 
 describe("SQLite workspace batch reads",()=>{
+  it("uses tenant update and active-ticket indexes for paginated workspace histories",()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      const db=(r.repository as unknown as {db:DatabaseSync}).db;
+      const plan=(sql:string)=>db.prepare("EXPLAIN QUERY PLAN "+sql).all("ops_ticket","merchant-demo-a")
+        .map(row=>String((row as {detail:unknown}).detail)).join("\n");
+      const tickets=plan(`SELECT payload FROM sandbox_records WHERE kind=? AND merchant_id=?
+        AND json_extract(payload,'$.archivedAt') IS NULL
+        ORDER BY json_extract(payload,'$.updatedAt') DESC,id DESC LIMIT 20 OFFSET 0`);
+      expect(tickets).toContain("records_tenant_archived_updated_idx");
+
+      const updated=plan(`SELECT payload FROM sandbox_records WHERE kind=? AND merchant_id=?
+        ORDER BY json_extract(payload,'$.updatedAt') DESC,id DESC LIMIT 20 OFFSET 0`);
+      expect(updated).toContain("records_tenant_updated_idx");
+    }finally{r.close();}
+  });
+
   it("uses bounded scoped count and page queries without per-order scans",async()=>{
     const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
     try{

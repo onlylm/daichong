@@ -1,4 +1,7 @@
 import {performance} from "node:perf_hooks";
+import {mkdtempSync, rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {buildApp} from "../dist/app.js";
 import {createRuntime} from "../dist/bootstrap.js";
 import {loadConfig} from "../dist/config.js";
@@ -61,47 +64,66 @@ function seed(runtime, count) {
 }
 
 async function runTier(count) {
-  const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: ":memory:", LOG_LEVEL: "silent",
+  const folder = mkdtempSync(join(tmpdir(), "quefa-pagination-benchmark-"));
+  let runtime, app;
+  try {
+  const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: join(folder, "benchmark.sqlite"), LOG_LEVEL: "silent",
     PUBLIC_BASE_URL: "https://tibo.ink", ADMIN_BASE_URL: "https://admin.tibo.ink"});
-  const runtime = createRuntime(config);
+  runtime = createRuntime(config);
   const username = `benchmark-admin-${count}`;
   const password = `benchmark-password-${count}`;
   await runtime.accounts.bootstrap(username, password);
   const admin = runtime.repository.listOperations("account").find(value => value.role === "platform_admin");
   runtime.repository.saveOperations("account", {...admin, mustChangePassword: false});
   const merchant = seed(runtime, count);
-  const app = await buildApp(config, runtime);
+  app = await buildApp(config, runtime);
   const cookie = await loginPlatform(app, username, password, "https://admin.tibo.ink");
   const headers = {origin: "https://admin.tibo.ink", cookie};
   const originalQuery = runtime.repository.queryRecords.bind(runtime.repository);
+  const queryDurations = new Map();
   let queryCount = 0;
-  runtime.repository.queryRecords = (...args) => { queryCount++; return originalQuery(...args); };
+  runtime.repository.queryRecords = (...args) => {
+    queryCount++;
+    const started=performance.now();
+    try{return originalQuery(...args);}
+    finally{
+      const kind=String(args[0]),values=queryDurations.get(kind)??[];
+      values.push(performance.now()-started);queryDurations.set(kind,values);
+    }
+  };
   const resources = [
-    page => `/workspace/api/tickets?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`,
-    page => `/workspace/api/invoices?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`,
-    page => `/workspace/api/daily-settlements?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`,
-    page => `/workspace/api/wallets/${merchant.id}/history?kind=ledger&page=${page}&limit=${limit}`,
-    page => `/workspace/api/agents/${merchant.id}/activity?page=${page}&limit=${limit}`,
+    {name: "tickets", url: page => `/workspace/api/tickets?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`},
+    {name: "invoices", url: page => `/workspace/api/invoices?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`},
+    {name: "settlements", url: page => `/workspace/api/daily-settlements?merchantId=${merchant.id}&status=all&page=${page}&limit=${limit}`},
+    {name: "wallet", url: page => `/workspace/api/wallets/${merchant.id}/history?kind=ledger&page=${page}&limit=${limit}`},
+    {name: "audit", url: page => `/workspace/api/agents/${merchant.id}/activity?page=${page}&limit=${limit}`},
   ];
-  const urls = resources.flatMap(makeUrl => Array.from({length: requestsPerResource}, (_, index) => makeUrl(index % 5 + 1)));
+  const requests = resources.flatMap(resource => Array.from({length: requestsPerResource}, (_, index) => ({
+    resource: resource.name, url: resource.url(index % 5 + 1),
+  })));
   const wallStarted = performance.now();
-  const samples = await Promise.all(urls.map(async url => {
+  const samples = await Promise.all(requests.map(async request => {
     const started = performance.now();
-    const response = await app.inject({method: "GET", url, headers});
+    const response = await app.inject({method: "GET", url: request.url, headers});
     const elapsedMs = performance.now() - started;
     const payload = response.json();
     if (response.statusCode !== 200 || !Array.isArray(payload.data) || payload.data.length > limit || payload.meta?.total !== count) {
-      throw new Error(`benchmark_response_invalid:${url}:${response.statusCode}:${response.body.slice(0, 300)}`);
+      throw new Error(`benchmark_response_invalid:${request.url}:${response.statusCode}:${response.body.slice(0, 300)}`);
     }
-    return {elapsedMs, bytes: Buffer.byteLength(response.body)};
+    return {resource: request.resource, elapsedMs, bytes: Buffer.byteLength(response.body)};
   }));
   const wallMs = performance.now() - wallStarted;
-  if (queryCount !== urls.length) throw new Error(`benchmark_query_count_invalid:${queryCount}:${urls.length}`);
-  await app.close();
-  runtime.close();
+  if (queryCount !== requests.length) throw new Error(`benchmark_query_count_invalid:${queryCount}:${requests.length}`);
+  const perResource=Object.fromEntries(resources.map(resource=>{
+    const values=samples.filter(sample=>sample.resource===resource.name).map(sample=>sample.elapsedMs);
+    return [resource.name,{p50:Number(percentile(values,.5).toFixed(2)),p95:Number(percentile(values,.95).toFixed(2))}];
+  }));
+  const queryLatency=Object.fromEntries([...queryDurations].map(([kind,values])=>[kind,{
+    p50:Number(percentile(values,.5).toFixed(2)),p95:Number(percentile(values,.95).toFixed(2)),
+  }]));
   return {
     rowsPerResource: count,
-    concurrentRequests: urls.length,
+    concurrentRequests: requests.length,
     pageLimit: limit,
     queryCount,
     wallMs: Number(wallMs.toFixed(2)),
@@ -114,10 +136,18 @@ async function runTier(count) {
       p50: percentile(samples.map(sample => sample.bytes), .5),
       max: Math.max(...samples.map(sample => sample.bytes)),
     },
+    perResourceLatencyMs: perResource,
+    databaseQueryLatencyMs: queryLatency,
     targetP95Under500ms: percentile(samples.map(sample => sample.elapsedMs), .95) < 500,
   };
+  } finally {
+    if (app) await app.close();
+    runtime?.close();
+    rmSync(folder, {recursive: true, force: true});
+  }
 }
 
 const results = [];
 for (const count of tiers) results.push(await runTier(count));
-process.stdout.write(JSON.stringify({generatedAt: new Date().toISOString(), runtime: "local-sqlite-memory", results}, null, 2) + "\n");
+process.stdout.write(JSON.stringify({generatedAt: new Date().toISOString(), runtime: "local-sqlite-file-wal", results}, null, 2) + "\n");
+if (results.some(result => !result.targetP95Under500ms)) process.exitCode = 1;
