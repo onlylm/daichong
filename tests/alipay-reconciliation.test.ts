@@ -180,6 +180,74 @@ describe("Alipay payment reconciliation", () => {
     expect(response.json()).toMatchObject({status:"pending",expired:true,can_start:false,qr_code:null,qr_image_data_url:null});
   });
 
+  it("expires an unstarted checkout without a provider call and records one verified late payment",async()=>{
+    const order=await orderWithAlipayAttempt(),attempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    const expiredAt=new Date(Date.now()-1_000),exec=vi.fn();
+    runtime.repository.updateOrder({...order,expiresAt:expiredAt,updatedAt:new Date()});
+    runtime.repository.updatePaymentAttempt({...attempt,expiresAt:expiredAt,qrPayload:null,updatedAt:new Date()});
+    const client={exec,pageExecute:vi.fn(async()=>""),checkNotifySignV2:vi.fn(()=>true)} as unknown as AlipayClient;
+    const alipay=new AlipayPaymentService(runtime.repository,runtime.payment,client,
+      {appId:"test-app",sellerId:"2088000000000000"},config.publicBaseUrl,
+      new AlipayPagePaymentProvider(config.publicBaseUrl,runtime.portalTokens));
+
+    await alipay.reconcile(order.id);
+    expect(exec).not.toHaveBeenCalled();
+    expect(runtime.repository.findOrderInternal(order.id)?.paymentStatus).toBe("expired");
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)?.status).toBe("expired");
+    expect(runtime.repository.listOutbox(order.merchantId).filter(event=>event.eventType==="order.expired")).toHaveLength(1);
+
+    const notification={sign_type:"RSA2",sign:"verified",app_id:"test-app",seller_id:"2088000000000000",
+      out_trade_no:order.id,total_amount:"135.00",trade_status:"TRADE_SUCCESS",trade_no:"2026100100000991"};
+    alipay.handleNotification(notification);
+    alipay.handleNotification(notification);
+    expect(runtime.repository.findOrderInternal(order.id)).toMatchObject({paymentStatus:"paid",paymentProviderRef:"2026100100000991"});
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)?.status).toBe("paid");
+    expect(runtime.repository.listLedger(order.merchantId)).toHaveLength(4);
+    expect(runtime.repository.listOutbox(order.merchantId).filter(event=>event.eventType==="order.paid")).toHaveLength(1);
+  });
+
+  it("expires a stale checkout when Alipay confirms that no trade exists",async()=>{
+    const order=await orderWithAlipayAttempt(),attempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    const expiredAt=new Date(Date.now()-1_000);
+    runtime.repository.updateOrder({...order,expiresAt:expiredAt,updatedAt:new Date()});
+    runtime.repository.updatePaymentAttempt({...attempt,expiresAt:expiredAt,qrPayload:"https://qr.alipay.com/missing-trade",updatedAt:new Date()});
+    await service({code:"40004",sub_code:"ACQ.TRADE_NOT_EXIST"}).reconcile(order.id);
+    expect(runtime.repository.findOrderInternal(order.id)?.paymentStatus).toBe("expired");
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)?.status).toBe("expired");
+  });
+
+  it("persists expiration and an idempotent late payment across a SQLite restart",async()=>{
+    const folder=mkdtempSync(join(tmpdir(),"quefa-payment-expiry-")),database=join(folder,"runtime.sqlite"),sqliteConfig={...config,
+      storageDriver:"sqlite" as const,sqlitePath:database};
+    let seeded:Runtime|null=createRuntime(sqliteConfig),reopened:Runtime|null=null;
+    try{
+      publishTestRechargeProduct(seeded);
+      const bundle=seeded.repository.findCredential(config.demoPartnerId,config.demoKeyId)!,context={merchantId:bundle.merchant.id,
+        partnerId:bundle.merchant.partnerId,appId:bundle.app.id,keyId:bundle.key.keyId};
+      const order=await seeded.orders.create(context,{merchantOrderNo:randomUUID(),productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      const attempt=seeded.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!,expiredAt=new Date(Date.now()-1_000);
+      seeded.repository.updateOrder({...order,expiresAt:expiredAt,updatedAt:new Date()});
+      seeded.repository.updatePaymentAttempt({...attempt,provider:"alipay_page",expiresAt:expiredAt,qrPayload:null,updatedAt:new Date()});
+      const noNetwork={exec:vi.fn(),pageExecute:vi.fn(async()=>""),checkNotifySignV2:vi.fn(()=>true)} as unknown as AlipayClient;
+      await new AlipayPaymentService(seeded.repository,seeded.payment,noNetwork,{appId:"test-app",sellerId:"2088000000000000"},
+        config.publicBaseUrl,new AlipayPagePaymentProvider(config.publicBaseUrl,seeded.portalTokens)).reconcile(order.id);
+      expect(noNetwork.exec).not.toHaveBeenCalled();
+      seeded.close();seeded=null;
+
+      reopened=createRuntime(sqliteConfig);
+      expect(reopened.repository.findOrderInternal(order.id)?.paymentStatus).toBe("expired");
+      expect(reopened.repository.findPaymentAttemptByOrder(order.merchantId,order.id)?.status).toBe("expired");
+      const verified={exec:vi.fn(),pageExecute:vi.fn(async()=>""),checkNotifySignV2:vi.fn(()=>true)} as unknown as AlipayClient;
+      const late=new AlipayPaymentService(reopened.repository,reopened.payment,verified,{appId:"test-app",sellerId:"2088000000000000"},
+        config.publicBaseUrl,new AlipayPagePaymentProvider(config.publicBaseUrl,reopened.portalTokens));
+      const notice={sign_type:"RSA2",sign:"verified",app_id:"test-app",seller_id:"2088000000000000",out_trade_no:order.id,
+        total_amount:"135.00",trade_status:"TRADE_SUCCESS",trade_no:"2026100100000992"};
+      late.handleNotification(notice);late.handleNotification(notice);
+      expect(reopened.repository.findOrderInternal(order.id)?.paymentStatus).toBe("paid");
+      expect(reopened.repository.listLedger(order.merchantId)).toHaveLength(4);
+    }finally{seeded?.close();reopened?.close();rmSync(folder,{recursive:true,force:true});}
+  });
+
   it("migrates legacy refund system cases without deleting their messages", async()=>{
     const created=await orderWithAlipayAttempt(),paid=runtime.payment.markPaid(created.merchantId,created.id,
       {channel:"alipay_page",providerRef:"2026100100000099",receivedMinor:created.saleAmountMinor}),now=new Date();

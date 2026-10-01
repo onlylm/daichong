@@ -131,7 +131,7 @@ export interface PaymentAttempt {
   merchantId: string;
   orderId: string;
   provider: string;
-  status: "pending" | "paid" | "closed" | "failed" | "refunded";
+  status: "pending" | "paid" | "expired" | "closed" | "failed" | "refunded";
   providerRef: string | null;
   requestedMinor: bigint;
   receivedMinor: bigint | null;

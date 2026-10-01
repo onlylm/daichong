@@ -5,7 +5,9 @@ const paymentTransitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
   pending: ["paid", "expired", "closed"],
   paid: ["partially_refunded", "refunded"],
   partially_refunded: ["partially_refunded", "refunded"],
-  expired: [],
+  // A verified provider notification may arrive after the local checkout
+  // window was marked expired. Real money received must still be recorded.
+  expired: ["paid"],
   closed: [],
   refunded: [],
 };
@@ -59,4 +61,3 @@ function assertTransition(kind: string, from: string, to: string, allowed: reado
     throw new AppError(409, "invalid_state_transition", `${kind} 不允许从 ${from} 转换到 ${to}`);
   }
 }
-

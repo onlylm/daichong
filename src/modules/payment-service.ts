@@ -60,6 +60,26 @@ export class PaymentService {
     });
   }
 
+  markExpired(merchantId: string, orderId: string, provider: string): Order {
+    return this.repository.transaction(() => {
+      const order=this.repository.findOrder(merchantId,orderId);
+      if(!order)throw notFound("order");
+      const attempt=this.repository.findPaymentAttemptByOrder(merchantId,orderId);
+      if(!attempt||attempt.provider!==provider)throw new AppError(409,"payment_channel_mismatch","不允许跨支付渠道标记订单过期");
+      if(order.paymentStatus==="expired")return order;
+      if(order.paymentStatus!=="pending")return order;
+      if(order.expiresAt>new Date())throw new AppError(409,"payment_not_expired","付款窗口尚未结束");
+      assertPaymentTransition(order.paymentStatus,"expired");
+      const now=new Date(),expired={...order,paymentStatus:"expired" as const,updatedAt:now};
+      this.repository.updateOrder(expired);
+      const {nextCheckAt:_nextCheckAt,precreateLeaseToken:_lease,precreateLeaseUntil:_leaseUntil,...rest}=attempt;
+      this.repository.updatePaymentAttempt({...rest,status:"expired",updatedAt:now});
+      this.webhooks.emit(merchantId,`${orderId}:order.expired`,"order.expired",orderId,
+        {event:"order.expired",order_id:orderId,merchant_order_no:order.merchantOrderNo});
+      return expired;
+    });
+  }
+
   private markPaidLocked(merchantId: string, orderId: string, input: {providerRef: string; receivedMinor: bigint; feeMinor?: bigint; channel?: "mock" | "alipay_page" | "dujiaopay"}): Order {
     const order = this.repository.findOrder(merchantId, orderId);
     if (!order) throw notFound("order");

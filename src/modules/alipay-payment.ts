@@ -124,21 +124,32 @@ export class AlipayPaymentService {
   }
 
   async reconcile(orderId: string): Promise<void> {
-    const order = this.repository.transaction(() => {
+    const candidate = this.repository.transaction(() => {
       const current = this.order(orderId);
       const attempt = this.repository.findPaymentAttemptByOrder(current.merchantId, current.id)!;
+      if(current.paymentStatus==="pending"&&current.expiresAt<=new Date()&&!attempt.qrPayload){
+        return {action:"expire" as const,order:current};
+      }
       if (!["pending", "paid", "partially_refunded"].includes(current.paymentStatus)
           || (attempt.nextCheckAt && attempt.nextCheckAt > new Date())) return null;
       const interval = current.paymentStatus === "pending" ? 60_000 : 6 * 60 * 60_000;
       this.repository.updatePaymentAttempt({...attempt, nextCheckAt: new Date(Date.now() + interval), updatedAt: new Date()});
-      return current;
+      return {action:"query" as const,order:current};
     });
-    if (!order) return;
+    if (!candidate) return;
+    if(candidate.action==="expire"){
+      this.payment.markExpired(candidate.order.merchantId,candidate.order.id,"alipay_page");
+      return;
+    }
+    const order=candidate.order;
     try {
       // v2 query retained for compatibility with existing website-payment applications.
       // Verification uses the original response bytes inside the official SDK.
       const result = await this.client.exec("alipay.trade.query", {bizContent: {out_trade_no: order.id}}, {validateSign: true});
-      if (result.code === "40004" && result.sub_code === "ACQ.TRADE_NOT_EXIST") return;
+      if (result.code === "40004" && result.sub_code === "ACQ.TRADE_NOT_EXIST") {
+        if(order.paymentStatus==="pending"&&order.expiresAt<=new Date())this.payment.markExpired(order.merchantId,order.id,"alipay_page");
+        return;
+      }
       if (result.code !== "10000") throw new Error("query_failed");
       this.accept(order, result as Record<string, string>);
     } catch {
