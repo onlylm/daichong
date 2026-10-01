@@ -12,6 +12,7 @@ import {partnerFulfillmentMessage, partnerFulfillmentSnapshot, partnerProgressSt
 import {latestFulfillmentOf, orderSyncMark} from "../domain/order-sync-mark.js";
 import {canResubmitFulfillment, isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
 import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
+import {manualCompletionBlock} from "../operations/manual-completion.js";
 
 interface QueuedPayload {
   credential: RechargeCredential;
@@ -104,6 +105,7 @@ export class FulfillmentService {
     if (!canResubmitFulfillment(value)) return false;
     const order = this.repository.findOrder(value.merchantId, value.orderId);
     if (!order || !["paid", "partially_refunded"].includes(order.paymentStatus) || order.ordinaryRefundedMinor > 0n) return false;
+    if (this.repository.getOperations("manual_completion", order.id)) return false;
     const attempts = this.repository.listFulfillments(value.merchantId, value.orderId);
     if (latestFulfillmentOf(attempts)?.id !== value.id || attempts.some(task => ["queued", "running", "succeeded"].includes(task.status))) return false;
     if (this.repository.listRefundsForOrder(value.merchantId, value.orderId).some(refund => ["requested", "approved", "processing"].includes(refund.status))) return false;
@@ -211,6 +213,8 @@ export class FulfillmentService {
       if (!order || !["paid", "partially_refunded"].includes(order.paymentStatus) || order.ordinaryRefundedMinor > 0n) {
         throw new AppError(409, "order_not_recoverable", "订单已退款或未确认付款，不能处理充值");
       }
+      if (this.repository.getOperations("manual_completion", order.id))
+        throw new AppError(409, "manual_completion_exists", "订单已人工完成，不能重新开放充值");
       const attempts = this.repository.listFulfillments(merchantId, task.orderId);
       if (latestFulfillmentOf(attempts)?.id !== task.id || attempts.some(other => other.id !== task.id && ["queued", "running", "succeeded"].includes(other.status))) {
         throw new AppError(409, "recharge_attempt_changed", "订单已有更新或成功的尝试，请刷新后核对");
@@ -248,6 +252,8 @@ export class FulfillmentService {
     order = this.repository.findOrderInternal(order.id) ?? order;
     this.assertFulfillableOrder(order);
     if (order.archivedAt) throw new AppError(410, "order_archived", "该测试订单已归档，不能继续充值");
+    if (this.repository.getOperations("manual_completion", order.id))
+      throw new AppError(409, "manual_completion_exists", "订单已人工完成，不能重复提交充值");
     if (order.paymentStatus !== "paid" && order.paymentStatus !== "partially_refunded") {
       throw new AppError(409, "order_not_paid", "只有已支付订单可以提交充值");
     }
@@ -302,6 +308,32 @@ export class FulfillmentService {
 
   private assertFulfillableOrder(order:Order):void {
     if(order.paymentPurpose==="payment_test")throw new AppError(409,"payment_test_has_no_fulfillment","1 元支付联调订单不提供 CDK 或充值履约");
+    if(this.repository.getOperations("manual_completion",order.id))throw new AppError(409,"manual_completion_exists","订单已人工完成，不能重复提交充值");
+  }
+
+  /** Only called inside the administrator's evidence-and-accounting transaction. */
+  recordManualSuccess(order: Order, completedAt: Date, externalOrderRef: string): Fulfillment {
+    return this.repository.transaction(() => {
+      const current = this.repository.findOrderInternal(order.id);
+      if (!current) throw notFound("order");
+      const block = manualCompletionBlock(this.repository, current);
+      if (block) throw new AppError(409, "manual_completion_blocked", block);
+      const previous = this.repository.listFulfillments(current.merchantId, current.id);
+      const id = `ful_${randomUUID().replaceAll("-", "")}`;
+      const now = new Date();
+      const task: Fulfillment = {
+        id, merchantId:current.merchantId, orderId:current.id, attemptNo:previous.length+1,
+        status:"succeeded", completionSource:"manual", failureCode:null, message:"充值成功",
+        accountEmailMasked:previous.at(-1)?.accountEmailMasked ?? null,
+        sessionPayload:this.cipher.clear(this.cipher.encrypt({}, fulfillmentAad(current.merchantId,current.id,id))),
+        mode:current.fulfillmentMode, voucherId:null, upstreamProvider:"manual_verified",
+        upstreamOrderId:externalOrderRef, upstreamClientRequestId:id, upstreamLookupToken:null,
+        upstreamStatus:"completed", upstreamStage:"completed", upstreamQuoteMinor:null,
+        upstreamChargedMinor:null, upstreamCurrency:null, nextCheckAt:now, createdAt:now, finishedAt:completedAt,
+      };
+      this.repository.updateOrder({...current, fallbackRechargeAvailable:false, updatedAt:now});
+      return this.finishLocked(task, true);
+    });
   }
 
   private async submit(current: Fulfillment): Promise<Fulfillment> {
@@ -474,10 +506,10 @@ export class FulfillmentService {
     return this.repository.transaction(() => this.finishLocked(terminal));
   }
 
-  private finishLocked(terminal: Fulfillment): Fulfillment {
+  private finishLocked(terminal: Fulfillment, insert = false): Fulfillment {
     terminal = {...terminal, leaseToken: null, leaseUntil: null,
       ...(terminal.lookupPayload ? {lookupPayload: this.cipher.clear(terminal.lookupPayload)} : {})};
-    terminal = this.saveProgress(terminal);
+    terminal = this.saveProgress(terminal, insert);
     let fallbackRechargeAvailable = false;
     if (terminal.voucherId) {
       const voucher = this.repository.findCdkVoucherByOrder(terminal.orderId);

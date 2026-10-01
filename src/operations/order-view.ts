@@ -10,6 +10,7 @@ import {orderSyncMark, type OrderSyncMark} from "../domain/order-sync-mark.js";
 import type {Actor, OrderVisibilityField} from "./model.js";
 import {isPlatform} from "./accounts.js";
 import {queryRecords, type RecordPage} from "../infra/record-query.js";
+import {manualCompletionBlock} from "./manual-completion.js";
 
 export function workspacePayUrl(order: Order): string | null {
   return order.paymentStatus === "pending" ? order.qrPayload : null;
@@ -40,6 +41,7 @@ export interface WorkspaceOrderRow {
   voucherCode: string | null;
   fallbackRechargeAvailable: boolean;
   fulfillmentStatus: Fulfillment["status"] | null;
+  completionSource: "manual" | null;
   syncMark: OrderSyncMark | null;
   fulfillment: Record<string, unknown> | null;
   trace: WorkspaceOrderTrace;
@@ -102,6 +104,7 @@ function mapWorkspaceOrder(
     voucherCode: deliveryMode === "cdk" ? order.voucherCode : null,
     fallbackRechargeAvailable: Boolean(order.fallbackRechargeAvailable),
     fulfillmentStatus: fulfillment?.status ?? null,
+    completionSource: fulfillment?.completionSource ?? null,
     syncMark: orderSyncMark(order.paymentStatus, fulfillment),
     fulfillment: details,
     trace: {
@@ -114,7 +117,7 @@ function mapWorkspaceOrder(
       upstreamCdkCode: null,
       fulfillmentReference: isPlatform(actor)
         ? fulfillment?.upstreamOrderId ?? null
-        : visibility.includes("upstream_order_id") ? fulfillment?.upstreamOrderId ?? null : null,
+        : visibility.includes("upstream_order_id") && fulfillment?.completionSource !== "manual" ? fulfillment?.upstreamOrderId ?? null : null,
     },
     createdAt: order.createdAt,
   };
@@ -296,6 +299,7 @@ export function workspaceOrderDetail(
     .slice()
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const latest = fulfillments.at(-1);
+  const manualCompletion = repository.getOperations("manual_completion", order.id);
   const row = mapWorkspaceOrder(order, merchantName, latest, voucher, actor, visibility);
   const refundRecords = repository.listRefundsForOrder(order.merchantId, order.id)
     .slice()
@@ -344,6 +348,12 @@ export function workspaceOrderDetail(
     canRefundCustomer,
     canRecordExternalRefund,
     canPriceAdjust,
+    canRecordManualCompletion: isPlatform(actor) && actor.role === "platform_admin" && manualCompletionBlock(repository, order) === null,
+    manualCompletion: manualCompletion ? isPlatform(actor) ? {
+      completedAt:manualCompletion.completedAt.toISOString(), externalOrderRef:manualCompletion.externalOrderRef,
+      evidence:manualCompletion.evidence, reason:manualCompletion.reason, actorId:manualCompletion.actorId,
+      registeredAt:manualCompletion.createdAt.toISOString(), fulfillmentId:manualCompletion.fulfillmentId,
+    } : {completedAt:manualCompletion.completedAt.toISOString()} : null,
     canResolveRecharge: isPlatform(actor) && !!latest && ["paid", "partially_refunded"].includes(order.paymentStatus)
       && order.ordinaryRefundedMinor === 0n && !refundRecords.some(refund => ["requested", "approved", "processing"].includes(refund.status))
       && !fulfillments.some(task => task.id !== latest.id && ["queued", "running", "succeeded"].includes(task.status))
@@ -362,16 +372,18 @@ export function workspaceOrderDetail(
       fulfillmentSubmittedAt: fulfillments[0]?.createdAt.toISOString() ?? null,
       fulfillmentFinishedAt: latest?.finishedAt?.toISOString() ?? null,
       fulfillmentStatus: latest?.status ?? null,
+      manualCompletedAt: manualCompletion?.completedAt.toISOString() ?? null,
     },
     fulfillments: fulfillments.map((item, index) => ({
       id: item.id,
       attemptNo: index + 1,
       status: item.status,
+      completionSource:item.completionSource ?? null,
       failureCode: item.failureCode,
       message: isPlatform(actor) ? item.message : partnerFulfillmentMessage(item),
       ...partnerFulfillmentProgress(item),
       accountEmailMasked: item.accountEmailMasked,
-      upstreamOrderId: isPlatform(actor) || visibility.includes("upstream_order_id") ? item.upstreamOrderId : null,
+      upstreamOrderId: isPlatform(actor) || (visibility.includes("upstream_order_id") && item.completionSource !== "manual") ? item.upstreamOrderId : null,
       createdAt: item.createdAt.toISOString(),
       finishedAt: item.finishedAt?.toISOString() ?? null,
       updatedAt: (item.progressUpdatedAt ?? item.finishedAt ?? item.createdAt).toISOString(),

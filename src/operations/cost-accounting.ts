@@ -62,6 +62,14 @@ export class CostAccountingService {
     const c=this.repo.getOperations("order_cost",id)??this.initial(o),payments=isPlatform(actor)?this.repo.listOperations("cost_saving_payment",o.merchantId).filter(p=>p.orderId===id):[];
     return this.present(o,c,payments,isPlatform(actor));
   }
+  /** Ensure a manual completion remains in the cost queue until real settlement evidence is verified. */
+  markManualPending(actor: Actor, id: string): void {
+    this.admin(actor);
+    this.repo.transaction(() => {
+      const order=this.order(id),current=this.repo.getOperations("order_cost",id);
+      if (!current) this.repo.saveOperations("order_cost",this.initial(order,actor.id),true);
+    });
+  }
   list(actor: Actor) {
     return this.page(actor,{status:"all",page:1,limit:200}).data;
   }
@@ -135,6 +143,7 @@ export class CostAccountingService {
   }
   async sync(actor:Actor,id:string) {
     this.admin(actor);const o=this.order(id),f=this.repo.listFulfillments(o.merchantId,id).filter(v=>v.upstreamOrderId).at(-1);
+    if(this.repo.getOperations("manual_completion",id))throw new AppError(409,"manual_cost_requires_evidence","人工完成订单请使用真实清算凭证人工核验成本，不能按外部单号自动查询上游");
     if(!f?.upstreamOrderId)throw new AppError(409,"upstream_order_missing","没有可核对的上游订单号");
     const facts=await this.supplier.costFacts(f.upstreamOrderId,f.mode);
     return this.repo.transaction(()=>{const c=this.repo.getOperations("order_cost",id)??this.initial(o,actor.id);
@@ -154,6 +163,7 @@ export class CostAccountingService {
       const records=this.repo.listWorkspaceRecords?.(this.repo.listMerchants().map(m=>m.id));
       const succeeded=records?new Set(records.fulfillments.filter(f=>f.status==="succeeded").map(f=>f.orderId)):null;
       o=this.repo.listOrdersInternal().find(order=>order.costTerms&&order.paymentStatus==="paid"&&now.getTime()-order.createdAt.getTime()<48*60*60_000
+        &&!this.repo.getOperations("manual_completion",order.id)
         &&!['confirmed','disputed'].includes(costs.get(order.id)?.status??'')&&(!costs.get(order.id)?.nextCheckAt||costs.get(order.id)!.nextCheckAt!.getTime()<=now.getTime())
         &&(succeeded?succeeded.has(order.id):this.repo.listFulfillments(order.merchantId,order.id).some(f=>f.status==="succeeded")));}
     if(!o)return;const actor:Actor={id:"cost-read-worker",role:"platform_admin",merchantId:null};

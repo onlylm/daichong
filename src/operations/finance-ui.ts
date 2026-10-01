@@ -12,7 +12,10 @@ function costFinancePanels(view){const c=view.costAccounting||{},agent=view.coll
   const invoice=orderInvoicePanel(view);
   if(!platform())return [commission,invoice,orderDetailPanel("补差处理",costReceiptContent(view),false)];
   const costBody=el("div",{},financialRows([["核验状态",costLabel(c.status)],["冻结退差基准 USD",(c.refundBenchmarkUsd??c.standardUsd)],["原币最终金额",c.nativeAmountMinor==null?"尚未核对":c.nativeCurrency+" "+(c.nativeAmountMinor/100).toFixed(2)],["上游匹配美元 USD",c.tradeCandidate?.usd],["美元交易证据",c.tradeCandidate?c.tradeCandidate.state==="settled"?"清算完成":"授权记录投影 · 待确认清算":c.tradeMatchIssue==="ambiguous_trades"?"同卡多笔匹配，待人工核对":"尚未关联"],["已核实成本 USD",c.actualUsd],["独立实际费用 USD",c.additionalFeesUsd],["毛节省 USD",c.grossSavingUsd],["约定保留 USD",c.retainedFeeUsd],["我方毛利 CNY",c.grossProfitCny]]),el("p",{class:"muted"},"退差基准只用于判断补差，不代表实际成本。原币报价不等于美元清算成本。缺少真实关联凭证或汇率时保留待核算；保留费用不重复计入实际成本。"));
-  if(can("wallet.review"))costBody.append(el("div",{class:"actions"},button("按上游订单查美元成本",async()=>{await api("/orders/"+id(view.id)+"/cost/sync","POST",{});await refreshOpenOrder(view.id);}),button("核实成本与补差",()=>openCostVerification(view),"primary")));
+  if(can("wallet.review"))costBody.append(el("div",{class:"actions"},view.completionSource==="manual"?
+    el("p",{class:"muted"},"人工完成订单不自动回读上游成本；请依据真实清算流水人工核验。"):
+    button("按上游订单查美元成本",async()=>{await api("/orders/"+id(view.id)+"/cost/sync","POST",{});await refreshOpenOrder(view.id);}),
+    button("核实成本与补差",()=>openCostVerification(view),"primary")));
   const rebate=el("div",{},financialRows([["补差状态",costLabel(c.payoutState)],["付款去向",costDestination(c.destination)],["净应补差 USD",c.refundDueUsd],["已付 USD",c.paidUsd],["剩余 USD",c.remainingUsd]]),el("p",{class:"muted"},"客户补差另行处理，不减少代理基础分佣。退代理代退不代表客户已收到；两条路径不可重复执行。"));
   if(can("wallet.review")&&c.status==="confirmed"&&c.destination&&Number(c.remainingUsd)>0)rebate.append(button("登记已实际支付",()=>openCostPayment(view),"primary"));
   rebate.append(costReceiptContent(view));if(c.payments?.length)rebate.append(table(["日期","金额","方式","流水"],c.payments.map(p=>[date(p.createdAt),p.currency+" "+p.amount,p.method,p.reference])));

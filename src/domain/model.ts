@@ -157,6 +157,8 @@ export interface EncryptedPayload {
 }
 
 export interface Fulfillment {
+  /** A separately evidenced administrator entry; never an upstream response. */
+  completionSource?: "manual";
   retryAllowed?: boolean;
   recoveryAction?: "retry" | "refund";
   recoveryReason?: string;

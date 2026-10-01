@@ -382,6 +382,30 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
           && ["paid", "partially_refunded"].includes(order.paymentStatus)},
     });
   });
+  app.post<{Params:{id:string}}>("/workspace/api/orders/:id/manual-completion", async request => {
+    const actor=account(request);
+    if(actor.role!=="platform_admin"||actor.merchantId!==null)throw new AppError(403,"permission_denied","仅平台管理员可登记人工完成");
+    const input=z.object({completedAt:z.string().datetime({offset:true}),externalOrderRef:z.string().trim().regex(/^[A-Za-z0-9:_.-]{6,120}$/),
+      evidence:z.string().trim().min(6).max(1000),reason:z.string().trim().min(4).max(500),requestKey,
+      confirmAlreadyCompleted:z.literal(true),cost:z.object({actualUsd:money.refine(value=>moneyToMinor(value)>0n,"真实成本必须大于零"),
+        fxRate:z.string().regex(/^\d{1,3}(?:\.\d{1,6})?$/),sourceReference:z.string().trim().min(6).max(160),
+        evidence:z.string().trim().min(6).max(1000),destination:z.enum(["customer_direct","platform_pass_through"])}).strict().optional()}).strict().parse(request.body);
+    const order=runtime.repository.findOrderInternal(request.params.id);
+    if(!order)throw new AppError(404,"order_not_found","订单不存在");
+    const routeKey="workspace:manual-completion:"+order.id,hash=createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    return runtime.repository.transaction(()=>{
+      const prior=runtime.repository.getIdempotency(order.merchantId,actor.id,routeKey,input.requestKey);
+      if(prior){if(prior.requestHash!==hash)throw new AppError(409,"idempotency_conflict","登记请求号已用于不同内容");return prior.responseBody;}
+      const record=runtime.manualCompletions.record(actor,order.id,{completedAt:new Date(input.completedAt),
+        externalOrderRef:input.externalOrderRef,evidence:input.evidence,reason:input.reason,
+        ...(input.cost?{cost:input.cost}:{})},request.id);
+      const body={data:{orderId:order.id,fulfillmentId:record.fulfillmentId,completedAt:record.completedAt.toISOString(),
+        costStatus:runtime.costs.view(actor,order.id).status}};
+      runtime.repository.saveIdempotency({merchantId:order.merchantId,appId:actor.id,routeKey,key:input.requestKey,
+        requestHash:hash,responseStatus:200,responseBody:body});
+      return body;
+    });
+  });
   app.get<{Params: {id: string}; Querystring: {page?: string; limit?: string}}>("/workspace/api/orders/:id/audit", async request => {
     const actor = account(request);
     requirePermission(actor, "orders.read");

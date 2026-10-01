@@ -112,6 +112,8 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tenant_occurred_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.occurredAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_outbox_cursor_idx ON sandbox_records(kind,id);
       CREATE INDEX IF NOT EXISTS records_upstream_client_request_idx ON sandbox_records(kind,json_extract(payload,'$.upstreamClientRequestId'));
+      CREATE INDEX IF NOT EXISTS records_manual_external_ref_idx ON sandbox_records(json_extract(payload,'$.externalOrderRef')) WHERE kind='ops_manual_completion';
+      CREATE INDEX IF NOT EXISTS records_fulfillment_external_ref_idx ON sandbox_records(json_extract(payload,'$.upstreamOrderId')) WHERE kind='fulfillment';
       CREATE INDEX IF NOT EXISTS records_username_idx ON sandbox_records(kind,json_extract(payload,'$.username'));
       CREATE INDEX IF NOT EXISTS records_request_key_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.requestKey'));
       CREATE INDEX IF NOT EXISTS records_provider_ref_idx ON sandbox_records(kind,json_extract(payload,'$.providerRef'));
@@ -606,6 +608,7 @@ export class SqliteRepository implements Repository {
       AND json_extract(o.payload,'$.fulfillmentMode')='cdk'
       AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded')
       AND CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)=0
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records mc WHERE mc.kind='ops_manual_completion' AND mc.id=o.id)
       AND NOT EXISTS(SELECT 1 FROM sandbox_records r WHERE r.kind='refund' AND r.merchant_id=o.merchant_id
         AND json_extract(r.payload,'$.orderId')=o.id AND json_extract(r.payload,'$.status') IN ('requested','approved','processing'))
       AND NOT EXISTS(SELECT 1 FROM sandbox_records rr WHERE rr.kind='ops_refund_reconciliation' AND rr.merchant_id=o.merchant_id
@@ -651,6 +654,7 @@ export class SqliteRepository implements Repository {
     const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
       LEFT JOIN sandbox_records c ON c.kind='ops_order_cost' AND c.id=o.id
       WHERE o.kind='order' AND json_extract(o.payload,'$.archivedAt') IS NULL AND json_type(o.payload,'$.costTerms') IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records mc WHERE mc.kind='ops_manual_completion' AND mc.id=o.id)
       AND json_extract(o.payload,'$.paymentStatus')='paid' AND json_extract(o.payload,'$.createdAt')>=?
       AND COALESCE(json_extract(c.payload,'$.status'),'pending_review') NOT IN ('confirmed','disputed')
       AND (json_extract(c.payload,'$.nextCheckAt') IS NULL OR json_extract(c.payload,'$.nextCheckAt')<=?)
@@ -785,6 +789,8 @@ export class SqliteRepository implements Repository {
       LEFT JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=f.merchant_id AND o.id=json_extract(f.payload,'$.orderId')
       WHERE f.kind='fulfillment' AND json_extract(f.payload,'$.status') IN ('queued','running')
       AND COALESCE(json_extract(o.payload,'$.paymentPurpose'),'')!='payment_test'
+      AND (json_extract(f.payload,'$.status')='running' OR NOT EXISTS(
+        SELECT 1 FROM sandbox_records mc WHERE mc.kind='ops_manual_completion' AND mc.id=json_extract(f.payload,'$.orderId')))
       AND COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt'))<=?
       AND (json_extract(f.payload,'$.status')!='queued' OR COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 OR COALESCE(json_extract(f.payload,'$.liveSubmissionApproved'),0)=1)
       AND (json_extract(f.payload,'$.status')='running' OR NOT EXISTS(
@@ -1000,7 +1006,7 @@ const dateKeys = new Set([
   "archivedAt",
   "dueAt",
   "lockedUntil", "startsAt", "endsAt", "readAt", "upstreamCheckedAt",
-  "notBefore", "expiresAt", "paidAt", "createdAt", "updatedAt", "finishedAt", "clearedAt", "progressUpdatedAt",
+  "notBefore", "expiresAt", "paidAt", "createdAt", "updatedAt", "finishedAt", "completedAt", "clearedAt", "progressUpdatedAt",
   "refundedAt", "occurredAt", "periodFrom", "periodTo", "sealedAt", "nextAttemptAt", "leaseUntil", "deliveredAt",
   "verifiedAt", "activatedAt", "sentAt", "nextCheckAt", "consumedAt", "receivedAt", "processedAt", "lastTestAt", "lastPlanSyncAt", "syncedAt",
   "generatedAt", "reconciledAt", "firstDetectedAt", "lastCheckedAt", "resolvedAt", "submittedAt", "issuedAt",

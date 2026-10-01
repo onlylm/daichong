@@ -185,6 +185,7 @@ export interface PaymentEvent extends BaseRecord {revisionId: string; eventId: s
 export interface CryptoTransaction extends BaseRecord {orderId: string; chain: string; txHash: string; createdAt: Date}
 export interface OperationsRecords {
   order_cost: OrderCost; cost_saving_payment: CostSavingPayment;
+  manual_completion: ManualCompletion;
   service_checkpoint: ServiceCheckpoint; worker_health: WorkerHealth;
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
@@ -197,6 +198,13 @@ export interface OperationsRecords {
   api_access: ApiAccess;
   payment_settings: PaymentSettings; payment_revision: PaymentRevision; payment_check: PaymentCheck;
   crypto_payment: CryptoPayment; payment_event: PaymentEvent; crypto_transaction: CryptoTransaction;
+}
+
+/** Administrator evidence for a recharge completed outside the automatic queue. */
+export interface ManualCompletion extends BaseRecord {
+  merchantId: string; orderId: string; fulfillmentId: string;
+  completedAt: Date; externalOrderRef: string; evidence: string; reason: string;
+  actorId: string; createdAt: Date;
 }
 
 /** Internal finance, deliberately separate from customer refunds and agent earnings. */

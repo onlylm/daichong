@@ -123,6 +123,7 @@ export function partnerFulfillmentSnapshot(value: Fulfillment, configured?: Orde
   return {
     status: value.status,
     attempt_no: value.attemptNo,
+    ...(value.completionSource === "manual" ? {completion_source: "manual"} : {}),
     ...partnerFulfillmentProgress(value),
     retry_allowed: retryAllowed,
     next_action: value.status === "succeeded" || (value.recoveryAction === "refund" && ["failed", "cancelled"].includes(value.status)) ? "none" : retryAllowed ? "resubmit" : "wait",
@@ -143,7 +144,7 @@ export function partnerFulfillmentDetails(value: Fulfillment, configured?: Order
     result.charge_amount_minor = value.upstreamChargedMinor ?? null;
     result.charge_currency = value.upstreamChargedMinor === null || value.upstreamChargedMinor === undefined ? null : value.upstreamCurrency;
   }
-  if (fields.has("upstream_order_id")) result.upstream_order_id = publicReference(value.upstreamOrderId);
+  if (fields.has("upstream_order_id")) result.upstream_order_id = value.completionSource === "manual" ? null : publicReference(value.upstreamOrderId);
   return result;
 }
 

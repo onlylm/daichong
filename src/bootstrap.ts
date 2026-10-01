@@ -31,6 +31,7 @@ import {ManagedPaymentProvider, ManagedAlipayService} from "./modules/managed-pa
 import {DujiaoPaymentService} from "./modules/dujiaopay-payment.js";
 import {WalletAlipayService} from "./modules/wallet-alipay.js";
 import {CostAccountingService} from "./operations/cost-accounting.js";
+import {ManualCompletionService} from "./operations/manual-completion.js";
 import {DailySettlementService} from "./operations/daily-settlements.js";
 import {InvoiceService} from "./operations/invoices.js";
 import {queryRecords} from "./infra/record-query.js";
@@ -118,6 +119,7 @@ export function createRuntime(config: AppConfig) {
   const dujiaopay = config.paymentProvider === "managed" ? new DujiaoPaymentService(repository, paymentSettings, payment) : null;
   const orders = new OrderService(repository, catalog, paymentProvider, config.publicBaseUrl, portalTokens, livePolicy, wallets);
   const fulfillments = new FulfillmentService(repository, cipher, webhooks, upstream, livePolicy, orderId => wallets.reconcileOrderEarnings(orderId));
+  const manualCompletions = new ManualCompletionService(repository, fulfillments, costs, audit);
   const cdk = new CdkService(repository, cipher, upstream, webhooks, livePolicy);
   const refundReconciliations = new RefundReconciliationService(repository);
   // Migrate former ticket-backed discrepancies before any worker can decide
@@ -152,7 +154,7 @@ export function createRuntime(config: AppConfig) {
 
   return {
     repository, notifications, merchantService, accessControl, catalog, payment, alipay, livePolicy, orders, fulfillments, cdk, portalTokens, upstream, supplierManagement, refunds, settlements, webhooks, ledger, audit, authenticator,
-    wallets, walletAlipay, accounts, support, announcements, agents, apiAccess, paymentSettings, dujiaopay, costs, dailySettlements, refundReconciliations,
+    wallets, walletAlipay, accounts, support, announcements, agents, apiAccess, paymentSettings, dujiaopay, costs, manualCompletions, dailySettlements, refundReconciliations,
     invoices, invoiceAlipay,
     close: () => repository.close?.(),
   };
