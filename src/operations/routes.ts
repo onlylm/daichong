@@ -776,8 +776,13 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.get<{Params: {merchantId: string}}>("/workspace/api/wallets/:merchantId", async request => {
     const actor = account(request), merchantId = scope(actor, request.params.merchantId);
-    return wire({data: runtime.wallets.summary(actor, merchantId), entries: runtime.wallets.entries(actor, merchantId),
-      deposits: runtime.repository.listOperations("wallet_deposit", merchantId), withdrawals: runtime.repository.listOperations("wallet_withdrawal", merchantId)});
+    return wire({data: runtime.wallets.summary(actor, merchantId)});
+  });
+  app.get<{Params: {merchantId: string}}>("/workspace/api/wallets/:merchantId/history", async request => {
+    const actor = account(request), merchantId = scope(actor, request.params.merchantId);
+    const query = z.object({kind: z.enum(["deposits", "withdrawals", "ledger"]),
+      page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    return wire(runtime.wallets.historyPage(actor, merchantId, query.kind, query.page, query.limit));
   });
   app.post<{Params: {merchantId: string}}>("/workspace/api/wallets/:merchantId/deposits", async request => {
     const input = z.object({amount: money, requestKey, payerReference: z.string().trim().min(1).max(120).optional()}).strict().parse(request.body);

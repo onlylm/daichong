@@ -73,4 +73,43 @@ describe("workspace history pagination", () => {
     expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["ticket", "invoice_application", "daily_settlement"]));
     expect(query.mock.calls.every(call => (call[1] as {limit: number}).limit === 3)).toBe(true);
   });
+
+  it("loads only the selected wallet history tab and keeps the balance endpoint compact", async () => {
+    const merchant = runtime.repository.listMerchants()[0]!, base = Date.parse("2026-10-01T08:00:00.000Z");
+    for (let index = 0; index < 7; index++) {
+      const timestamp = new Date(base + index * 60_000);
+      runtime.repository.saveOperations("wallet_deposit", {id: `wdep_page_${index}`, merchantId: merchant.id,
+        amountMinor: BigInt((index + 1) * 100), status: "credited", requestKey: `deposit-page-${index}`,
+        payerReference: "支付宝在线充值", verifiedReference: `alipay-page-${index}`, reviewerId: "payment:alipay",
+        paymentProvider: "alipay_page", paymentConfigId: null, providerRef: `provider-${index}`,
+        expiresAt: null, paidAt: timestamp, nextCheckAt: null, createdAt: timestamp, updatedAt: timestamp}, true);
+      runtime.repository.saveOperations("wallet_withdrawal", {id: `wwd_page_${index}`, merchantId: merchant.id,
+        amountMinor: BigInt((index + 1) * 50), status: "requested", requestKey: `withdraw-page-${index}`,
+        requestedBy: "agent-owner", reviewerId: null, payoutReference: null, reason: "分页测试",
+        payoutMethod: "alipay", payoutAccount: "agent@example.com", payoutName: "测试代理",
+        createdAt: timestamp, updatedAt: timestamp}, true);
+      runtime.repository.saveOperations("wallet_entry", {id: `went_page_${index}`, merchantId: merchant.id, kind: "deposit",
+        procurementDelta: BigInt((index + 1) * 100), earningsDelta: 0n, frozenDelta: 0n,
+        reference: `wallet-page-${index}`, actorId: "payment:alipay", createdAt: timestamp}, true);
+    }
+
+    const login = await loginPlatform(app, "history-admin", "test-history-password", "https://admin.tibo.ink");
+    const headers = {origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!};
+    const query = vi.spyOn(runtime.repository as unknown as {queryRecords: (...args: unknown[]) => unknown}, "queryRecords");
+    const summary = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}`, headers});
+    const deposits = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=deposits&page=2&limit=3`, headers});
+    const withdrawals = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=withdrawals&page=1&limit=2`, headers});
+    const ledger = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=ledger&page=1&limit=2`, headers});
+
+    expect([summary.statusCode, deposits.statusCode, withdrawals.statusCode, ledger.statusCode]).toEqual([200, 200, 200, 200]);
+    expect(summary.json()).toHaveProperty("data.procurementAvailable");
+    expect(summary.json()).not.toHaveProperty("entries");
+    expect(summary.json()).not.toHaveProperty("deposits");
+    expect(summary.json()).not.toHaveProperty("withdrawals");
+    expect(deposits.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
+    expect(deposits.json().data).toHaveLength(3);
+    expect(withdrawals.json()).toMatchObject({meta: {total: 7, page: 1, limit: 2, pages: 4}});
+    expect(ledger.json().data[0]).toMatchObject({procurementDelta: "7.00", earningsDelta: "0.00", frozenDelta: "0.00"});
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["wallet_deposit", "wallet_withdrawal", "wallet_entry"]));
+  });
 });

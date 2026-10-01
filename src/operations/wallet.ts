@@ -72,6 +72,14 @@ export class WalletService {
     return this.repository.listOperations("wallet_entry", merchantId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .map(x => ({...x, procurementDelta: minorToMoney(x.procurementDelta), earningsDelta: minorToMoney(x.earningsDelta), frozenDelta: minorToMoney(x.frozenDelta)}));
   }
+  historyPage(actor: Actor, merchantId: string, kind: "deposits" | "withdrawals" | "ledger", page: number, limit: number) {
+    requirePermission(actor, "wallet.read"); requireTenantScope(actor, merchantId);
+    if (kind === "deposits") return queryRecords(this.repository, "wallet_deposit", {merchantId, page, limit, orderBy: "createdAt", direction: "desc"});
+    if (kind === "withdrawals") return queryRecords(this.repository, "wallet_withdrawal", {merchantId, page, limit, orderBy: "createdAt", direction: "desc"});
+    const result = queryRecords(this.repository, "wallet_entry", {merchantId, page, limit, orderBy: "createdAt", direction: "desc"});
+    return {...result, data: result.data.map(x => ({...x, procurementDelta: minorToMoney(x.procurementDelta),
+      earningsDelta: minorToMoney(x.earningsDelta), frozenDelta: minorToMoney(x.frozenDelta)}))};
+  }
   adminOverview(actor: Actor) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权执行此操作");
