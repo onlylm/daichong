@@ -54,6 +54,7 @@ replace_env ADMIN_BASE_URL https://admin.tibo.ink
 replace_env TRUST_PROXY true
 replace_env STORAGE_DRIVER sqlite
 replace_env SQLITE_PATH /app/data/production.sqlite
+replace_env BACKUP_HEALTH_REPORT_PATH /app/health/sqlite-restore-health.json
 replace_env PAYMENT_PROVIDER managed
 replace_env FULFILLMENT_PROVIDER zovocard
 replace_env LIVE_TEST_ENABLED false

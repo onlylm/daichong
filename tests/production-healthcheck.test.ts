@@ -25,11 +25,15 @@ describe("production health monitoring",()=>{
   });
 
   it("publishes the isolated SQLite restore result atomically for the admin overview",()=>{
-    const script=read("deploy/production/verify-backup-restore.sh");
-    expect(script).toContain('health="$base/state/sqlite-restore-health.json"');
+    const script=read("deploy/production/verify-backup-restore.sh"),compose=read("compose.production.app.yaml"),deploy=read("deploy/production/deploy-production-candidate.sh");
+    expect(script).toContain('health="$summary_dir/sqlite-restore-health.json"');
     expect(script).toContain('"failureCode":"restore_verification_failed"');
-    expect(script).toContain('cp "$report" "$health_tmp"');
-    expect(script).toContain('mv "$health_tmp" "$health"');
-    expect(script).toContain("chmod 600 \"$health_tmp\"");
+    expect(script).toContain('chown --reference="$ownership_reference" "$health_tmp"');
+    expect(script).toContain('chmod 640 "$health_tmp"');
+    expect(script).toContain('fs.writeFileSync(process.argv[3], JSON.stringify(summary)');
+    expect(script).not.toContain('cp "$report" "$health_tmp"');
+    expect(compose).toContain('/opt/recharge-platform/monitoring:/app/health:ro');
+    expect(compose).toContain('BACKUP_HEALTH_REPORT_PATH: /app/health/sqlite-restore-health.json');
+    expect(deploy).toContain('replace_env BACKUP_HEALTH_REPORT_PATH /app/health/sqlite-restore-health.json');
   });
 });

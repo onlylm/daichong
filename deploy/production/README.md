@@ -50,7 +50,7 @@ sudo systemctl enable --now quefa-healthcheck.timer quefa-backup.timer quefa-res
 
 同一脱敏通知器也由 `quefa-backup.service` 和 `quefa-restore-test.service` 的 `OnFailure` 调用。告警只携带失败单元、主机和 UTC 时间，不包含备份路径、数据库内容、健康响应或凭据；收到告警后再通过受控服务器日志定位失败原因。
 
-`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份并保存 SHA-256 清单；`quefa-restore-test.timer` 每周把最新快照恢复到隔离临时库，对比结构摘要、逻辑摘要、记录总数、分类数量、JSON 与外键，报告保存在快照旁且不会替换实时账本。未来 PostgreSQL 演练保留在 `verify-postgres-backup-restore.sh`，不能用它代替当前 SQLite 主账本的恢复验证。上线真实收款前仍须增加异机加密备份并缩短 RPO。
+`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份并保存 SHA-256 清单；`quefa-restore-test.timer` 每周把最新快照恢复到隔离临时库，对比结构摘要、逻辑摘要、记录总数、分类数量、JSON 与外键，完整报告保存在快照旁且保持 root `0600`，不会替换实时账本。脚本另将白名单字段组成的脱敏摘要原子发布到 `/opt/recharge-platform/monitoring/sqlite-restore-health.json`：目录属主继承生产数据库且权限为 `0750`，摘要属主同样继承生产数据库且权限为 `0640`；容器只读挂载该目录到 `/app/health`。未来 PostgreSQL 演练保留在 `verify-postgres-backup-restore.sh`，不能用它代替当前 SQLite 主账本的恢复验证。上线真实收款前仍须增加异机加密备份并缩短 RPO。
 
 手工验证指定快照：
 

@@ -46,7 +46,7 @@ npm run backup:verify -- /path/to/backup.sqlite --report /path/to/report.json
 sudo sh /opt/recharge-platform/current/deploy/production/verify-backup-restore.sh
 ```
 
-每日备份现在同时保存 `<snapshot>.sha256`；每周 systemd 任务先核验该清单，再执行隔离恢复，报告为 `<snapshot>.restore-report.json`，权限为 `0600`。
+每日备份现在同时保存 `<snapshot>.sha256`；每周 systemd 任务先核验该清单，再执行隔离恢复。完整报告为 `<snapshot>.restore-report.json`，仅 root `0600`；供 API 读取的脱敏摘要位于 `/opt/recharge-platform/monitoring/sqlite-restore-health.json`，属主继承生产数据库、权限 `0640`，容器内只读挂载为 `/app/health/sqlite-restore-health.json`。
 
 每日备份和每周恢复演练的 systemd 单元均通过 `OnFailure` 接入受保护的运维通知器。失败通知只含单元名、主机和 UTC 时间，不发送备份文件名、报告内容或业务数据；未配置 HTTPS 通知入口时仍写入 journald 错误事件。
 

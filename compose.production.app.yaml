@@ -14,8 +14,10 @@ x-runtime: &runtime
     FULFILLMENT_PROVIDER: zovocard
     LIVE_TEST_ENABLED: "false"
     ENABLE_SANDBOX_ROUTES: "false"
+    BACKUP_HEALTH_REPORT_PATH: /app/health/sqlite-restore-health.json
   volumes:
     - /opt/recharge-platform/state:/app/data
+    - /opt/recharge-platform/monitoring:/app/health:ro
     - ./deploy:/app/deploy:ro
   restart: unless-stopped
   read_only: true
