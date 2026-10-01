@@ -26,6 +26,8 @@ tags:
   - name: CustomerRecharge
   - name: Refunds
   - name: Finance
+  - name: PartnerAccount
+  - name: Support
   - name: Webhooks
 security:
   - PartnerId: []
@@ -215,12 +217,19 @@ paths:
         default: {$ref: '#/components/responses/Error'}
   /v1/agent-profile:
     get:
+      tags: [PartnerAccount]
+      operationId: getAgentProfile
       summary: 查询本代理等级、收款模式和新自建兑换接口开关
       responses:
-        '200': {description: data 内含 profile、suggestedTier、completedOrders、completedSupplyMinor（整数分文本）；rules 为可申请等级与门槛，建议等级不自动生效}
+        '200':
+          description: data 内含当前代理、配置、有效收款方式和累计指标；rules 为可申请等级与门槛。接口不返回或自动应用推荐等级
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AgentProfileEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/tier-applications:
     post:
+      tags: [PartnerAccount]
+      operationId: createTierApplication
       summary: 提交本代理等级申请工单
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -237,19 +246,29 @@ paths:
                 reason: {type: string, minLength: 1, maxLength: 5000}
                 requestKey: {type: string, pattern: '^[a-zA-Z0-9_-]{8,80}$'}
       responses:
-        '200': {description: data 为结构化等级申请工单；同 requestKey 同内容幂等，一个代理最多一份待审核申请}
+        '200':
+          description: data 为结构化等级申请工单；同 requestKey 同内容幂等，一个代理最多一份待审核申请
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TicketEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/tickets:
     get:
+      tags: [Support]
+      operationId: listTickets
       summary: 本代理工单列表
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [all, open, in_progress, waiting_agent, resolved, closed], default: all}}
         - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        '200': {description: data 为当前页工单，meta 为分页信息；含类别、状态、版本和未读标记，不含平台内部备注}
+        '200':
+          description: data 为当前页工单，meta 为分页信息；含类别、状态、版本和未读标记，不含平台内部备注
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TicketPageEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
     post:
+      tags: [Support]
+      operationId: createTicket
       summary: 创建普通工单
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -267,18 +286,28 @@ paths:
                 body: {type: string, minLength: 1, maxLength: 5000}
                 orderId: {type: [string, 'null']}
       responses:
-        '200': {description: data 为工单与公开消息}
+        '200':
+          description: data 为工单与公开消息
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TicketEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/tickets/{id}:
     get:
+      tags: [Support]
+      operationId: getTicket
       summary: 本代理工单详情并标为已读
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
       responses:
-        '200': {description: data 为工单与公开消息}
+        '200':
+          description: data 为工单与公开消息
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TicketEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/tickets/{id}/messages:
     post:
+      tags: [Support]
+      operationId: createTicketMessage
       summary: 追加公开工单回复
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
@@ -295,32 +324,49 @@ paths:
                 body: {type: string, minLength: 1, maxLength: 5000}
                 version: {type: integer, minimum: 1}
       responses:
-        '200': {description: data 为更新后的工单；旧版本返回 409}
+        '200':
+          description: data 为更新后的工单；旧版本返回 409
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TicketEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/announcements:
     get:
+      tags: [Support]
+      operationId: listAnnouncements
       summary: 当前代理可见的有效公告
       responses:
-        '200': {description: data 公告列表，不包含草稿、未到生效时间或未授权范围}
+        '200':
+          description: data 公告列表，不包含草稿、未到生效时间或未授权范围
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AnnouncementListEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/announcements/{id}/read:
     post:
+      tags: [Support]
+      operationId: markAnnouncementRead
       summary: 标记本 API 身份已读
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
-        '200': {description: 已记录；网站用户与 API 的已读身份独立}
+        '200':
+          description: 已记录；网站用户与 API 的已读身份独立
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/OkEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/wallet:
     get:
       tags: [Finance]
+      operationId: getWallet
       summary: 只读查询本代理双钱包
       parameters:
         - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        '200': {description: data 包括 procurementAvailable、earningsAvailable、withdrawalFrozen、pendingReviewEarnings、earningsDebt（元文本）；entries 为当前页流水，entries_meta 为分页信息。不能通过此接口自行加余额、审批或打款}
+        '200':
+          description: data 为双钱包元金额文本；entries 为当前页流水，entries_meta 为分页信息。不能通过此接口自行加余额、审批或打款
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/WalletEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/products:
     get:
@@ -826,6 +872,246 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    PageMeta:
+      type: object
+      additionalProperties: false
+      required: [total, page, limit, pages]
+      properties:
+        total: {type: integer, minimum: 0}
+        page: {type: integer, minimum: 1}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        pages: {type: integer, minimum: 1}
+    OkEnvelope:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: {type: boolean, const: true}
+    AgentProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, rules]
+      properties:
+        data: {$ref: '#/components/schemas/AgentSummary'}
+        rules: {$ref: '#/components/schemas/TierRules'}
+    AgentSummary:
+      type: object
+      additionalProperties: false
+      required: [merchant, profile, completedOrders, completedSupplyMinor, productSupplyPrices, collectionModes]
+      properties:
+        merchant:
+          type: object
+          additionalProperties: false
+          required: [id, partnerId, name, status]
+          properties:
+            id: {type: string}
+            partnerId: {type: string}
+            name: {type: string}
+            status: {type: string, enum: [onboarding, active, suspended, closed]}
+        profile: {$ref: '#/components/schemas/AgentProfile'}
+        completedOrders: {type: integer, minimum: 0}
+        completedSupplyMinor: {type: string, pattern: '^[0-9]+$', description: 累计有效供货金额，人民币分文本}
+        productSupplyPrices:
+          type: object
+          additionalProperties: {type: string, pattern: '^[0-9]+$'}
+          description: productCode 到代理供货价（人民币分文本）的映射
+        collectionModes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [platform_collect, agent_collect]}
+          description: 当前实时有效的收款方式；采购余额为零时不会包含 agent_collect
+        customRedemptionEnabled: {type: boolean}
+    AgentProfile:
+      type: object
+      additionalProperties: false
+      required: [id, merchantId, tier, collectionModes, orderVisibility, version, updatedAt]
+      properties:
+        id: {type: string}
+        merchantId: {type: string}
+        tier: {type: string}
+        collectionModes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [platform_collect, agent_collect]}
+        customRedemptionEnabled: {type: boolean}
+        directPaymentCodeEnabled: {type: boolean}
+        cdkCodePrefix: {type: string}
+        cdkCodeTemplate: {type: string}
+        orderVisibility:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [result_code, result_stage, card_last_four, charge_amount, upstream_order_id]}
+        version: {type: integer, minimum: 0}
+        updatedAt: {type: string, format: date-time}
+    TierRules:
+      type: object
+      additionalProperties: false
+      required: [id, merchantId, version, metric, enabled, levels, updatedAt]
+      properties:
+        id: {type: string}
+        merchantId: {type: 'null'}
+        version: {type: integer, minimum: 0}
+        metric: {type: string, enum: [supply_amount, completed_orders]}
+        enabled: {type: boolean}
+        levels:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/TierLevel'}
+        updatedAt: {type: string, format: date-time}
+    TierLevel:
+      type: object
+      additionalProperties: false
+      required: [code, name, threshold]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        threshold: {type: string, pattern: '^[0-9]+$', description: 等级统计门槛；金额指标时单位为人民币分}
+        supplyDiscountBps: {type: integer, minimum: 0, maximum: 10000}
+        maxStaffAccounts: {type: integer, minimum: 0}
+        apiIncluded: {type: boolean}
+        collectionModes:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [platform_collect, agent_collect]}
+        benefits: {type: array, items: {type: string}}
+        minDepositMinor: {type: string, pattern: '^[0-9]+$'}
+        minAgentCollectShareBps: {type: integer, minimum: 0, maximum: 10000}
+        productSupplyPrices:
+          type: object
+          additionalProperties: {type: string, pattern: '^[0-9]+$'}
+    TicketPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/Ticket'}}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+    TicketEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: {$ref: '#/components/schemas/Ticket'}
+    Ticket:
+      type: object
+      additionalProperties: false
+      required: [id, merchantId, orderId, title, category, status, version, unread, createdAt, updatedAt]
+      properties:
+        id: {type: string}
+        merchantId: {type: string}
+        orderId: {type: [string, 'null']}
+        title: {type: string}
+        category: {type: string, enum: [payment, cdk, recharge, refund, wallet, other, tier_application, api_application]}
+        status: {type: string, enum: [open, in_progress, waiting_agent, resolved, closed]}
+        version: {type: integer, minimum: 1, description: 代理商可见版本；追加回复时原样提交}
+        unread: {type: boolean}
+        apiApplication: {$ref: '#/components/schemas/ApiApplicationView'}
+        tierApplication: {$ref: '#/components/schemas/TierApplicationView'}
+        withdrawalApplication: {$ref: '#/components/schemas/WithdrawalApplicationView'}
+        messages:
+          type: array
+          description: 详情与创建／回复响应包含；列表响应省略
+          items: {$ref: '#/components/schemas/TicketMessage'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    TicketMessage:
+      type: object
+      additionalProperties: false
+      required: [id, author, body, internal, createdAt]
+      properties:
+        id: {type: string}
+        author: {type: string, enum: [agent, platform]}
+        body: {type: string}
+        internal: {type: boolean, const: false, description: Partner API 永远不返回平台内部备注}
+        createdAt: {type: string, format: date-time}
+    ApiApplicationView:
+      type: object
+      additionalProperties: false
+      required: [status, reviewReason]
+      properties:
+        status: {type: string, enum: [pending, approved, rejected]}
+        reviewReason: {type: [string, 'null']}
+    TierApplicationView:
+      type: object
+      additionalProperties: false
+      required: [targetTier, previousTier, status, reviewReason]
+      properties:
+        targetTier: {type: string}
+        previousTier: {type: string}
+        status: {type: string, enum: [pending, approved, rejected]}
+        reviewReason: {type: [string, 'null']}
+    WithdrawalApplicationView:
+      type: object
+      additionalProperties: false
+      required: [withdrawalId, amount, requestKey, payoutMethod, payoutAccount, payoutName, status, reviewReason]
+      properties:
+        withdrawalId: {type: string}
+        amount: {$ref: '#/components/schemas/Money'}
+        requestKey: {type: string}
+        payoutMethod: {type: string, enum: [alipay, bank]}
+        payoutAccount: {type: string}
+        payoutName: {type: string}
+        status: {type: string, enum: [requested, approved, paid, rejected]}
+        reviewReason: {type: [string, 'null']}
+    AnnouncementListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/Announcement'}}
+    Announcement:
+      type: object
+      additionalProperties: false
+      required: [id, title, body, pinned, startsAt, endsAt, version, unread]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        body: {type: string}
+        pinned: {type: boolean}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: [string, 'null'], format: date-time}
+        version: {type: integer, minimum: 1}
+        unread: {type: boolean}
+    WalletEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, entries, entries_meta]
+      properties:
+        data: {$ref: '#/components/schemas/WalletSummary'}
+        entries: {type: array, items: {$ref: '#/components/schemas/WalletEntry'}}
+        entries_meta: {$ref: '#/components/schemas/PageMeta'}
+    WalletSummary:
+      type: object
+      additionalProperties: false
+      required: [currency, procurementAvailable, earningsAvailable, earningsDebt, withdrawalFrozen, pendingReviewEarnings, autoPayoutEnabled]
+      properties:
+        currency: {type: string, const: CNY}
+        procurementAvailable: {$ref: '#/components/schemas/Money'}
+        earningsAvailable: {$ref: '#/components/schemas/Money'}
+        earningsDebt: {$ref: '#/components/schemas/Money'}
+        withdrawalFrozen: {$ref: '#/components/schemas/Money'}
+        pendingReviewEarnings: {$ref: '#/components/schemas/Money'}
+        autoPayoutEnabled: {type: boolean, const: false, description: 平台不会自动打款}
+    WalletEntry:
+      type: object
+      additionalProperties: false
+      required: [id, merchantId, kind, procurementDelta, earningsDelta, frozenDelta, reference, actorId, createdAt]
+      properties:
+        id: {type: string}
+        merchantId: {type: string}
+        kind: {type: string, enum: [adjustment, deposit, purchase, purchase_refund, earning_release, earning_reversal, transfer, withdraw_hold, withdraw_release, withdraw_paid, settlement_payout]}
+        procurementDelta: {type: string, pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'}
+        earningsDelta: {type: string, pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'}
+        frozenDelta: {type: string, pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'}
+        reference: {type: string}
+        actorId: {type: string}
+        reason: {type: string}
+        adjustmentAccount: {type: string, enum: [procurement, earnings]}
+        beforeMinor: {type: string, pattern: '^-?[0-9]+$', description: 人工调整前余额，人民币分文本}
+        afterMinor: {type: string, pattern: '^-?[0-9]+$', description: 人工调整后余额，人民币分文本}
+        createdAt: {type: string, format: date-time}
     RedemptionEnvelope:
       type: object
       required: [data]
