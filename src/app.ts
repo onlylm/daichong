@@ -19,6 +19,7 @@ import {registerPartnerRedemptionRoutes} from "./modules/partner-redemption-rout
 import {registerWorkspacePage} from "./operations/workspace-page.js";
 import {registerUsdtRoutes} from "./modules/usdt-routes.js";
 import type {Repository} from "./infra/repository.js";
+import {publicWorkerHealth, readWorkerHealth} from "./worker/worker-health.js";
 
 const createOrderSchema = z.object({
   merchant_order_no: z.string().min(1).max(64),
@@ -133,7 +134,12 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
   app.get("/health/live", async () => ({status: "ok"}));
   app.get("/health/ready", async () => ({status: "ok", storage: config.storageDriver === "sqlite"
     ? config.nodeEnv === "production" ? "sqlite" : "sqlite-sandbox"
-    : "memory-test"}));
+    : "memory-test", worker: readWorkerHealth(repository).status}));
+  app.get("/health/worker", async (_request, reply) => {
+    const view = readWorkerHealth(repository);
+    if (view.status !== "healthy") reply.code(503);
+    return publicWorkerHealth(view);
+  });
 
   app.get("/v1/products", async (request) => ({data: runtime.catalog.list(requireTenant(request).merchantId).map(publicProduct)}));
   app.get("/v1/payment-methods", async () => ({data: runtime.paymentSettings.available().map(c => ({

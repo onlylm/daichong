@@ -144,7 +144,7 @@ export interface PaymentEvent extends BaseRecord {revisionId: string; eventId: s
 export interface CryptoTransaction extends BaseRecord {orderId: string; chain: string; txHash: string; createdAt: Date}
 export interface OperationsRecords {
   order_cost: OrderCost; cost_saving_payment: CostSavingPayment;
-  service_checkpoint: ServiceCheckpoint;
+  service_checkpoint: ServiceCheckpoint; worker_health: WorkerHealth;
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
@@ -178,3 +178,25 @@ export interface CostSavingPayment extends BaseRecord {
 }
 
 export interface ServiceCheckpoint extends BaseRecord {createdAt: Date; afterId?: string | null}
+
+export interface WorkerLaneHealth {
+  name: string;
+  inFlight: boolean;
+  totalRuns: number;
+  consecutiveFailures: number;
+  lastStartedAt: Date | null;
+  lastCompletedAt: Date | null;
+  lastSucceededAt: Date | null;
+  lastFailedAt: Date | null;
+  /** Stable internal category only. Never persist an SDK/upstream error message. */
+  lastErrorCode: "task_failed" | null;
+}
+
+/** Durable API/Worker cross-process heartbeat used for operations monitoring. */
+export interface WorkerHealth extends BaseRecord {
+  instanceId: string;
+  state: "running" | "stopping";
+  startedAt: Date;
+  heartbeatAt: Date;
+  lanes: WorkerLaneHealth[];
+}

@@ -20,6 +20,7 @@ import {effectiveCollectionModes} from "./agents.js";
 import {financeDrilldown, financeMetrics} from "./finance-drilldown.js";
 import {listGlobalWorkspaceProducts, saveGlobalWorkspaceProduct, seedGlobalProductCatalog} from "./global-product-catalog.js";
 import {queryRecords} from "../infra/record-query.js";
+import {readWorkerHealth} from "../worker/worker-health.js";
 
 const text = z.string().trim().min(1).max(5000);
 const identifier = z.string().min(1).max(160);
@@ -147,6 +148,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       settlements: settlementPage.data,
       tickets: ticketPage.data,
       invoices: invoicePage.data,
+      worker: readWorkerHealth(runtime.repository),
     }});
   });
   app.get("/workspace/api/finance/costs", async request => {

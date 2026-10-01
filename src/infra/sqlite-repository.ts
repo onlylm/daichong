@@ -830,6 +830,7 @@ const dateKeys = new Set([
   "refundedAt", "occurredAt", "periodFrom", "periodTo", "sealedAt", "nextAttemptAt", "leaseUntil", "deliveredAt",
   "verifiedAt", "activatedAt", "sentAt", "nextCheckAt", "consumedAt", "receivedAt", "processedAt", "lastTestAt", "lastPlanSyncAt", "syncedAt",
   "generatedAt", "reconciledAt",
+  "startedAt", "heartbeatAt", "lastStartedAt", "lastCompletedAt", "lastSucceededAt", "lastFailedAt",
 ]);
 
 function encode(value: unknown): string {

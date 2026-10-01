@@ -3,6 +3,7 @@ import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {loginPlatform} from "./fixtures/mfa.js";
+import {WorkerHealthReporter} from "../src/worker/worker-health.js";
 
 describe("platform action center", () => {
   const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: ":memory:", LOG_LEVEL: "silent",
@@ -33,7 +34,14 @@ describe("platform action center", () => {
     expect(response.json().data).toMatchObject({
       counts: {tasks: 0, refunds: 0, settlements: 0, tickets: 0},
       tasks: [], refunds: [], settlements: [], tickets: [],
+      worker: {status: "missing", failedLanes: [], stuckLanes: []},
     });
+
+    new WorkerHealthReporter(runtime.repository, ["retail-payment"]).persist();
+    const running = await app.inject({method: "GET", url: "/workspace/api/action-center", headers: {
+      origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
+    }});
+    expect(running.json().data.worker).toMatchObject({status: "healthy", failedLanes: [], stuckLanes: []});
   });
 
   it("queries only bounded pending queues and excludes system cases from agent tickets", async () => {
