@@ -155,6 +155,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       :unavailable("refundReviews",emptyPage);
     const settlementPage=canReadWallet?read("settlements",()=>runtime.dailySettlements.pendingPage(actor,50),emptyPage)
       :unavailable("settlements",emptyPage);
+    const withdrawalPage=canReviewWallet?read("withdrawals",()=>runtime.wallets.withdrawalsPage(actor,{status:"actionable",page:1,limit:50}),emptyPage)
+      :unavailable("withdrawals",emptyPage);
     const ticketPage=read("tickets",()=>runtime.support.pendingAgentPage(actor,50),emptyPage);
     const invoicePage=permissions.has("*")||permissions.has("invoices.manage")
       ?read("invoices",()=>runtime.invoices.pendingPage(actor,50),emptyPage):unavailable("invoices",emptyPage);
@@ -186,19 +188,21 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const refunds=top(refundPage.data,item=>rank(item.status,["failed"])*10**15+oldest(item));
     const refundReviews=top(refundReviewPage.data,item=>oldest(item));
     const settlements=top(settlementPage.data,item=>rank(item.status,["disputed"])*10**15+oldest(item));
+    const withdrawals=top(withdrawalPage.data,item=>rank(item.status,["requested"])*10**15+oldest(item));
     const tickets=top(ticketPage.data,item=>oldest(item));
     const invoices=top(invoicePage.data,item=>oldest(item));
     moduleStatus.worker={available:true,updatedAt:now.toISOString(),error:null};
     return wire({data: {
       generatedAt:now.toISOString(),moduleStatus,
       counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total, refundReviews: refundReviewPage.meta.total,
-        settlements: settlementPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
+        settlements: settlementPage.meta.total, withdrawals: withdrawalPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
       tasks,
       processing:{total:processingPage.meta.total,items:processingPage.data.slice(0,4).map(item=>({id:item.id,orderId:item.orderId,
         merchantId:item.merchantId,merchantName:merchantMap.get(item.merchantId)?.name??"",status:item.status,createdAt:item.createdAt}))},
       refunds: workspaceRefunds(runtime,refunds),
       refundReviews: workspaceRefundReconciliations(runtime,refundReviews),
       settlements,
+      withdrawals,
       tickets,
       invoices,
       worker: readWorkerHealth(runtime.repository),
@@ -847,6 +851,12 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       scope: z.enum(["all", "commission"]).default("all")}).parse(request.query);
     return wire(runtime.wallets.adminEntries(account(request), query));
   });
+  app.get("/workspace/api/withdrawals", async request => {
+    const query = z.object({merchantId: z.string().optional(), status: z.enum(["actionable", "requested", "approved", "paid", "rejected", "all"]).default("actionable"),
+      page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const {merchantId, ...paging} = query;
+    return wire(runtime.wallets.withdrawalsPage(account(request), {...paging, ...(merchantId ? {merchantId} : {})}));
+  });
   app.get<{Params: {merchantId: string}}>("/workspace/api/wallets/:merchantId", async request => {
     const actor = account(request), merchantId = scope(actor, request.params.merchantId);
     return wire({data: runtime.wallets.summary(actor, merchantId)});
@@ -880,8 +890,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const input = z.object({amount: money, requestKey, payoutMethod: z.enum(["alipay", "bank"]), payoutAccount: z.string().trim().min(4).max(120), payoutName: z.string().trim().min(2).max(80)}).strict().parse(request.body), actor = account(request);
     const withdrawal = runtime.wallets.requestWithdrawal(actor, scope(actor, request.params.merchantId), input.amount, input.requestKey,
       {method: input.payoutMethod, account: input.payoutAccount, name: input.payoutName});
-    const ticket = runtime.support.createWithdrawalTicket(actor, withdrawal);
-    return wire({data: withdrawal, ticketId: ticket.id});
+    return wire({data: withdrawal});
   });
   app.post<{Params: {id: string}}>("/workspace/api/withdrawals/:id/review", async request => {
     const input = z.object({action: z.enum(["approve", "reject", "paid"]), reference: z.string().trim().max(120).default(""), confirmedActualPayout: z.boolean().optional()}).strict().parse(request.body);

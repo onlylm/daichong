@@ -82,6 +82,19 @@ export class WalletService {
     return {...result, data: result.data.map(x => ({...x, procurementDelta: minorToMoney(x.procurementDelta),
       earningsDelta: minorToMoney(x.earningsDelta), frozenDelta: minorToMoney(x.frozenDelta)}))};
   }
+  withdrawalsPage(actor: Actor, input: {merchantId?: string; status: WalletWithdrawal["status"] | "actionable" | "all"; page: number; limit: number}) {
+    requirePermission(actor, "wallet.read");
+    if (!isPlatform(actor) && !actor.merchantId) throw new AppError(403, "permission_denied", "无权查看提现申请");
+    const merchantId = isPlatform(actor) ? input.merchantId : actor.merchantId!;
+    if (merchantId) requireTenantScope(actor, merchantId);
+    const filters = input.status === "all" ? [] : [{field: "status", op: "in" as const,
+      value: input.status === "actionable" ? ["requested", "approved"] : [input.status]}];
+    const result = queryRecords(this.repository, "wallet_withdrawal", {...(merchantId ? {merchantId} : {}), filters, page: input.page, limit: input.limit,
+      orderBy: "createdAt", direction: "asc"});
+    const merchants = new Map(this.repository.listMerchants().map(item => [item.id, item]));
+    return {...result, data: result.data.map(item => ({...item, amount: minorToMoney(item.amountMinor),
+      merchantName: merchants.get(item.merchantId)?.name ?? "", partnerId: merchants.get(item.merchantId)?.partnerId ?? ""}))};
+  }
   adminOverview(actor: Actor) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权执行此操作");

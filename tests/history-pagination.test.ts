@@ -157,9 +157,10 @@ describe("workspace history pagination", () => {
     const summary = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}`, headers});
     const deposits = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=deposits&page=2&limit=3`, headers});
     const withdrawals = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=withdrawals&page=1&limit=2`, headers});
+    const globalWithdrawals = await app.inject({method: "GET", url: "/workspace/api/withdrawals?status=actionable&page=2&limit=3", headers});
     const ledger = await app.inject({method: "GET", url: `/workspace/api/wallets/${merchant.id}/history?kind=ledger&page=1&limit=2`, headers});
 
-    expect([summary.statusCode, deposits.statusCode, withdrawals.statusCode, ledger.statusCode]).toEqual([200, 200, 200, 200]);
+    expect([summary.statusCode, deposits.statusCode, withdrawals.statusCode, globalWithdrawals.statusCode, ledger.statusCode]).toEqual([200, 200, 200, 200, 200]);
     expect(summary.json()).toHaveProperty("data.procurementAvailable");
     expect(summary.json()).not.toHaveProperty("entries");
     expect(summary.json()).not.toHaveProperty("deposits");
@@ -167,6 +168,8 @@ describe("workspace history pagination", () => {
     expect(deposits.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
     expect(deposits.json().data).toHaveLength(3);
     expect(withdrawals.json()).toMatchObject({meta: {total: 7, page: 1, limit: 2, pages: 4}});
+    expect(globalWithdrawals.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
+    expect(globalWithdrawals.json().data[0]).toMatchObject({merchantId: merchant.id, merchantName: merchant.name, amount: expect.any(String), status: "requested"});
     expect(ledger.json().data[0]).toMatchObject({procurementDelta: "7.00", earningsDelta: "0.00", frozenDelta: "0.00"});
     expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["wallet_deposit", "wallet_withdrawal", "wallet_entry"]));
   });

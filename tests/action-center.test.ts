@@ -35,8 +35,8 @@ describe("platform action center", () => {
     }});
     expect(response.statusCode,response.body).toBe(200);
     expect(response.json().data).toMatchObject({
-      counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, tickets: 0},
-      tasks: [], refunds: [], refundReviews: [], settlements: [], tickets: [],
+      counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, withdrawals: 0, tickets: 0},
+      tasks: [], refunds: [], refundReviews: [], settlements: [], withdrawals: [], tickets: [],
       worker: {status: "missing", failedLanes: [], stuckLanes: []},
       checks: {
         payment: {status: "missing", label: "支付宝未启用", scope: "configuration"},
@@ -108,6 +108,10 @@ describe("platform action center", () => {
       agentEarningsMinor: 100n, platformCostMinor: 0n, platformProfitMinor: 0n, payableMinor: 100n, currency: "CNY",
       payoutMethod: null, payoutReference: null, payoutEvidence: null, note: null, confirmedBy: null, version: 1,
       generatedAt: now, paidAt: null, reconciledAt: null, updatedAt: now}, true);
+    runtime.repository.saveOperations("wallet_withdrawal", {id: "withdraw_pending", merchantId: merchant.id, amountMinor: 800n,
+      status: "requested", requestKey: "withdraw-action-center", requestedBy: "agent-owner", reviewerId: null,
+      payoutReference: null, reason: "", payoutMethod: "alipay", payoutAccount: "agent@example.com", payoutName: "测试代理",
+      createdAt: now, updatedAt: now}, true);
     runtime.repository.saveOperations("invoice_application", {id: "inv_pending", merchantId: merchant.id, orderId: "missing-order",
       requestKey: "invoice-action-center", titleType: "enterprise", invoiceTitle: "测试企业", taxIdEncrypted: {ciphertext: null, iv: null, authTag: null, keyVersion: "test", clearedAt: now},
       recipientEmail: "invoice@example.com", contactName: "测试联系人", contactPhone: null, remark: null, invoiceAmountMinor: 10000n,
@@ -128,10 +132,11 @@ describe("platform action center", () => {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
     expect(response.statusCode).toBe(200);
-    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, tickets: 1, invoices: 1},
+    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, withdrawals: 1, tickets: 1, invoices: 1},
+      withdrawals:[{id:"withdraw_pending",amount:"8.00",status:"requested",merchantName:merchant.name}],
       refundReviews:[{orderId:"missing-order",reportedAmount:"5.00",recordedAmount:"1.00",differenceAmount:"4.00",status:"reviewing"}]});
     expect(response.json().data.tickets.map((item: {id: string}) => item.id)).toEqual(["tk_agent_pending"]);
-    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["operational_issue","refund","refund_reconciliation", "daily_settlement", "ticket", "invoice_application"]));
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["operational_issue","refund","refund_reconciliation", "daily_settlement", "wallet_withdrawal", "ticket", "invoice_application"]));
   });
 
   it("uses the full server count when more than fifty abnormal records exist",async()=>{
