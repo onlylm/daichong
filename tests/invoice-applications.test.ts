@@ -39,6 +39,28 @@ describe("order invoice applications", () => {
     expect(runtime.invoices.get(owner, application.id)).toMatchObject({invoiceAmount: "1000.00", feeAmount: "50.00", taxId: "91310000MA12345678"});
   });
 
+  it("replays identical order applications but rejects different invoice details", () => {
+    const input={invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",recipientEmail:"finance@example.com",
+      contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-order-first"};
+    const first=runtime.invoices.create(owner,orderId,input);
+    expect(runtime.invoices.create(owner,orderId,{...input,requestKey:"invoice-order-same"}).id).toBe(first.id);
+    expect(()=>runtime.invoices.create(owner,orderId,{...input,invoiceAmount:"1200.00",requestKey:"invoice-order-conflict"}))
+      .toThrow("该订单已有不同资料的开票申请");
+    expect(runtime.repository.listOperations("invoice_application",owner.merchantId!)).toHaveLength(1);
+  });
+
+  it("rechecks the order payment state inside the invoice creation transaction", () => {
+    const repository=runtime.repository,transaction=repository.transaction.bind(repository),order=repository.findOrder(owner.merchantId!,orderId)!;
+    vi.spyOn(repository,"transaction").mockImplementationOnce(action=>{
+      repository.updateOrder({...order,paymentStatus:"refunded",ordinaryRefundedMinor:order.saleAmountMinor,updatedAt:new Date()});
+      return transaction(action);
+    });
+    expect(()=>runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-refund-race"}))
+      .toThrow("只有已付款且未全额退款的订单可以申请开票");
+    expect(repository.listOperations("invoice_application",owner.merchantId!)).toHaveLength(0);
+  });
+
   it("submits only after verified payment and supports manual processing without a second review", () => {
     const application = runtime.invoices.create(owner, orderId, {
       invoiceTitle: "测试科技有限公司", taxId: "91310000MA12345678", recipientEmail: "finance@example.com",
@@ -56,6 +78,26 @@ describe("order invoice applications", () => {
     const processing = runtime.invoices.review(admin, application.id, {action: "processing", version: submitted.version, note: "资料已核对"});
     const issued = runtime.invoices.review(admin, application.id, {action: "issued", version: processing.version, invoiceNo: "INV-2026-0001", note: "电子发票已发送"});
     expect(issued).toMatchObject({status: "issued", invoiceNo: "INV-2026-0001"});
+  });
+
+  it("rejects an administrator review when the application changes after the request read",()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-review-race"});
+    const now=new Date(),payment:InvoiceFeePayment={id:"invpay_review_race",merchantId:owner.merchantId!,applicationId:application.id,
+      amountMinor:application.feeAmountMinor,status:"pending",paymentConfigId:null,qrPayload:null,providerRef:null,
+      expiresAt:new Date(Date.now()+60_000),nextCheckAt:null,paidAt:null,createdAt:now,updatedAt:now};
+    runtime.repository.saveOperations("invoice_fee_payment",payment,true);
+    runtime.invoices.attachPayment(application.id,payment.id);
+    const submitted=runtime.invoices.markPaid(payment.id,"2026100100000991",payment.amountMinor),repository=runtime.repository,
+      transaction=repository.transaction.bind(repository);
+    vi.spyOn(repository,"transaction").mockImplementationOnce(action=>{
+      const current=repository.getOperations("invoice_application",application.id)!;
+      repository.saveOperations("invoice_application",{...current,reviewNote:"另一请求已经更新",version:current.version+1,updatedAt:new Date()});
+      return transaction(action);
+    });
+    expect(()=>runtime.invoices.review(admin,application.id,{action:"processing",version:submitted.version,note:"开始处理"}))
+      .toThrow("开票申请已变化");
+    expect(repository.getOperations("invoice_application",application.id)).toMatchObject({status:"submitted",reviewNote:"另一请求已经更新"});
   });
 
   it("allows paid applications to be returned for correction without charging again", () => {

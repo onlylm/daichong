@@ -31,32 +31,32 @@ export class InvoiceService {
   create(actor: Actor, orderId: string, input: CreateInvoiceInput): InvoiceApplication {
     requirePermission(actor, "invoices.write");
     if (isPlatform(actor) || !actor.merchantId) throw new AppError(403, "invoice_agent_required", "开票申请须由代理商提交");
-    const order = this.repository.findOrder(actor.merchantId, orderId);
-    if (!order) throw new AppError(404, "order_not_found", "订单不存在");
-    if (!['paid', 'partially_refunded'].includes(order.paymentStatus)) {
-      throw new AppError(409, "invoice_order_not_paid", "只有已付款且未全额退款的订单可以申请开票");
-    }
     const details = this.normalizeDetails(input);
     const amountMinor = moneyToMinor(input.invoiceAmount);
     if (amountMinor <= 0n || amountMinor > 100_000_000n) throw new AppError(422, "invoice_amount_invalid", "开票金额须在 0.01 至 100 万元之间");
     const feeAmountMinor = (amountMinor * FEE_RATE_BPS + 9_999n) / 10_000n;
     return this.repository.transaction(() => {
+      const order = this.repository.findOrder(actor.merchantId!, orderId);
+      if (!order) throw new AppError(404, "order_not_found", "订单不存在");
+      if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
+        throw new AppError(409, "invoice_order_not_paid", "只有已付款且未全额退款的订单可以申请开票");
+      }
       const idempotent = queryRecords(this.repository,"invoice_application",{merchantId:actor.merchantId!,
         filters:[{field:"requestKey",value:input.requestKey}],limit:1,count:false}).data[0];
       if (idempotent) {
-        let existingTaxId = "";
-        try { existingTaxId = String(this.cipher.decrypt(idempotent.taxIdEncrypted, "invoice-tax:" + idempotent.id)); } catch { /* conflict below */ }
-        if (idempotent.orderId !== orderId || idempotent.invoiceAmountMinor !== amountMinor
-            || idempotent.invoiceTitle !== details.invoiceTitle || existingTaxId !== details.taxId
-            || idempotent.recipientEmail !== details.recipientEmail || idempotent.contactName !== details.contactName
-            || idempotent.contactPhone !== details.contactPhone || idempotent.remark !== details.remark) {
+        if (!this.matchesApplication(idempotent, orderId, amountMinor, details)) {
           throw new AppError(409, "invoice_request_conflict", "申请号已用于不同的开票资料");
         }
         return idempotent;
       }
       const existing = queryRecords(this.repository,"invoice_application",{merchantId:actor.merchantId!,
         filters:[{field:"orderId",value:orderId}],limit:1,count:false}).data[0];
-      if (existing) return existing;
+      if (existing) {
+        if (!this.matchesApplication(existing, orderId, amountMinor, details)) {
+          throw new AppError(409, "invoice_order_conflict", "该订单已有不同资料的开票申请，请打开原申请继续处理");
+        }
+        return existing;
+      }
       const id = "inv_" + randomUUID().replaceAll("-", "");
       const now = new Date();
       const value: InvoiceApplication = {
@@ -124,13 +124,13 @@ export class InvoiceService {
 
   revise(actor: Actor, id: string, input: InvoiceDetailsInput & {version: number}) {
     requirePermission(actor, "invoices.write");
-    const current = this.application(id);
-    requireTenantScope(actor, current.merchantId);
     if (isPlatform(actor)) throw new AppError(403, "invoice_agent_required", "开票资料须由代理商修改");
-    if (current.status !== "needs_correction") throw new AppError(409, "invoice_not_editable", "当前开票申请不能修改");
-    if (current.version !== input.version) throw new AppError(409, "invoice_changed", "开票申请已变化，请刷新后重试");
     const details = this.normalizeDetails(input);
     return this.repository.transaction(() => {
+      const current = this.application(id);
+      requireTenantScope(actor, current.merchantId);
+      if (current.status !== "needs_correction") throw new AppError(409, "invoice_not_editable", "当前开票申请不能修改");
+      if (current.version !== input.version) throw new AppError(409, "invoice_changed", "开票申请已变化，请刷新后重试");
       const value: InvoiceApplication = {...current, titleType: "enterprise", invoiceTitle: details.invoiceTitle,
         taxIdEncrypted: this.cipher.encrypt(details.taxId, "invoice-tax:" + current.id),
         recipientEmail: details.recipientEmail, contactName: details.contactName, contactPhone: details.contactPhone,
@@ -145,16 +145,16 @@ export class InvoiceService {
   review(actor: Actor, id: string, input: {action: "processing" | "needs_correction" | "issued"; version: number; note?: string | undefined; invoiceNo?: string | undefined}) {
     requirePermission(actor, "invoices.manage");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可处理开票申请");
-    const current = this.application(id);
-    if (current.version !== input.version) throw new AppError(409, "invoice_changed", "开票申请已变化，请刷新后重试");
     const note = input.note?.trim() || null;
-    if (input.action === "processing" && current.status !== "submitted") throw new AppError(409, "invoice_status_invalid", "只有已提交申请可以开始处理");
-    if (input.action === "needs_correction" && !["submitted", "processing"].includes(current.status)) throw new AppError(409, "invoice_status_invalid", "当前申请不能退回补充资料");
     if (input.action === "needs_correction" && (!note || note.length < 2)) throw new AppError(422, "invoice_note_required", "请填写需要补充的资料");
-    if (input.action === "issued" && current.status !== "processing") throw new AppError(409, "invoice_status_invalid", "请先开始处理，再登记开票完成");
     const invoiceNo = input.invoiceNo?.trim() || null;
     if (input.action === "issued" && (!invoiceNo || invoiceNo.length < 4)) throw new AppError(422, "invoice_number_required", "请填写发票号码");
     return this.repository.transaction(() => {
+      const current = this.application(id);
+      if (current.version !== input.version) throw new AppError(409, "invoice_changed", "开票申请已变化，请刷新后重试");
+      if (input.action === "processing" && current.status !== "submitted") throw new AppError(409, "invoice_status_invalid", "只有已提交申请可以开始处理");
+      if (input.action === "needs_correction" && !["submitted", "processing"].includes(current.status)) throw new AppError(409, "invoice_status_invalid", "当前申请不能退回补充资料");
+      if (input.action === "issued" && current.status !== "processing") throw new AppError(409, "invoice_status_invalid", "请先开始处理，再登记开票完成");
       const now = new Date();
       const value: InvoiceApplication = {...current, status: input.action, reviewNote: note,
         invoiceNo: input.action === "issued" ? invoiceNo : current.invoiceNo,
@@ -234,6 +234,16 @@ export class InvoiceService {
     if (contactPhone && !/^[0-9+() -]{6,30}$/.test(contactPhone)) throw new AppError(422, "invoice_phone_invalid", "联系电话格式无效");
     if (remark && remark.length > 500) throw new AppError(422, "invoice_remark_invalid", "备注不能超过 500 个字符");
     return {invoiceTitle, taxId, recipientEmail, contactName, contactPhone, remark};
+  }
+
+  private matchesApplication(existing: InvoiceApplication, orderId: string, amountMinor: bigint,
+    details: ReturnType<InvoiceService["normalizeDetails"]>): boolean {
+    let existingTaxId = "";
+    try { existingTaxId = String(this.cipher.decrypt(existing.taxIdEncrypted, "invoice-tax:" + existing.id)); } catch { return false; }
+    return existing.orderId === orderId && existing.invoiceAmountMinor === amountMinor
+      && existing.invoiceTitle === details.invoiceTitle && existingTaxId === details.taxId
+      && existing.recipientEmail === details.recipientEmail && existing.contactName === details.contactName
+      && existing.contactPhone === details.contactPhone && existing.remark === details.remark;
   }
 
   private log(actor: Actor, action: string, id: string): void {
