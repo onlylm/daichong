@@ -210,7 +210,7 @@ export interface CostSavingPayment extends BaseRecord {
   method: string; reference: string; evidence: string; requestKey: string; actorId: string; createdAt: Date;
 }
 
-export interface ServiceCheckpoint extends BaseRecord {createdAt: Date; afterId?: string | null}
+export interface ServiceCheckpoint extends BaseRecord {createdAt: Date; afterId?: string | null; completed?: boolean}
 
 export interface WorkerLaneHealth {
   name: string;

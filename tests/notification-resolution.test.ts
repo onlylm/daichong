@@ -45,6 +45,7 @@ describe("notification case resolution", () => {
       category: "recharge", title: "充值结果尚未确认，请等待平台核对，不要重复下单", status: "in_progress",
       assigneeId: null, version: 1, publicVersion: 1, createdBy: "system", createdAt: now, updatedAt: now};
     runtime.repository.saveOperations("ticket", legacy, true);
+    runtime.repository.saveOperations("service_checkpoint", {id:"legacy-system-cases-v2",merchantId:null,createdAt:now,afterId:null,completed:false});
     await runtime.notifications.tick();
     expect(runtime.repository.getOperations("ticket", legacy.id)?.status).toBe("resolved");
     expect(runtime.notifications.tasksPage(admin, 1, 30).data).toHaveLength(0);
@@ -83,5 +84,28 @@ describe("notification case resolution", () => {
       accountEmail:null,quotedAmountMinor:null,currency:null,message:"凭据校验失败"});
     vi.advanceTimersByTime(10_001);await runtime.notifications.tick();
     expect(runtime.notifications.tasksPage(admin).data[0]).toMatchObject({retryAllowed:true,message:"充值已明确失败，请核对资料后在原订单重新提交"});
+  });
+
+  it("migrates historical system tickets in bounded pages and stops after completion",async()=>{
+    runtime.close();
+    const sqliteConfig=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"});
+    runtime=createRuntime(sqliteConfig);
+    const merchant=runtime.repository.listMerchants()[0]!,now=new Date("2026-10-01T12:00:00.000Z");
+    vi.useFakeTimers();vi.setSystemTime(now);
+    for(let index=0;index<205;index++){
+      const ticket:Ticket={id:`case_bulk_${String(index).padStart(3,"0")}`,merchantId:merchant.id,orderId:null,
+        category:"recharge",title:"历史系统异常",status:"open",assigneeId:null,version:1,publicVersion:1,
+        createdBy:"system",createdAt:now,updatedAt:now};
+      runtime.repository.saveOperations("ticket",ticket,true);
+    }
+    runtime.repository.saveOperations("service_checkpoint", {id:"legacy-system-cases-v2",merchantId:null,createdAt:now,afterId:null,completed:false});
+    const query=vi.spyOn(runtime.repository as unknown as {queryRecords:(...args:unknown[])=>unknown},"queryRecords");
+    for(let pass=0;pass<3;pass++){await runtime.notifications.tick();vi.advanceTimersByTime(10_001);}
+    expect(runtime.repository.getOperations("service_checkpoint","legacy-system-cases-v2")).toMatchObject({completed:true,afterId:null});
+    expect(query.mock.calls.filter(call=>call[0]==="ticket").map(call=>(call[1] as {limit:number}).limit)).toEqual([100,100,100]);
+    expect(runtime.repository.listOperations("ticket",merchant.id).every(item=>item.status==="resolved")).toBe(true);
+    query.mockClear();
+    await runtime.notifications.tick();
+    expect(query.mock.calls.some(call=>call[0]==="ticket")).toBe(false);
   });
 });

@@ -105,9 +105,14 @@ export class NotificationService {
   }
 
   private migrateLegacyCasesLocked(){
+    const checkpointId="legacy-system-cases-v2",checkpoint=this.repo.getOperations("service_checkpoint",checkpointId);
+    if(checkpoint?.completed)return 0;
+    const page=queryRecords(this.repo,"ticket",{limit:100,count:false,orderBy:"id",direction:"asc",
+      ...(checkpoint?.afterId?{afterId:checkpoint.afterId}:{}),filters:[{field:"archivedAt",op:"is_null"},
+        {field:"createdBy",value:"system"},{field:"status",op:"in",value:["open","in_progress","waiting_agent"]}]});
     let migrated=0;
-    for(const ticket of this.repo.listOperations("ticket").filter(item=>!item.archivedAt&&item.createdBy==="system"
-      &&["open","in_progress","waiting_agent"].includes(item.status)&&!(item.systemCase?.issueKey??"").startsWith("refund-reconcile:"))){
+    for(const ticket of page.data){
+      if((ticket.systemCase?.issueKey??"").startsWith("refund-reconcile:"))continue;
       const order=ticket.orderId?this.repo.findOrder(ticket.merchantId,ticket.orderId):null;
       const task=order?latestFulfillmentOf(this.repo.listFulfillments(order.merchantId,order.id)):null;
       const entityId=ticket.systemCase?.entityId??task?.id??order?.id??ticket.id;
@@ -126,6 +131,9 @@ export class NotificationService {
           ?"历史系统异常已恢复，本工单仅保留追溯。":"业务异常已迁移到独立待办记录；本工单及消息仅保留沟通追溯，不再控制业务状态。",createdAt:new Date()},true);
       migrated++;
     }
+    const last=page.data.at(-1);
+    this.repo.saveOperations("service_checkpoint",{id:checkpointId,merchantId:null,createdAt:checkpoint?.createdAt??new Date(),
+      afterId:page.data.length===100?last?.id??checkpoint?.afterId??null:null,completed:page.data.length<100});
     return migrated;
   }
 }
