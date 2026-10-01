@@ -562,6 +562,13 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   app.get<{Params: {id: string}}>("/workspace/api/agents/:id/accounts", async request => ({
     data: runtime.accounts.listForAgent(account(request), request.params.id),
   }));
+  app.get<{Params: {id: string}}>("/workspace/api/agents/:id/activity", async request => {
+    const actor = account(request); requirePermission(actor, "agents.read");
+    const merchantId = scope(actor, request.params.id);
+    if (!runtime.repository.findMerchantById(merchantId)) throw new AppError(404, "merchant_not_found", "代理商不存在");
+    return {data: runtime.repository.listAudit(merchantId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 100)};
+  });
   app.put<{Params: {id: string}}>("/workspace/api/agents/:id", async request => {
     const input = z.object({tier: z.string().min(1).max(32), collectionModes: z.array(z.enum(["platform_collect", "agent_collect"])).min(1).max(2),
       customRedemptionEnabled: z.boolean().optional(), cdkCodePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,8}$/).optional(),

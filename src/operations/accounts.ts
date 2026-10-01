@@ -247,7 +247,12 @@ export class AccountService {
     return account;
   }
   private assertPlatformStaffCreate(role: AccountRole, merchantId: string | null): void {
-    if (!isPlatformRole(role, merchantId)) throw new AppError(422, "platform_account_scope_required", "后台账号仅可创建平台内部账号；代理商账号请在代理商管理中维护");
+    if (merchantId === null && !isPlatformRole(role, merchantId)) {
+      throw new AppError(422, "platform_account_scope_required", "平台内部账号必须使用平台角色");
+    }
+    if (merchantId !== null && !role.startsWith("agent_")) {
+      throw new AppError(422, "agent_account_scope_required", "代理商账号必须使用代理角色");
+    }
   }
   private assertAccountScope(actor: Actor, role: AccountRole, merchantId: string | null): void {
     if (role.startsWith("platform_") !== (merchantId === null)) throw new AppError(422, "invalid_account_scope", "账号类型与代理归属不一致");
