@@ -128,7 +128,8 @@ export class DailySettlementService {
         {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length>0;
       const duplicateWithdrawal = queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference}],limit:1,count:false}).data.length>0;
       if (duplicateStatement || duplicateWithdrawal) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
-      const earnings = this.repository.listOperations("wallet_entry", current.merchantId).reduce((sum, entry) => sum + entry.earningsDelta, 0n);
+      const earnings = this.repository.walletTotals?.(current.merchantId).earnings
+        ??this.repository.listOperations("wallet_entry", current.merchantId).reduce((sum, entry) => sum + entry.earningsDelta, 0n);
       if (earnings < current.payableMinor) throw new AppError(409, "settlement_balance_changed", "代理收益余额已变化，当前不足以确认该核算单；请取消本单并按新余额处理");
       const entry: WalletEntry = {id: "settlement_payout:" + current.id, merchantId: current.merchantId, kind: "settlement_payout",
         procurementDelta: 0n, earningsDelta: -current.payableMinor, frozenDelta: 0n, reference, actorId: actor.id,

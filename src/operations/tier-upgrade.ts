@@ -66,6 +66,7 @@ function procurementBalanceMinor(repository: Repository, merchantId: string): bi
 }
 
 function creditedDepositMinor(repository: Repository, merchantId: string): bigint {
+  if(repository.creditedDepositTotal)return repository.creditedDepositTotal(merchantId);
   return repository.listOperations("wallet_deposit", merchantId).filter(deposit => deposit.status === "credited")
     .reduce((sum, deposit) => sum + deposit.amountMinor, 0n);
 }

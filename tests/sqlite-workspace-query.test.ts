@@ -4,7 +4,7 @@ import {createRuntime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {listWorkspaceOrders} from "../src/operations/order-view.js";
 import {procurementBalanceMinor} from "../src/operations/agents.js";
-import {completedTierOrderMetrics} from "../src/operations/tier-upgrade.js";
+import {completedTierOrderMetrics,evaluateTierUpgradeEligibility} from "../src/operations/tier-upgrade.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 import {fundAndApproveApi} from "./fixtures/funded-api.js";
 import {queryRecords} from "../src/infra/record-query.js";
@@ -149,6 +149,23 @@ describe("SQLite workspace batch reads",()=>{
         {method:"alipay",account:"test@example.com",name:"测试代理"})).toThrow("有退款待确认");
       expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();
       expect(fulfillments).not.toHaveBeenCalled();expect(refundLists).not.toHaveBeenCalled();
+    }finally{vi.restoreAllMocks();r.close();}
+  });
+
+  it("aggregates API access overview and deposit eligibility without per-agent scans",()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      const funded=fundAndApproveApi(r,cfg.demoPartnerId,"220.00"),merchant=r.repository.findMerchantByPartner(cfg.demoPartnerId)!;
+      const rules=r.agents.rules(),merchants=vi.spyOn(r.repository,"listMerchants"),operations=vi.spyOn(r.repository,"listOperations"),
+        apps=vi.spyOn(r.repository,"listApps"),webhooks=vi.spyOn(r.repository,"listWebhookEndpoints");
+      const overview=r.apiAccess.adminOverview({id:"admin",role:"platform_admin",merchantId:null});
+      expect(overview.agents.find(item=>item.merchantId===merchant.id)).toMatchObject({apiEnabled:true,procurementBalanceMinor:"22000"});
+      expect(merchants).not.toHaveBeenCalled();expect(operations).not.toHaveBeenCalled();expect(apps).not.toHaveBeenCalled();expect(webhooks).not.toHaveBeenCalled();
+      operations.mockClear();
+      const summary=r.apiAccess.summary(funded.owner,merchant.id);
+      expect(summary).toMatchObject({hasVerifiedDeposit:true,procurementBalanceMinor:"22000"});expect(operations).not.toHaveBeenCalled();
+      const eligibility=evaluateTierUpgradeEligibility(r.repository,merchant.id,"preferred",rules);
+      expect(eligibility.metrics.creditedDepositMinor).toBe(22_000n);expect(operations).not.toHaveBeenCalled();
     }finally{vi.restoreAllMocks();r.close();}
   });
 });

@@ -101,6 +101,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tier_request_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.tierApplication.requestKey'));
       CREATE INDEX IF NOT EXISTS records_wallet_credit_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_daily_settlement_status_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'));
+      CREATE INDEX IF NOT EXISTS records_deposit_status_amount_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),CAST(json_extract(payload,'$.amountMinor.__bigint') AS INTEGER));
     `);
   }
 
@@ -438,6 +439,37 @@ export class SqliteRepository implements Repository {
     return !!this.db.prepare(`SELECT 1 FROM sandbox_records c JOIN sandbox_records r
       ON r.kind='refund' AND r.merchant_id=c.merchant_id AND json_extract(r.payload,'$.orderId')=json_extract(c.payload,'$.orderId')
       WHERE c.kind='ops_wallet_credit' AND c.merchant_id=? AND json_extract(r.payload,'$.status') IN ('requested','approved','processing') LIMIT 1`).get(merchantId);
+  }
+
+  creditedDepositTotal(merchantId:string) {
+    const row=this.db.prepare(`SELECT CAST(COALESCE(SUM(CAST(json_extract(payload,'$.amountMinor.__bigint') AS INTEGER)),0) AS TEXT) AS total
+      FROM sandbox_records WHERE kind='ops_wallet_deposit' AND merchant_id=? AND json_extract(payload,'$.status')='credited'`).get(merchantId)!;
+    return BigInt(String(row.total));
+  }
+
+  findVerifiedDeposit(merchantId:string,minimumMinor:bigint) {
+    const row=this.db.prepare(`SELECT d.payload FROM sandbox_records d WHERE d.kind='ops_wallet_deposit' AND d.merchant_id=?
+      AND json_extract(d.payload,'$.status')='credited' AND CAST(json_extract(d.payload,'$.amountMinor.__bigint') AS INTEGER)>=?
+      AND json_extract(d.payload,'$.verifiedReference') IS NOT NULL
+      AND EXISTS(SELECT 1 FROM sandbox_records e WHERE e.kind='ops_wallet_entry' AND e.merchant_id=d.merchant_id AND e.id='deposit:'||d.id
+        AND CAST(json_extract(e.payload,'$.procurementDelta.__bigint') AS INTEGER)=CAST(json_extract(d.payload,'$.amountMinor.__bigint') AS INTEGER))
+      ORDER BY COALESCE(json_extract(d.payload,'$.paidAt'),json_extract(d.payload,'$.updatedAt')) DESC,d.id DESC LIMIT 1`).get(merchantId,minimumMinor);
+    return row?decode<OperationsRecords['wallet_deposit']>(String(row.payload)):null;
+  }
+
+  apiAccessOverview() {
+    const rows=this.db.prepare(`SELECT m.id AS merchantId,json_extract(m.payload,'$.name') AS name,json_extract(m.payload,'$.partnerId') AS partnerId,
+      COALESCE(json_extract(a.payload,'$.enabled'),0) AS apiEnabled,COALESCE(CAST(json_extract(a.payload,'$.version') AS INTEGER),0) AS accessVersion,
+      CAST(COALESCE((SELECT SUM(CAST(json_extract(e.payload,'$.procurementDelta.__bigint') AS INTEGER)) FROM sandbox_records e
+        WHERE e.kind='ops_wallet_entry' AND e.merchant_id=m.id),0) AS TEXT) AS procurementBalanceMinor,
+      (SELECT COUNT(*) FROM sandbox_records p WHERE p.kind='partner_app' AND p.merchant_id=m.id AND json_extract(p.payload,'$.appId')!='quefa_web_portal') AS appCount,
+      (SELECT COUNT(*) FROM sandbox_records w WHERE w.kind='webhook_endpoint' AND w.merchant_id=m.id AND json_extract(w.payload,'$.status')='active') AS webhookCount,
+      EXISTS(SELECT 1 FROM sandbox_records t WHERE t.kind='ops_ticket' AND t.merchant_id=m.id AND json_extract(t.payload,'$.apiApplication.status')='pending') AS pendingApplication
+      FROM sandbox_records m LEFT JOIN sandbox_records a ON a.kind='ops_api_access' AND a.id=m.id
+      WHERE m.kind='merchant' AND json_extract(m.payload,'$.status')='active'`).all();
+    return rows.map(row=>({merchantId:String(row.merchantId),name:String(row.name),partnerId:String(row.partnerId),apiEnabled:Boolean(row.apiEnabled),
+      accessVersion:Number(row.accessVersion),procurementBalanceMinor:BigInt(String(row.procurementBalanceMinor)),appCount:Number(row.appCount),
+      webhookCount:Number(row.webhookCount),pendingApplication:Boolean(row.pendingApplication)}));
   }
 
   findDuePaymentOrder(provider:string,now:Date):Order|null {

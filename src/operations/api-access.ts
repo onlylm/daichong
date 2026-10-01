@@ -7,6 +7,7 @@ import {MerchantService} from "../modules/merchant-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import {SupportService, safeText} from "./support.js";
 import type {Actor, Ticket} from "./model.js";
+import {queryRecords} from "../infra/record-query.js";
 const apiDepositMinor = 11_000n;
 export const defaultApiAccessPolicyRevision = "default-api-access-20261001-v1";
 
@@ -36,7 +37,8 @@ export class ApiAccessService {
     return {access: this.repository.getOperations("api_access", merchantId),
       automaticAccess: true, canApply: false, apiDepositMinor: "0",
       hasVerifiedDeposit: !!this.verifiedDeposit(merchantId), procurementBalanceMinor: this.balance(merchantId).toString(),
-      applications: this.repository.listOperations("ticket", merchantId).filter(t => !!t.apiApplication).map(t => ({
+      applications: queryRecords(this.repository,"ticket",{merchantId,filters:[{field:"apiApplication",op:"not_null"}],
+        orderBy:"updatedAt",direction:"desc",limit:500,count:false}).data.map(t => ({
         id: t.id,
         status: t.apiApplication!.status,
         reviewReason: t.apiApplication!.reviewReason,
@@ -50,9 +52,9 @@ export class ApiAccessService {
   adminOverview(actor: Actor) {
     requirePermission(actor, "api.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权执行此操作");
-    const merchants = this.repository.listMerchants().filter(m => m.status === "active");
     const pendingApplications: Array<{id: string; merchantId: string; merchantName: string; partnerId: string; version: number; createdAt: Date}> = [];
-    const agents = merchants.map(m => {
+    const aggregate=this.repository.apiAccessOverview?.();
+    const agents = aggregate?.map(value=>({...value,procurementBalanceMinor:value.procurementBalanceMinor.toString()}))??this.repository.listMerchants().filter(m => m.status === "active").map(m => {
       const access = this.repository.getOperations("api_access", m.id);
       const applications = this.repository.listOperations("ticket", m.id).filter(t => !!t.apiApplication);
       const webhooks = this.repository.listWebhookEndpoints(m.id);
@@ -188,25 +190,12 @@ export class ApiAccessService {
     parsed.hash = "";
     return parsed.toString().replace(/\/$/, "");
   }
-  private balance(merchantId: string) {return this.repository.listOperations("wallet_entry", merchantId).reduce((sum, e) => sum + e.procurementDelta, 0n);}
+  private balance(merchantId: string) {return this.repository.walletTotals?.(merchantId).procurement
+    ??this.repository.listOperations("wallet_entry", merchantId).reduce((sum, e) => sum + e.procurementDelta, 0n);}
   private verifiedDeposit(merchantId: string) {
+    if(this.repository.findVerifiedDeposit)return this.repository.findVerifiedDeposit(merchantId,apiDepositMinor);
     return this.repository.listOperations("wallet_deposit", merchantId).find(d => d.status === "credited" && d.amountMinor >= apiDepositMinor && !!d.verifiedReference
       && this.repository.getOperations("wallet_entry", "deposit:" + d.id)?.procurementDelta === d.amountMinor);
-  }
-  private meetsApiDeposit(merchantId: string): boolean {
-    const deposit = this.verifiedDeposit(merchantId);
-    return !!deposit && deposit.amountMinor >= apiDepositMinor && this.balance(merchantId) >= apiDepositMinor;
-  }
-  private requireFunded(merchantId: string) {
-    const deposit = this.verifiedDeposit(merchantId);
-    if (!deposit || deposit.amountMinor < apiDepositMinor) {
-      throw new AppError(409, "api_deposit_required", "须先完成至少 ¥110 的采购充值并由平台核实到账");
-    }
-    if (this.balance(merchantId) < apiDepositMinor) {
-      throw new AppError(409, "api_deposit_required", "申请 API 时采购余额须不少于 ¥110");
-    }
-    if (this.repository.findMerchantById(merchantId)?.status !== "active") throw new AppError(403, "merchant_inactive", "代理商未启用");
-    return deposit;
   }
   private log(actor: Actor, merchantId: string, action: string, targetId: string) {
     this.audit.record({merchantId, actorId: actor.id, actorType: actor.role.startsWith("platform_") ? "platform_user" : "merchant_user", action, targetType: "api_access", targetId, requestId: randomUUID()});
