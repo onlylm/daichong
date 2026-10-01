@@ -16,15 +16,14 @@
 
 任何代理商响应、客户页面、Webhook、日志或错误信息都不得出现供应商域名、API Key、供应订单号、卡号或原始兑换码。
 
-## 2. 直接充值
+## 2. CDK 自动代充
 
 ```text
-客户 → 代理商商城：选择 direct 商品
+客户 → 代理商商城：选择四项套餐之一，delivery_mode=auto_recharge
 代理商服务端 → Quefa：创建订单
-客户 → Quefa：完成付款
-代理商商城 → 客户：打开 fulfillment_url
-客户 → Quefa：提交 Session / Access Token / 邮箱凭据
-Quefa → 供应服务：服务端预检、下单、轮询
+客户 → 代理商页面：完成支付并提交本次授权凭据
+代理商服务端 → Quefa /v1/redemptions：提交订单与凭据
+Quefa → 供应服务：用订单内部 CDK 预检、兑换、轮询
 Quefa → 客户与代理商：只返回 queued/running/succeeded/failed
 ```
 
@@ -50,8 +49,8 @@ Quefa：成功后清除底层凭证，QF 码变为 consumed
 1. 服务端保管 `client_secret` 并签名调用 `/v1` 接口。
 2. 浏览器展示 `qr_payload` 对应的 Quefa 付款页。
 3. 只以查单或验签 Webhook 判断付款成功。
-4. 付款成功后打开 `fulfillment_url`；不要在代理商页面收集 Session。
-5. `direct` 商品等待充值结果；`cdk` 商品等待 `voucher_code` 或 `cdk.issued`。
+4. `delivery_mode=auto_recharge` 时在代理商自有页面获得用户本次授权，只由后端临时转发到 `/v1/redemptions`，不得记日志或长期保存。
+5. `delivery_mode=cdk` 等待 `voucher_code` / `cdk.issued`；`auto_recharge` 等待兑换进度和最终结果。
 6. Webhook 必须验签并按 `event_id` 幂等处理。
 
 ## 5. 服务端保密要求
@@ -67,7 +66,7 @@ Quefa：成功后清除底层凭证，QF 码变为 consumed
 
 ## 6. 当前可验收与上线缺口
 
-当前沙箱已实现 direct、QF CDK、加密存储、异步 Worker、状态查询、Webhook 和模拟供应服务，并提供真实供应适配器代码。正式上线前仍需完成：
+当前沙箱已实现 QF CDK、CDK 自动代充、加密存储、异步 Worker、状态查询、Webhook 和模拟供应服务，并提供真实供应适配器代码。正式上线前仍需完成：
 
 - 使用供应方沙箱凭证验证真实预检、下单、发码、兑换、轮询与回调；
 - 确认固定出口 IP，保证一次 CDK 兑换全程使用同一出口和设备标识；

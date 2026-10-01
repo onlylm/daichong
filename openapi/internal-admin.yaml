@@ -446,8 +446,8 @@ components:
       additionalProperties: false
       required: [fulfillment_mode, supplier_product, supplier_plan, enabled]
       properties:
-        fulfillment_mode: {type: string, enum: [direct, cdk]}
-        supplier_product: {type: string, enum: [gpt, claude, grok]}
+        fulfillment_mode: {type: string, const: cdk}
+        supplier_product: {type: string, const: gpt}
         supplier_plan: {type: string, minLength: 1, maxLength: 64}
         enabled: {type: boolean}
     ProductMapping:

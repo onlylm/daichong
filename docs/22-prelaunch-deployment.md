@@ -22,7 +22,7 @@ sudo sh deploy/production/deploy-production-candidate.sh /opt/recharge-platform/
 
 - `NODE_ENV=production`、`EXECUTION_MODE=production`。
 - 支付适配器为后台托管模式，上游适配器为 ZovoCard。
-- 支付宝和 DujiaoPay 没有已验证、已启用版本时不会建单收款。
+- 支付宝没有已验证、已启用版本时不会建单收款；USDT / DujiaoPay 不再注册新交易路由和 Worker。
 - 供应连接没有生产凭据或仍为沙箱时不会派发真实充值。
 - 不自动创建订单、付款、CDK 或充值任务，不调用任何资金写接口。
 

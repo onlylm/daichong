@@ -314,12 +314,12 @@ pending ──确认──▶ paid ──退款──▶ partially_refunded / re
 - 202 = 已受理，不是成功。  
 - 最新尝试明确失败、`retry_allowed=true`、`next_action=resubmit` 且自动直充 `fallback_recharge_available=true` 时，在你的订单页重新显示输入入口。原单须仍可履约且无退款锁定。重交使用新的 `Idempotency-Key`；网络重传仍用原键。不返回 CDK，不要求跳转平台品牌页。
 
-（高级）`POST /v1/orders/{order_id}/fulfillments` 仅用于经安全评审的服务端代提交 direct 场景；普通商城不要用，以免扩大凭据接触面。
+历史 `POST /v1/orders/{order_id}/fulfillments` 仅为旧 direct 订单兼容保留，新代理商和当前四项套餐不得使用。
 
 ### 4.5 查履约 / 兑换进度
 
 - `GET /v1/redemptions/{id}`  
-- 或 `GET /v1/orders/{order_id}/fulfillments`
+- 或查订单 / 接收验签 Webhook 获取最新履约状态
 
 **判断「开没开通」的唯一依据。**
 
