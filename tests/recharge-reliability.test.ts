@@ -94,6 +94,27 @@ describe("recharge recovery and atomicity", () => {
     expect(runtime.repository.listOutbox(tenant.merchantId).filter((event) => event.eventType === "fulfillment.succeeded")).toHaveLength(1);
   });
 
+  it("credits agent earnings automatically and exactly once when a real paid order succeeds", async () => {
+    const order = await paidOrder();
+    const attempt = runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
+    runtime.repository.updatePaymentAttempt({...attempt, provider: "alipay_page", status: "paid"});
+    const fulfillment = runtime.fulfillments.createDirectPublic(order, {mode: "session", session: "earning-session"});
+    runtime.repository.updateFulfillment({...fulfillment, upstreamProvider: "configured_supplier"});
+
+    const completed = runtime.fulfillments.applyUpstreamEvent(fulfillment.id, state("completed", "upstream-earning-1"));
+    expect(completed?.status).toBe("succeeded");
+    const credits = runtime.repository.listOperations("wallet_entry", order.merchantId)
+      .filter(entry => entry.kind === "earning_release" && entry.reference === order.id);
+    expect(credits).toHaveLength(1);
+    expect(credits[0]).toMatchObject({earningsDelta: 2500n, actorId: "system"});
+    expect(runtime.wallets.summary({id: "agent-owner", role: "agent_owner", merchantId: order.merchantId}, order.merchantId))
+      .toMatchObject({earningsAvailable: "25.00", pendingReviewEarnings: "0.00"});
+
+    expect(runtime.fulfillments.applyUpstreamEvent(fulfillment.id, state("completed", "upstream-earning-1"))?.status).toBe("succeeded");
+    expect(runtime.repository.listOperations("wallet_entry", order.merchantId)
+      .filter(entry => entry.kind === "earning_release" && entry.reference === order.id)).toHaveLength(1);
+  });
+
   it("retries preflight failures that happen before dispatch without losing the credential", async () => {
     const order = await paidOrder();
     const fulfillment = runtime.fulfillments.createDirectPublic(order, {mode: "session", session: "session"});
