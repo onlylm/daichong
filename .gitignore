@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+data/
+secrets/
+*.pem
+docs/24-生产环境交接凭证.md
+docs/22-系统交接与优化建议.md
+docs/25-项目完整介绍.md
+docs/26-生产运维交接手册.md
+docs/28-20260929至0930完整交接.md
+docs/33-20260930代理资金与支付宝收款只读审计.md
+
+# Local browser and visual-QA state
+.playwright-cli/
+.tmp-video-frames/
+artifacts/
+.visual-qa.sqlite*
+
+# Generated release archives and deployment bundles
+deployment-bundles/
+*.tar.gz
+*.zip
+
+# One-off local investigation and patch files
+tmp-*
+_check-js.mjs
+prod-app.js

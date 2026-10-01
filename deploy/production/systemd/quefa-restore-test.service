@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify the latest Quefa PostgreSQL backup by restoring it
+After=docker.service quefa-backup.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/recharge-platform/current/deploy/production/verify-backup-restore.sh
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

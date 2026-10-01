@@ -1,0 +1,82 @@
+import type { Order } from "../domain/model.js";
+import type { Repository } from "../infra/repository.js";
+import { AppError, notFound } from "../domain/errors.js";
+import { assertPaymentTransition } from "../domain/state-machines.js";
+import { LedgerService } from "./ledger-service.js";
+import { WebhookService } from "./webhook-service.js";
+
+export interface PaymentCreation {
+  channel?: import("../operations/model.js").PaymentChannel;
+  paymentConfigId?: string;
+  providerRef: string;
+  qrPayload: string;
+  expiresAt: Date;
+}
+
+export interface PaymentProvider {
+  /** 支付提供方实例由 Quefa 平台统一构造，绝不能按代理商注入或配置。 */
+  readonly ownership: "quefa_platform";
+  readonly name: string;
+  create(orderId: string, amountMinor: bigint, expiresAt: Date, channel?: import("../operations/model.js").PaymentChannel): Promise<PaymentCreation>;
+  validateCreation?(creation: PaymentCreation): void;
+}
+
+export class MockPaymentProvider implements PaymentProvider {
+  readonly ownership = "quefa_platform" as const;
+  readonly name = "mock";
+  constructor(private readonly publicBaseUrl: string) {}
+  async create(orderId: string, _amountMinor: bigint, expiresAt: Date): Promise<PaymentCreation> {
+    return {providerRef: `mock_pay_${orderId}`, qrPayload: `${this.publicBaseUrl}/sandbox/pay/${orderId}`, expiresAt};
+  }
+}
+
+export class PaymentService {
+  constructor(
+    private readonly repository: Repository,
+    private readonly ledger: LedgerService,
+    private readonly webhooks: WebhookService,
+  ) {}
+
+  markPaid(merchantId: string, orderId: string, input: {providerRef: string; receivedMinor: bigint; feeMinor?: bigint; channel?: "mock" | "alipay_page" | "dujiaopay"}): Order {
+    return this.repository.transaction(() => this.markPaidLocked(merchantId, orderId, input));
+  }
+
+  private markPaidLocked(merchantId: string, orderId: string, input: {providerRef: string; receivedMinor: bigint; feeMinor?: bigint; channel?: "mock" | "alipay_page" | "dujiaopay"}): Order {
+    const order = this.repository.findOrder(merchantId, orderId);
+    if (!order) throw notFound("order");
+    const attempt = this.repository.findPaymentAttemptByOrder(merchantId, orderId);
+    if (attempt?.provider !== (input.channel ?? "mock")) throw new AppError(409, "payment_channel_mismatch", "不允许跨支付渠道确认付款");
+    if (input.receivedMinor !== order.saleAmountMinor) {
+      throw new AppError(409, "payment_amount_mismatch", "支付渠道金额与订单金额不一致");
+    }
+    if (["paid", "partially_refunded", "refunded"].includes(order.paymentStatus)) {
+      if (order.paymentProviderRef !== input.providerRef) throw new AppError(409, "payment_reference_mismatch", "支付流水不匹配");
+      return order;
+    }
+    assertPaymentTransition(order.paymentStatus, "paid");
+    const paid: Order = {
+      ...order,
+      paymentStatus: "paid",
+      paymentProviderRef: input.providerRef,
+      paymentReceivedMinor: input.receivedMinor,
+      paymentFeeMinor: input.feeMinor ?? 0n,
+      paidAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.repository.updateOrder(paid);
+    if (attempt) {
+      this.repository.updatePaymentAttempt({
+        ...attempt,
+        status: "paid",
+        providerRef: input.providerRef,
+        receivedMinor: input.receivedMinor,
+        feeMinor: input.feeMinor ?? 0n,
+        paidAt: paid.paidAt,
+        updatedAt: paid.updatedAt,
+      });
+    }
+    this.ledger.recordPayment(paid);
+    this.webhooks.emit(merchantId, `${orderId}:order.paid`, "order.paid", orderId, {event: "order.paid", order_id: orderId, merchant_order_no: order.merchantOrderNo});
+    return paid;
+  }
+}

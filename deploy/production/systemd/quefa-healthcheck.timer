@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Quefa health verification every five minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Unit=quefa-healthcheck.service
+
+[Install]
+WantedBy=timers.target

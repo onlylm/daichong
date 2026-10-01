@@ -1,0 +1,1016 @@
+openapi: 3.1.0
+info:
+  title: 充值分销开放平台 API
+  version: 1.1.0
+  description: |
+    面向代理商销售渠道服务端的开单、查付、履约、退款申请、账单与结算接口。
+    支持平台收款分销，或授权代理自收款后以采购余额支付供货价；后者的 paid 仅代表供货款已扣。
+    GPT 商品由 CDK 库存支撑；代理商下单时可选择直接交付 CDK，或在自有品牌页面调用自动直充接口。
+    自动直充失败时只返回可重新提交标志，不返回明文 CDK；客户页面、品牌和订单入口由代理商自行实现。
+    代理自行接入其支付渠道，不向 Quefa 提交支付宝应用或支付密钥。
+    沙箱与生产使用不同域名、数据及密钥。所有接口均执行租户隔离。
+    代理商账号默认开放 API，无需申请或预存。采购余额为零时仍可查单及平台代收下单，但不得使用代理自收款/余额采购；管理员明确停用时返回 403。
+    余额采购在订单事务内扣供货价，不得透支；已付订单提交履约不重复扣款。
+    POST 请求必须携带 Idempotency-Key；签名使用 HTTP 原始请求体字节。
+    进度变化通过 fulfillment.updated 通知并可查任务恢复；明确失败或平台确认取消后，只有最新任务 retry_allowed=true 才能重提原订单。
+    平台选择退款后重提关闭；代理无主动取消权限，不调用管理员取消或退款执行接口。新增进度通知须部署同版并订阅后生效。
+  contact:
+    name: 平台技术支持
+servers:
+  - url: https://tibo.ink
+    description: 生产 Partner API（请使用此域名，勿将 POST 请求发往会 301 跳转的旧子域）
+tags:
+  - name: Products
+  - name: Orders
+  - name: Fulfillments
+  - name: CustomerRecharge
+  - name: Refunds
+  - name: Finance
+  - name: Webhooks
+security:
+  - PartnerId: []
+    KeyId: []
+    Timestamp: []
+    Nonce: []
+    Signature: []
+x-signature-algorithm: HMAC-SHA256
+x-signature-canonical-string: "METHOD\\nPATH\\nCANONICAL_QUERY\\nTIMESTAMP\\nNONCE\\nKEY_ID\\nIDEMPOTENCY_KEY\\nLOWERCASE_HEX_SHA256(RAW_BODY)"
+webhooks:
+  fulfillmentProgress:
+    post:
+      tags: [Webhooks]
+      operationId: receiveFulfillmentProgress
+      summary: 代理商接收履约阶段及终态通知
+      description: |
+        此项由代理商在自己登记的回调 URL 实现，不是平台新增的入站调用路径。
+        订阅 fulfillment.updated 或 * 才接收阶段变化；相同状态查询不会重复推送。
+        成功、明确失败和确认取消分别使用 fulfillment.succeeded/failed/cancelled，同样携带进度字段。
+        验签后按 event_id 幂等持久化，快速返回 2xx，再异步查询当前订单与最新任务。
+        先按原订单的 attempt_no 去旧，同任务按 progress_version 去旧，不能用旧尝试覆盖新尝试。
+        退款和重提许可必须以最新查询核验；通知不保证严格顺序，也不保证每条阶段通知携带恢复标记。
+        retry_allowed=true、next_action=resubmit 且自动直充恢复标记为 true 才开放代理自有入口。
+        平台选择 recovery_action=refund 时关闭入口；取消不是客户退款到账，须等退款通知并核验原退款单。
+      security: []
+      x-webhook-signature: HMAC-SHA256(webhook_secret, timestamp + '.' + RAW_BODY)
+      parameters:
+        - in: header
+          name: X-Quefa-Event
+          required: true
+          schema: {type: string, enum: [fulfillment.updated, fulfillment.succeeded, fulfillment.failed, fulfillment.cancelled]}
+        - in: header
+          name: X-Quefa-Event-Id
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-Quefa-Delivery
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-Quefa-Timestamp
+          required: true
+          description: Unix 秒；接收方校验时间窗口及原始请求体签名
+          schema: {type: string, pattern: '^[0-9]+$'}
+        - in: header
+          name: X-Quefa-Signature
+          required: true
+          description: 独立 webhook_secret 验签，不使用 Partner API client_secret
+          schema: {type: string, pattern: '^t=[0-9]+,v1=[a-f0-9]{64}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FulfillmentWebhookEnvelope'}
+      responses:
+        '204': {description: 代理商已验签并持久化通知；其他 2xx 也表示接收成功}
+        '400': {description: 正文不可解析}
+        '401': {description: 通知签名无效或时间窗口不符}
+        '500': {description: 未持久化成功；平台按原事件重试投递}
+paths:
+  /v1/payment-methods:
+    get:
+      tags: [Orders]
+      operationId: listPaymentMethods
+      summary: 查询当前可用的平台收款通道
+      description: 仅返回已开放的通道，不含支付凭据；余额采购不依赖此列表。
+      responses:
+        '200':
+          description: 可用列表；全部关闭或纯模拟模式可能为空
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [code, name]
+                      properties:
+                        code: {type: string, enum: [alipay, usdt]}
+                        name: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/redemptions:
+    post:
+      tags: [CustomerRecharge]
+      operationId: createPartnerRedemption
+      summary: 代理自建页面提交自动直充或显式 CDK 兑换
+      description: 须开通 customRedemptionEnabled，只能使用本代理资源。auto_recharge 使用订单已绑定的 CDK，明文不返回代理前端。202 表示受理，不是成功。同键同原始请求体返回原受理结果；原任务查询用于获取最新状态。收到最近尝试 retry_allowed=true 且 next_action=resubmit 后，允许客户在原订单修正资料并用新幂等键创建下一尝试，无需重新下单或付款；未知结果禁止重提。阶段变化投递 fulfillment.updated，终态沿用 fulfillment.succeeded/failed/cancelled。
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[a-zA-Z0-9:_.-]{8,120}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [mode, order_id, credential, customer_confirmed_email]
+                  properties:
+                    mode: {type: string, const: direct}
+                    order_id: {type: string, minLength: 1, maxLength: 100}
+                    credential: {$ref: '#/components/schemas/RechargeCredential'}
+                    customer_confirmed_email: {type: boolean, const: true}
+                - type: object
+                  additionalProperties: false
+                  required: [mode, order_id, credential, customer_confirmed_email]
+                  properties:
+                    mode: {type: string, const: auto_recharge, description: 使用订单绑定的 CDK 自动兑换；不向调用方返回明文 CDK}
+                    order_id: {type: string, minLength: 1, maxLength: 100}
+                    credential: {$ref: '#/components/schemas/RechargeCredential'}
+                    customer_confirmed_email: {type: boolean, const: true}
+                - type: object
+                  additionalProperties: false
+                  required: [mode, code, credential, customer_confirmed_email]
+                  properties:
+                    mode: {type: string, const: cdk}
+                    code: {type: string, pattern: '^QF-[A-Z0-9-]{10,40}$', writeOnly: true}
+                    credential: {$ref: '#/components/schemas/RechargeCredential'}
+                    customer_confirmed_email: {type: boolean, const: true}
+      responses:
+        '202':
+          description: 已受理；queued 不代表充值完成
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/RedemptionEnvelope'}}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/redemptions/{redemption_id}:
+    get:
+      tags: [CustomerRecharge]
+      operationId: getPartnerRedemption
+      summary: 查询本代理充值任务
+      parameters:
+        - name: redemption_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 统一状态，无底层信息
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/RedemptionEnvelope'}}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/agent-profile:
+    get:
+      summary: 查询本代理等级、收款模式和新自建兑换接口开关
+      responses:
+        '200': {description: data 内含 profile、suggestedTier、completedOrders、completedSupplyMinor（整数分文本）；rules 为可申请等级与门槛，建议等级不自动生效}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tier-applications:
+    post:
+      summary: 提交本代理等级申请工单
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [targetTier, reason, requestKey]
+              properties:
+                targetTier: {type: string}
+                reason: {type: string, minLength: 1, maxLength: 5000}
+                requestKey: {type: string, pattern: '^[a-zA-Z0-9_-]{8,80}$'}
+      responses:
+        '200': {description: data 为结构化等级申请工单；同 requestKey 同内容幂等，一个代理最多一份待审核申请}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tickets:
+    get:
+      summary: 本代理工单列表
+      responses:
+        '200': {description: data 数组，含类别、状态、版本和未读标记，不含平台内部备注}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      summary: 创建普通工单
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, category, body]
+              properties:
+                title: {type: string, minLength: 1, maxLength: 120}
+                category: {type: string, enum: [payment, cdk, recharge, refund, wallet, other]}
+                body: {type: string, minLength: 1, maxLength: 5000}
+                orderId: {type: [string, 'null']}
+      responses:
+        '200': {description: data 为工单与公开消息}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tickets/{id}:
+    get:
+      summary: 本代理工单详情并标为已读
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: data 为工单与公开消息}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tickets/{id}/messages:
+    post:
+      summary: 追加公开工单回复
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [body, version]
+              properties:
+                body: {type: string, minLength: 1, maxLength: 5000}
+                version: {type: integer, minimum: 1}
+      responses:
+        '200': {description: data 为更新后的工单；旧版本返回 409}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/announcements:
+    get:
+      summary: 当前代理可见的有效公告
+      responses:
+        '200': {description: data 公告列表，不包含草稿、未到生效时间或未授权范围}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/announcements/{id}/read:
+    post:
+      summary: 标记本 API 身份已读
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': {description: 已记录；网站用户与 API 的已读身份独立}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/wallet:
+    get:
+      tags: [Finance]
+      summary: 只读查询本代理双钱包
+      responses:
+        '200': {description: data 包括 procurementAvailable、earningsAvailable、withdrawalFrozen、pendingReviewEarnings、earningsDebt（元文本）；entries 为流水。不能通过此接口自行加余额、审批或打款}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: 查询当前代理商已授权商品
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+      responses:
+        '200':
+          description: 商品列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Product'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/orders:
+    get:
+      tags: [Orders]
+      operationId: listOrders
+      summary: 分页查询当前代理商订单
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - name: payment_status
+          in: query
+          schema: {type: string, enum: [pending, paid, expired, closed, partially_refunded, refunded]}
+        - name: cursor
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        '200':
+          description: 订单分页
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Order'}}
+                  next_cursor: {type: [string, 'null']}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Orders]
+      operationId: createOrder
+      summary: 幂等创建收款订单
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOrderRequest'}
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderEnvelope'}
+        '200':
+          description: 幂等重放首次响应
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderEnvelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/orders/{order_id}:
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      summary: 查询订单价格、支付状态和退款金额摘要
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 订单详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/orders/{order_id}/fulfillments:
+    post:
+      tags: [Fulfillments]
+      operationId: createFulfillment
+      summary: 为 direct 商品提交凭据并创建异步履约任务
+      description: 仅用于代理商明确选择服务端代提交的 direct 商品；推荐让买家直接打开订单 fulfillment_url，避免代理商接触敏感凭据。CDK 商品必须走 Quefa 兑换入口。
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_data, customer_confirmed_email]
+              properties:
+                session_data:
+                  type: object
+                  description: 敏感字段；日志与错误响应不得回显
+                  additionalProperties: true
+                customer_confirmed_email: {type: boolean, const: true}
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/Fulfillment'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      tags: [Fulfillments]
+      operationId: listFulfillments
+      summary: 查询订单履约尝试
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: 履约列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Fulfillment'}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/orders/{order_id}/refunds:
+    post:
+      tags: [Refunds]
+      operationId: createRefund
+      summary: 申请普通退款或补差退款
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateRefundRequest'}
+      responses:
+        '202':
+          description: 已受理，等待审核或处理
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/Refund'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/refunds/{refund_id}:
+    get:
+      tags: [Refunds]
+      operationId: getRefund
+      summary: 查询退款
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - name: refund_id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^rf_[A-Za-z0-9_-]+$'}
+      responses:
+        '200':
+          description: 退款详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/Refund'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/ledger:
+    get:
+      tags: [Finance]
+      operationId: listLedgerEntries
+      summary: 查询代理商可见财务台账
+      description: 不返回支付手续费、Quefa 内部真实履约成本和 Quefa 毛利。
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: 台账分页
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/LedgerItem'}}
+                  next_cursor: {type: [string, 'null']}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/settlements:
+    get:
+      tags: [Finance]
+      operationId: listSettlements
+      summary: 查询结算单列表
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: 结算单分页
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Settlement'}}
+                  next_cursor: {type: [string, 'null']}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/settlements/{settlement_id}:
+    get:
+      tags: [Finance]
+      operationId: getSettlement
+      summary: 查询结算单及调整明细
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - name: settlement_id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^st_[A-Za-z0-9_-]+$'}
+      responses:
+        '200':
+          description: 结算单详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/Settlement'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/webhooks/test:
+    post:
+      tags: [Webhooks]
+      operationId: createWebhookTest
+      summary: 创建 webhook.test 测试事件
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: 已排队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [event_id, status]
+                    properties:
+                      event_id: {type: string}
+                      status: {type: string, const: queued}
+        default: {$ref: '#/components/responses/Error'}
+  /recharge/{order_id}:
+    get:
+      tags: [CustomerRecharge]
+      operationId: openRechargePortal
+      summary: 打开 Quefa 客户充值或兑换页面
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - name: token
+          in: query
+          required: true
+          schema: {type: string, minLength: 20}
+      responses:
+        '200':
+          description: Quefa 品牌 HTML 页面
+          content:
+            text/html: {schema: {type: string}}
+        default: {$ref: '#/components/responses/Error'}
+  /redeem:
+    get:
+      tags: [CustomerRecharge]
+      operationId: openCdkPortal
+      summary: 打开 Quefa CDK 通用兑换页面
+      security: []
+      responses:
+        '200':
+          description: Quefa 品牌 HTML 页面
+          content:
+            text/html: {schema: {type: string}}
+  /public/orders/{order_id}/direct:
+    post:
+      tags: [CustomerRecharge]
+      operationId: submitDirectRecharge
+      summary: 客户从 Quefa 页面提交直接充值
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token, credential, customer_confirmed_email]
+              properties:
+                token: {type: string, minLength: 20}
+                credential: {$ref: '#/components/schemas/RechargeCredential'}
+                customer_confirmed_email: {type: boolean, const: true}
+      responses:
+        '202':
+          description: Quefa 已受理充值
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/PublicRechargeEnvelope'}}
+        default: {$ref: '#/components/responses/Error'}
+  /public/cdk/redeem:
+    post:
+      tags: [CustomerRecharge]
+      operationId: redeemQuefaCdk
+      summary: 客户兑换 Quefa QF 码并提交充值
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, credential, customer_confirmed_email]
+              properties:
+                code: {type: string, pattern: '^QF-[A-Z0-9-]{10,40}$'}
+                credential: {$ref: '#/components/schemas/RechargeCredential'}
+                customer_confirmed_email: {type: boolean, const: true}
+      responses:
+        '202':
+          description: Quefa 已受理兑换
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/PublicRechargeEnvelope'}}
+        default: {$ref: '#/components/responses/Error'}
+  /public/orders/{order_id}/status:
+    get:
+      tags: [CustomerRecharge]
+      operationId: getPublicRechargeStatus
+      summary: 客户查询 Quefa 充值状态
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - name: token
+          in: query
+          required: true
+          schema: {type: string, minLength: 20}
+      responses:
+        '200':
+          description: 充值状态
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/PublicRechargeEnvelope'}}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    PartnerId: {type: apiKey, in: header, name: X-Partner-Id}
+    KeyId: {type: apiKey, in: header, name: X-Key-Id}
+    Timestamp: {type: apiKey, in: header, name: X-Timestamp}
+    Nonce: {type: apiKey, in: header, name: X-Nonce}
+    Signature: {type: apiKey, in: header, name: X-Signature}
+  parameters:
+    XPartnerId: {name: X-Partner-Id, in: header, required: true, schema: {type: string}}
+    XKeyId: {name: X-Key-Id, in: header, required: true, schema: {type: string}}
+    XTimestamp: {name: X-Timestamp, in: header, required: true, schema: {type: string, pattern: '^[0-9]{10}$'}}
+    XNonce: {name: X-Nonce, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+    XSignature: {name: X-Signature, in: header, required: true, schema: {type: string, pattern: '^[a-f0-9]{64}$'}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^ord_[A-Za-z0-9_-]+$'}
+  responses:
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotFound:
+      description: 资源不存在或不属于当前代理商租户
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    RedemptionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [redemption_id, order_id, fulfillment_mode, status, failure_code, message, account_email_masked, fallback_recharge_available, created_at, finished_at]
+          properties:
+            redemption_id: {type: string}
+            attempt_no: {type: integer, minimum: 1}
+            progress_stage: {$ref: '#/components/schemas/ProgressStage'}
+            progress_version: {type: integer, minimum: 0, description: 同一任务公开进度版本；历史记录未更新时为 0}
+            progress_updated_at: {type: string, format: date-time, description: 最近进度变化时间；非每次查询时间}
+            recovery_action: {type: [string, 'null'], enum: [retry, refund, null], description: 平台取消后的处理选择；退款关闭原单重提入口}
+            retry_allowed: {type: boolean, description: 仅最新尝试明确失败且可安全重提时为 true}
+            next_action: {type: string, enum: [wait, resubmit, none]}
+            order_id: {type: string}
+            fulfillment_mode: {type: string, enum: [direct, cdk]}
+            status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+            failure_code: {type: [string, 'null']}
+            message: {type: [string, 'null']}
+            result_code: {type: [string, 'null'], description: 实际业务结果码的白标透传；进行中状态不得当作失败}
+            result_stage: {type: [string, 'null'], description: 实际处理阶段；是否返回由平台按代理配置}
+            card_last_four: {type: [string, 'null'], pattern: '^\d{4}$', description: 实际用卡后四位；绝不返回完整卡号}
+            charge_amount_minor: {type: [integer, 'null'], minimum: 0, description: 实际扣款最小货币单位；是否返回由平台按代理配置}
+            charge_currency: {type: [string, 'null']}
+            upstream_order_id: {type: [string, 'null'], description: 内部履约参考号，默认隐藏；仅平台显式为该代理开放时返回}
+            account_email_masked: {type: [string, 'null']}
+            fallback_recharge_available: {type: boolean, description: 上游明确失败且允许重提后为 true；代理商在自己的订单页展示充值入口，不显示明文 CDK}
+            created_at: {type: string, format: date-time}
+            finished_at: {type: [string, 'null'], format: date-time}
+    Money:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)\.[0-9]{2}$'
+      examples: ['135.00']
+    Product:
+      type: object
+      required: [product_code, name, supply_price, max_sale_price, currency, max_quantity, available, fulfillment_mode, delivery_modes]
+      properties:
+        product_code: {type: string}
+        name: {type: string}
+        supply_price: {$ref: '#/components/schemas/Money'}
+        max_sale_price: {$ref: '#/components/schemas/Money'}
+        currency: {type: string, const: CNY}
+        max_quantity: {type: integer, minimum: 1}
+        available: {type: boolean}
+        fulfillment_mode: {type: string, enum: [direct, cdk], description: 底层履约资源类型；当前 GPT 成品均为 cdk}
+        delivery_modes:
+          type: array
+          items: {type: string, enum: [auto_recharge, cdk]}
+          description: 代理商创建订单时可选的客户交付方式
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [merchant_order_no, product_code, quantity, sale_amount]
+      properties:
+        collection_mode: {type: string, enum: [platform_collect, agent_collect], default: platform_collect, description: 自收款须授权，创建订单立即扣供货价}
+        delivery_mode: {type: string, enum: [auto_recharge, cdk], description: auto_recharge 由代理商自有页面提交凭据并使用服务端 CDK；cdk 直接返回公开 QF 码。建议始终显式传值}
+        payment_channel:
+          type: string
+          enum: [alipay, usdt]
+          description: 仅平台代收可传。省略使用首个可用通道（支付宝优先）；下单后不可切换，余额采购不得填写。sale_amount 始终为人民币元。
+        merchant_order_no: {type: string, minLength: 1, maxLength: 64}
+        product_code: {type: string, minLength: 1, maxLength: 64}
+        quantity: {type: integer, minimum: 1}
+        sale_amount: {$ref: '#/components/schemas/Money'}
+        notify_url:
+          type: string
+          format: uri
+          description: 必须与 Quefa 为当前代理商预登记的 Webhook 地址完全一致；沙箱本机联调可由 Quefa 放行 HTTP 地址。
+        metadata: {type: object, maxProperties: 32, additionalProperties: {type: [string, number, boolean, 'null']}}
+    OrderEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: {$ref: '#/components/schemas/Order'}
+        idempotent: {type: boolean, default: false}
+    Order:
+      type: object
+      required: [order_id, merchant_order_no, product_code, quantity, sale_amount, supply_amount, merchant_margin, currency, payment_status, fulfillment_mode, delivery_mode, fulfillment_url, voucher_code, fallback_recharge_available, created_at, expires_at]
+      properties:
+        collection_mode: {type: string, enum: [platform_collect, agent_collect]}
+        payment_scope: {type: string, enum: [retail, procurement], description: procurement 的 paid 不证明客户已向代理付款}
+        order_id: {type: string}
+        merchant_order_no: {type: string}
+        product_code: {type: string}
+        quantity: {type: integer}
+        sale_amount: {$ref: '#/components/schemas/Money'}
+        supply_amount: {$ref: '#/components/schemas/Money'}
+        refunded_amount: {$ref: '#/components/schemas/Money'}
+        price_adjustment_amount: {$ref: '#/components/schemas/Money'}
+        merchant_margin: {$ref: '#/components/schemas/Money'}
+        currency: {type: string, const: CNY}
+        payment_status: {type: string, enum: [pending, paid, expired, closed, partially_refunded, refunded]}
+        metadata: {type: object, maxProperties: 32, additionalProperties: {type: [string, number, boolean, 'null']}}
+        qr_payload: {type: [string, 'null'], description: 平台代收的 Quefa 付款页 URL，应展示为付款按钮，不是支付宝当面付或链上转账二维码内容}
+        qr_image_url: {type: [string, 'null'], format: uri}
+        paid_at: {type: [string, 'null'], format: date-time}
+        fulfillment_mode: {type: string, enum: [direct, cdk]}
+        delivery_mode: {type: string, enum: [auto_recharge, cdk]}
+        fulfillment_url: {type: string, format: uri, description: 平台兼容入口；正式代理商网站应使用自身订单页和 /v1/redemptions 接口，不把客户跳转到平台品牌页面}
+        voucher_code: {type: [string, 'null'], pattern: '^[A-Z0-9]{2,8}-[A-Z0-9]{5}(?:-[A-Z0-9]{5}){0,3}$', description: 仅 delivery_mode=cdk 时返回；品牌前缀可配置，自动直充不返回明文 CDK}
+        fallback_recharge_available: {type: boolean, description: 仅上游明确失败且允许重提后为 true；在自有订单页重新开放入口}
+        retry_allowed: {type: boolean, description: 最新尝试明确失败并允许安全重提；未知结果为 false}
+        fulfillment_status: {type: [string, 'null'], enum: [queued, running, succeeded, failed, cancelled, null], description: 最近一次履约状态}
+        fulfillment_failure_code: {type: [string, 'null'], description: 最近一次履约失败码；历史取消码仅兼容，当前代理不能主动取消}
+        sync_mark: {type: [string, 'null'], enum: [cancelled_refunded, null], description: 充值已取消且订单已退款时为 cancelled_refunded，便于代理商侧同步关闭订单}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+    ProgressStage:
+      type: string
+      description: 默认公开的统一业务阶段；与敏感字段可见性无关，不包含上游身份或内部引用
+      enum: [queued, logging_in, preparing_funds, awaiting_card, dispatching, processing, requires_action, confirming, review, upgrading, completed, failed, cancelled]
+    FulfillmentWebhookEnvelope:
+      type: object
+      required: [event_id, event, occurred_at, data]
+      properties:
+        event_id: {type: string, description: 通知业务去重键；投递重试保持不变}
+        event: {type: string, enum: [fulfillment.updated, fulfillment.succeeded, fulfillment.failed, fulfillment.cancelled]}
+        occurred_at: {type: string, format: date-time}
+        data: {$ref: '#/components/schemas/FulfillmentProgressEvent'}
+    FulfillmentProgressEvent:
+      type: object
+      required: [event, order_id, fulfillment_id, redemption_id, attempt_no, status, progress_stage, progress_version, progress_updated_at, recovery_action, failure_code, message, retry_allowed, next_action]
+      properties:
+        event: {type: string, enum: [fulfillment.updated, fulfillment.succeeded, fulfillment.failed, fulfillment.cancelled]}
+        order_id: {type: string}
+        fulfillment_id: {type: string}
+        redemption_id: {type: string, description: 同 fulfillment_id，可直接用于任务查询}
+        attempt_no: {type: integer, minimum: 1}
+        status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+        progress_stage: {$ref: '#/components/schemas/ProgressStage'}
+        progress_version: {type: integer, minimum: 0, description: 同任务公开状态版本，不是轮询次数}
+        progress_updated_at: {type: string, format: date-time}
+        recovery_action: {type: [string, 'null'], enum: [retry, refund, null], description: 平台的处理选择；refund 关闭重提，但不代表退款到账}
+        failure_code: {type: [string, 'null']}
+        message: {type: [string, 'null'], description: 可用于代理品牌页面的安全说明，不用于机器状态判断}
+        retry_allowed: {type: boolean, description: 仅最近的安全结束尝试和仍可履约订单允许重提；须最新查询核验}
+        next_action: {type: string, enum: [wait, resubmit, none]}
+        account_email_masked: {type: [string, 'null']}
+        fallback_recharge_available: {type: boolean, description: 可选；只有自动直充安全结束且资源可恢复时可能返回，入口仍以最新查询为准}
+        sync_mark: {type: [string, 'null'], enum: [cancelled_refunded, null]}
+        result_code: {type: [string, 'null'], description: 按平台对该代理的字段可见性开放}
+        result_stage: {type: [string, 'null'], description: 按平台对该代理的字段可见性开放}
+        card_last_four: {type: [string, 'null'], pattern: '^\d{4}$'}
+        charge_amount_minor: {type: [integer, 'null'], minimum: 0}
+        charge_currency: {type: [string, 'null']}
+        upstream_order_id: {type: [string, 'null'], description: 默认不返回，仅显式授权代理的内部履约参考号}
+    Fulfillment:
+      type: object
+      required: [fulfillment_id, order_id, attempt_no, status, fulfillment_mode, created_at]
+      properties:
+        retry_allowed: {type: boolean}
+        next_action: {type: string, enum: [wait, resubmit, none]}
+        fulfillment_id: {type: string}
+        order_id: {type: string}
+        attempt_no: {type: integer, minimum: 1}
+        progress_stage: {$ref: '#/components/schemas/ProgressStage'}
+        progress_version: {type: integer, minimum: 0}
+        progress_updated_at: {type: string, format: date-time}
+        recovery_action: {type: [string, 'null'], enum: [retry, refund, null]}
+        status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+        failure_code: {type: [string, 'null'], enum: [session_invalid, mailbox_login_failed, account_has_subscription, precheck_rejected, subscription_required, account_unavailable, product_unavailable, order_rejected, region_unsupported, payment_blocked, payment_declined, precharge_failed, cancelled, verification_timeout, service_unavailable, other, null]}
+        message: {type: [string, 'null']}
+        result_code: {type: [string, 'null'], description: 实际业务结果码，如 review/completed/declined}
+        result_stage: {type: [string, 'null'], description: 实际处理阶段；是否返回由平台按代理配置}
+        card_last_four: {type: [string, 'null'], pattern: '^\d{4}$', description: 实际用卡后四位；绝不返回完整卡号}
+        charge_amount_minor: {type: [integer, 'null'], minimum: 0, description: 实际扣款最小货币单位}
+        charge_currency: {type: [string, 'null']}
+        upstream_order_id: {type: [string, 'null'], description: 内部履约参考号，默认隐藏；仅平台显式为该代理开放时返回}
+        account_email_masked: {type: [string, 'null']}
+        fulfillment_mode: {type: string, enum: [direct, cdk]}
+        created_at: {type: string, format: date-time}
+        finished_at: {type: [string, 'null'], format: date-time}
+    RechargeCredential:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode, session]
+          properties:
+            mode: {type: string, const: session}
+            session: {type: string, minLength: 1, maxLength: 32000, writeOnly: true}
+        - type: object
+          additionalProperties: false
+          required: [mode, access_token]
+          properties:
+            mode: {type: string, const: access_token}
+            access_token: {type: string, minLength: 1, maxLength: 32000, writeOnly: true}
+        - type: object
+          additionalProperties: false
+          required: [mode, email, password]
+          properties:
+            mode: {type: string, const: mailbox}
+            email: {type: string, format: email, maxLength: 320}
+            password: {type: string, minLength: 1, maxLength: 1000, writeOnly: true}
+    PublicRechargeEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [order_id, payment_status, fulfillment_mode, status_url]
+          properties:
+            order_id: {type: string}
+            payment_status: {type: string, enum: [pending, paid, expired, closed, partially_refunded, refunded]}
+            fulfillment_mode: {type: string, enum: [direct, cdk]}
+            voucher_ready: {type: [boolean, 'null']}
+            status_url: {type: [string, 'null']}
+            fulfillment: {oneOf: [{$ref: '#/components/schemas/PublicFulfillment'}, {type: 'null'}]}
+    PublicFulfillment:
+      type: object
+      required: [fulfillment_id, status, failure_code, message, account_email_masked, finished_at]
+      properties:
+        fulfillment_id: {type: string}
+        status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
+        failure_code: {type: [string, 'null']}
+        message: {type: [string, 'null']}
+        result_code: {type: [string, 'null'], description: 实际业务结果码}
+        result_stage: {type: [string, 'null'], description: 实际处理阶段}
+        account_email_masked: {type: [string, 'null']}
+        finished_at: {type: [string, 'null'], format: date-time}
+    CreateRefundRequest:
+      type: object
+      additionalProperties: false
+      required: [merchant_refund_no, type, amount, reason]
+      properties:
+        merchant_refund_no: {type: string, minLength: 1, maxLength: 64}
+        type: {type: string, enum: [full, partial, price_adjustment]}
+        amount: {$ref: '#/components/schemas/Money'}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    Refund:
+      type: object
+      required: [refund_id, order_id, merchant_refund_no, type, amount, status, created_at]
+      properties:
+        refund_id: {type: string}
+        order_id: {type: string}
+        merchant_refund_no: {type: string}
+        type: {type: string, enum: [full, partial, price_adjustment]}
+        amount: {$ref: '#/components/schemas/Money'}
+        status: {type: string, enum: [requested, approved, processing, succeeded, failed, rejected, cancelled]}
+        failure_code: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+        refunded_at: {type: [string, 'null'], format: date-time}
+    LedgerItem:
+      type: object
+      required: [entry_id, occurred_at, order_id, type, amount, currency]
+      properties:
+        entry_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+        order_id: {type: string}
+        type: {type: string, enum: [user_payment, supply_price, ordinary_refund, price_adjustment_refund, merchant_margin, merchant_pending_settlement, settlement_transfer, settlement_adjustment]}
+        amount: {$ref: '#/components/schemas/Money'}
+        direction: {type: string, enum: [increase, decrease]}
+        currency: {type: string, const: CNY}
+    Settlement:
+      type: object
+      required: [settlement_id, period_from, period_to, status, gross_amount, adjustment_amount, payable_amount, currency, created_at]
+      properties:
+        settlement_id: {type: string}
+        period_from: {type: string, format: date-time}
+        period_to: {type: string, format: date-time}
+        status: {type: string, enum: [draft, reviewing, confirmed, paying, paid, failed, cancelled]}
+        gross_amount: {$ref: '#/components/schemas/Money'}
+        adjustment_amount: {type: string, pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'}
+        payable_amount: {type: string, pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'}
+        currency: {type: string, const: CNY}
+        sealed_at: {type: [string, 'null'], format: date-time}
+        paid_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id, retryable]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string}
+            retryable: {type: boolean}

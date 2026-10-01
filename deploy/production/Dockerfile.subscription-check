@@ -1,0 +1,10 @@
+FROM recharge-platform-check:finance-ui-20260930-v1
+COPY src ./src
+COPY tests ./tests
+COPY scripts ./scripts
+COPY openapi ./openapi
+COPY migrations ./migrations
+COPY examples ./examples
+COPY docs ./docs
+COPY compose.yaml tsconfig*.json ./
+RUN npm run typecheck && npm run build && node scripts/check-workspace-js.mjs

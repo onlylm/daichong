@@ -1,0 +1,5 @@
+FROM recharge-platform:audit-fixes-20260930-test-cleanup-v1
+COPY --from=recharge-platform-check:responsive-refresh-20261001-v1 /app/dist /app/dist
+COPY docs/partner-integration.md /app/docs/partner-integration.md
+COPY docs/redemption-guide.md /app/docs/redemption-guide.md
+COPY openapi/openapi.yaml /app/openapi/openapi.yaml

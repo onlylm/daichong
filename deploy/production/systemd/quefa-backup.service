@@ -1,0 +1,14 @@
+[Unit]
+Description=Quefa local application and PostgreSQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/recharge-platform/current/deploy/backup-prelaunch.sh
+ExecStart=/bin/sh /opt/recharge-platform/current/deploy/production/backup-production.sh
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

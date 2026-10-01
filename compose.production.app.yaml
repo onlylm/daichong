@@ -1,0 +1,44 @@
+name: quefa-app
+
+x-runtime: &runtime
+  image: recharge-platform:production
+  env_file: /opt/recharge-platform/config/production.env
+  environment:
+    NODE_ENV: production
+    EXECUTION_MODE: production
+    HOST: 0.0.0.0
+    PORT: 3200
+    STORAGE_DRIVER: sqlite
+    SQLITE_PATH: /app/data/production.sqlite
+    PAYMENT_PROVIDER: managed
+    FULFILLMENT_PROVIDER: zovocard
+    LIVE_TEST_ENABLED: "false"
+    ENABLE_SANDBOX_ROUTES: "false"
+  volumes:
+    - /opt/recharge-platform/state:/app/data
+    - ./deploy:/app/deploy:ro
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  api:
+    <<: *runtime
+    command: [node, dist/server.js]
+    ports: ["127.0.0.1:3200:3200"]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3200/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+  worker:
+    <<: *runtime
+    command: [node, dist/worker.js]
+    depends_on:
+      api: {condition: service_healthy}

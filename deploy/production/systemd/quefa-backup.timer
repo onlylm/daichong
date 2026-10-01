@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Quefa local backups daily
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=quefa-backup.service
+
+[Install]
+WantedBy=timers.target

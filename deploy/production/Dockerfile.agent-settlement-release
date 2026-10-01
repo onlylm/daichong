@@ -1,0 +1,4 @@
+FROM recharge-platform:production
+COPY dist /app/dist
+COPY docs/partner-integration.md /app/docs/partner-integration.md
+COPY openapi/openapi.yaml /app/openapi/openapi.yaml

@@ -1,0 +1,6 @@
+FROM recharge-platform-check:subscription-20260930-v1
+COPY src ./src
+COPY tests ./tests
+COPY scripts ./scripts
+COPY tsconfig*.json ./
+RUN npm run typecheck && npm run build && node scripts/check-workspace-js.mjs

@@ -1,0 +1,103 @@
+name: quefa-production
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: quefa
+      POSTGRES_USER: quefa_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    secrets:
+      - postgres_owner_password
+      - postgres_app_password
+    volumes:
+      - quefa_postgres:/var/lib/postgresql/data
+      - ./deploy/production/postgres/00-roles.sh:/docker-entrypoint-initdb.d/00-roles.sh:ro
+      - ./migrations/0001_initial.sql:/docker-entrypoint-initdb.d/10-0001_initial.sql:ro
+      - ./migrations/0002_rls_and_immutability.sql:/docker-entrypoint-initdb.d/20-0002_rls_and_immutability.sql:ro
+      - ./migrations/0003_white_label_recharge.sql:/docker-entrypoint-initdb.d/30-0003_white_label_recharge.sql:ro
+      - ./migrations/0004_supplier_management.sql:/docker-entrypoint-initdb.d/40-0004_supplier_management.sql:ro
+      - ./migrations/0005_recharge_recovery.sql:/docker-entrypoint-initdb.d/50-0005_recharge_recovery.sql:ro
+      - ./deploy/production/postgres/99-grants.sql:/docker-entrypoint-initdb.d/99-grants.sql:ro
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=60
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quefa_owner -d quefa"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    shm_size: 256mb
+    mem_limit: 1200m
+    cpus: 1.5
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - data
+
+  redis:
+    image: redis:7.4-bookworm
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aclfile
+      - /run/secrets/redis_acl
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    secrets:
+      - redis_acl
+    volumes:
+      - quefa_redis:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "redis-cli --user health --pass '' --no-auth-warning ping | grep -qx PONG"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - data
+
+volumes:
+  quefa_postgres:
+  quefa_redis:
+
+networks:
+  data:
+    internal: true
+
+secrets:
+  postgres_owner_password:
+    file: /opt/recharge-platform/secrets/postgres-owner-password
+  postgres_app_password:
+    file: /opt/recharge-platform/secrets/postgres-app-password
+  redis_acl:
+    file: /opt/recharge-platform/secrets/redis-production.acl

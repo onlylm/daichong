@@ -1,0 +1,40 @@
+# Standalone bounded real-money test deployment; do not merge with compose.yaml.
+services:
+  api:
+    build: .
+    command: ["node", "dist/server.js"]
+    env_file: .env.live-test
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      ENABLE_SANDBOX_ROUTES: "false"
+      STORAGE_DRIVER: sqlite
+      SQLITE_PATH: /app/data/quefa-live-test.sqlite
+    ports:
+      - "127.0.0.1:3201:3200"
+    volumes:
+      - quefa_live_test:/app/data
+      - ./secrets:/app/secrets:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  worker:
+    build: .
+    command: ["node", "dist/worker.js"]
+    env_file: .env.live-test
+    environment:
+      NODE_ENV: development
+      ENABLE_SANDBOX_ROUTES: "false"
+      STORAGE_DRIVER: sqlite
+      SQLITE_PATH: /app/data/quefa-live-test.sqlite
+    volumes:
+      - quefa_live_test:/app/data
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  quefa_live_test:

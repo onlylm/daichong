@@ -1,0 +1,12 @@
+FROM recharge-platform-check:test-cleanup-20260930-v1
+COPY src ./src
+COPY tests ./tests
+COPY scripts ./scripts
+COPY docs/partner-integration.md ./docs/partner-integration.md
+COPY docs/redemption-guide.md ./docs/redemption-guide.md
+COPY openapi/openapi.yaml ./openapi/openapi.yaml
+COPY tsconfig*.json ./
+RUN npm run typecheck \
+ && npm run build \
+ && node scripts/check-workspace-js.mjs \
+ && npx vitest run tests/static-asset.test.ts tests/workspace-loading.test.ts tests/developer-recovery-docs.test.ts tests/sqlite-workspace-query.test.ts tests/order-view.test.ts

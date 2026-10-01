@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify Quefa public and private runtime health
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/recharge-platform/current/deploy/production/healthcheck.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

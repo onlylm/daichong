@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.env
+.env.*
+secrets
+data
+coverage
+artifacts
+deployment-bundles
+*.pem
+*.sqlite*
+*.tar.gz
+docs/*
+!docs/partner-integration.md
+!docs/redemption-guide.md

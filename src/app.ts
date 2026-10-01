@@ -1,0 +1,435 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+import Fastify, {type FastifyInstance, type FastifyReply, type FastifyRequest} from "fastify";
+import { z, ZodError } from "zod";
+import type { AppConfig } from "./config.js";
+import type { Runtime } from "./bootstrap.js";
+import type { Fulfillment, Order, ProductGrant, Refund, Settlement, TenantContext } from "./domain/model.js";
+import { AppError } from "./domain/errors.js";
+import { minorToMoney } from "./domain/money.js";
+import {registerPublicRechargeRoutes} from "./modules/public-recharge-routes.js";
+import {registerSupplierAdminRoutes} from "./modules/supplier-admin-routes.js";
+import {registerAlipayRoutes} from "./modules/alipay-routes.js";
+import {registerLiveTestAdminPage} from "./modules/live-test-admin-page.js";
+import {registerOperationsRoutes} from "./operations/routes.js";
+import {partnerFulfillmentDetails, partnerFulfillmentMessage, partnerFulfillmentProgress} from "./modules/fulfillment-public.js";
+import {latestFulfillmentOf, orderSyncMark} from "./domain/order-sync-mark.js";
+import {canResubmitFulfillment} from "./domain/recharge-policy.js";
+import type {OrderVisibilityField} from "./operations/model.js";
+import {registerPartnerRedemptionRoutes} from "./modules/partner-redemption-routes.js";
+import {registerWorkspacePage} from "./operations/workspace-page.js";
+import {registerUsdtRoutes} from "./modules/usdt-routes.js";
+
+const createOrderSchema = z.object({
+  merchant_order_no: z.string().min(1).max(64),
+  product_code: z.string().min(1).max(64),
+  quantity: z.number().int().positive(),
+  sale_amount: z.string(),
+  collection_mode: z.enum(["platform_collect", "agent_collect"]).optional(),
+  delivery_mode: z.enum(["auto_recharge", "cdk"]).optional(),
+  payment_channel: z.enum(["alipay", "usdt"]).optional(),
+  notify_url: z.string().url().optional(),
+  metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+}).strict();
+
+const fulfillmentSchema = z.object({
+  session_data: z.record(z.string(), z.unknown()),
+  customer_confirmed_email: z.literal(true),
+}).strict();
+
+const refundSchema = z.object({
+  merchant_refund_no: z.string().min(1).max(64),
+  type: z.enum(["full", "partial", "price_adjustment"]),
+  amount: z.string(),
+  reason: z.string().min(1).max(500),
+}).strict();
+
+const listOrdersQuerySchema = z.object({
+  payment_status: z.enum(["pending", "paid", "expired", "closed", "partially_refunded", "refunded"]).optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+}).strict();
+
+export async function buildApp(config: AppConfig, runtime: Runtime): Promise<FastifyInstance> {
+  const app = Fastify({
+    logger: {
+      level: config.logLevel,
+      serializers: {
+        req: (request) => ({method: request.method, url: request.url.split("?")[0] ?? "", remoteAddress: request.ip}),
+      },
+      redact: {
+        paths: [
+          "req.headers.authorization", "req.headers.cookie", "req.headers.x-signature",
+          "req.headers.x-key-id", "req.headers.x-platform-admin-token", "req.body.session_data", "req.body.credential",
+          "req.body.api_key", "req.body.webhook_secret", "req.body.direct_payment_resource_id", "*.client_secret", "*.secret",
+          "req.body.password", "req.body.currentPassword", "req.body.newPassword", "req.headers.x-csrf-token", "res.headers.set-cookie",
+          "req.body.code", "req.body.token",
+          "req.body.privateKey", "req.body.publicKey", "req.body.apiSecret", "req.body.webhookSecret",
+          "req.headers.djp-webhook-signature",
+        ],
+        censor: "[REDACTED]",
+      },
+    },
+    trustProxy: config.trustProxy,
+    bodyLimit: 64 * 1024,
+  });
+
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", {parseAs: "buffer"}, (request, body, done) => {
+    const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    request.rawBody = buffer;
+    try {
+      done(null, buffer.length === 0 ? {} : JSON.parse(buffer.toString("utf8")));
+    } catch (error) {
+      done(error as Error);
+    }
+  });
+
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (request.routeOptions.url?.startsWith("/workspace/api/")) {
+      const elapsed = Math.max(0, reply.elapsedTime);
+      reply.header("server-timing", `app;dur=${elapsed.toFixed(1)}`);
+      reply.header("x-quefa-request-id", request.id);
+      if (elapsed >= 500) request.log.warn({route: request.routeOptions.url, responseTime: elapsed, requestId: request.id}, "slow workspace request");
+    }
+    return payload;
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AppError) {
+      return reply.code(error.statusCode).send({error: {code: error.code, message: error.message, request_id: request.id, retryable: error.retryable}});
+    }
+    if (error instanceof ZodError) {
+      const issue = error.issues[0];
+      const field = issue?.path?.join(".") ?? "";
+      const message = issue?.code === "too_small" && field === "newPassword" ? "新密码至少 8 位"
+        : issue?.code === "too_small" && field === "password" ? "密码至少 8 位"
+        : "请求字段无效";
+      return reply.code(400).send({error: {code: "invalid_request", message, request_id: request.id, retryable: false}});
+    }
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    request.log.error({errorName, requestId: request.id}, "request failed");
+    return reply.code(500).send({error: {code: "internal_error", message: "服务内部错误", request_id: request.id, retryable: true}});
+  });
+
+  // HMAC 覆盖原始请求体，因此必须在内容解析完成后认证。
+  app.addHook("preValidation", async (request) => {
+    if (request.routeOptions.url?.startsWith("/v1/")) request.tenant = await runtime.authenticator.authenticate(request);
+  });
+
+  app.get("/health/live", async () => ({status: "ok"}));
+  app.get("/health/ready", async () => ({status: "ok", storage: config.storageDriver === "sqlite"
+    ? config.nodeEnv === "production" ? "sqlite" : "sqlite-sandbox"
+    : "memory-test"}));
+
+  app.get("/v1/products", async (request) => ({data: runtime.catalog.list(requireTenant(request).merchantId).map(publicProduct)}));
+  app.get("/v1/payment-methods", async () => ({data: runtime.paymentSettings.available().map(c => ({
+    code: c === "alipay_page" ? "alipay" : "usdt", name: c === "alipay_page" ? "支付宝" : "USDT",
+  }))}));
+
+  app.get<{Querystring: {payment_status?: string; cursor?: string; limit?: string}}>("/v1/orders", async (request) => {
+    const tenant = requireTenant(request);
+    const input = listOrdersQuerySchema.parse(request.query);
+    const filtered = runtime.repository.listOrders(tenant.merchantId)
+      .filter((order) => !input.payment_status || order.paymentStatus === input.payment_status);
+    const cursorIndex = input.cursor ? filtered.findIndex((order) => order.id === input.cursor) : -1;
+    if (input.cursor && cursorIndex < 0) throw new AppError(400, "invalid_cursor", "订单游标无效");
+    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+    const page = filtered.slice(start, start + input.limit);
+    const hasMore = start + page.length < filtered.length;
+    return {data: page.map((order) => publicOrder(order, latestFulfillmentOf(runtime.repository.listFulfillments(tenant.merchantId, order.id)))), next_cursor: hasMore ? page.at(-1)?.id ?? null : null};
+  });
+
+  app.post("/v1/orders", async (request, reply) => {
+    const tenant = requireTenant(request);
+    const input = createOrderSchema.parse(request.body);
+    if (input.notify_url && !input.notify_url.startsWith("https://") && !config.enableSandboxRoutes) {
+      throw new AppError(422, "https_webhook_required", "生产 Webhook 地址必须使用 HTTPS");
+    }
+    for (const key of Object.keys(input.metadata ?? {})) {
+      if (/token|session|cookie|password|secret|authorization/i.test(key)) {
+        throw new AppError(422, "sensitive_metadata_key", "metadata 不允许包含敏感字段");
+      }
+    }
+    if (input.notify_url) input.notify_url = new URL(input.notify_url).toString().replace(/\/$/, "");
+    runtime.webhooks.assertRegisteredEndpoint(tenant.merchantId, input.notify_url);
+    return sendIdempotent(runtime, request, reply, "POST /v1/orders", 201, async () => {
+      const order = await runtime.orders.create(tenant, {
+        merchantOrderNo: input.merchant_order_no,
+        productCode: input.product_code,
+        quantity: input.quantity,
+        saleAmount: input.sale_amount,
+        collectionMode: input.collection_mode ?? "platform_collect",
+        deliveryMode: input.delivery_mode,
+        paymentChannel: input.payment_channel === "usdt" ? "dujiaopay" : input.payment_channel === "alipay" ? "alipay_page" : undefined,
+        metadata: input.metadata ?? {},
+        notifyUrl: input.notify_url,
+      });
+      runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "order.create", targetType: "order", targetId: order.id, requestId: request.id});
+      return {data: publicOrder(order, null), idempotent: false};
+    });
+  });
+
+  app.get<{Params: {orderId: string}}>("/v1/orders/:orderId", async (request) => {
+    const tenant = requireTenant(request);
+    const order = runtime.orders.get(tenant.merchantId, request.params.orderId);
+    const latest = latestFulfillmentOf(runtime.repository.listFulfillments(tenant.merchantId, order.id));
+    return {data: publicOrder(order, latest, latest ? runtime.fulfillments.canResubmit(latest) : false)};
+  });
+
+  app.post<{Params: {orderId: string}}>("/v1/orders/:orderId/fulfillments", async (request, reply) => {
+    const tenant = requireTenant(request);
+    const input = fulfillmentSchema.parse(request.body);
+    return sendIdempotent(runtime, request, reply, "POST /v1/orders/:orderId/fulfillments", 202, async () => {
+      const value = runtime.fulfillments.create(tenant, request.params.orderId, input.session_data);
+      runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "fulfillment.create", targetType: "fulfillment", targetId: value.id, requestId: request.id});
+      return {data: publicFulfillment(value, runtime.agents.profile(tenant.merchantId).orderVisibility)};
+    });
+  });
+
+  app.get<{Params: {orderId: string}}>("/v1/orders/:orderId/fulfillments", async (request) => {
+    const tenant = requireTenant(request);
+    const visibility = runtime.agents.profile(tenant.merchantId).orderVisibility;
+    return {data: runtime.fulfillments.list(tenant.merchantId, request.params.orderId).map(value => publicFulfillment(value, visibility, runtime.fulfillments.canResubmit(value)))};
+  });
+
+  app.post<{Params: {orderId: string}}>("/v1/orders/:orderId/refunds", async (request, reply) => {
+    const tenant = requireTenant(request);
+    const input = refundSchema.parse(request.body);
+    return sendIdempotent(runtime, request, reply, "POST /v1/orders/:orderId/refunds", 202, async () => {
+      const value = runtime.refunds.request(tenant, request.params.orderId, {
+        merchantRefundNo: input.merchant_refund_no,
+        type: input.type,
+        amount: input.amount,
+        reason: input.reason,
+      });
+      runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "refund.request", targetType: "refund", targetId: value.id, requestId: request.id});
+      return {data: publicRefund(value)};
+    });
+  });
+
+  app.get<{Params: {refundId: string}}>("/v1/refunds/:refundId", async (request) => {
+    const tenant = requireTenant(request);
+    return {data: publicRefund(runtime.refunds.get(tenant.merchantId, request.params.refundId))};
+  });
+
+  app.get("/v1/ledger", async (request) => {
+    const tenant = requireTenant(request);
+    return {
+      data: runtime.repository.listLedger(tenant.merchantId).map((item) => ({
+        entry_id: item.id, occurred_at: item.occurredAt.toISOString(), order_id: item.orderId,
+        type: item.type, amount: minorToMoney(item.amountMinor), direction: item.direction, currency: "CNY",
+      })),
+      next_cursor: null,
+    };
+  });
+
+  app.get("/v1/settlements", async (request) => {
+    const tenant = requireTenant(request);
+    return {data: runtime.repository.listSettlements(tenant.merchantId).map(publicSettlement), next_cursor: null};
+  });
+
+  app.get<{Params: {settlementId: string}}>("/v1/settlements/:settlementId", async (request) => {
+    const tenant = requireTenant(request);
+    const value = runtime.repository.findSettlement(tenant.merchantId, request.params.settlementId);
+    if (!value) throw new AppError(404, "settlement_not_found", "结算单不存在");
+    return {data: publicSettlement(value)};
+  });
+
+  app.post("/v1/webhooks/test", async (request, reply) => {
+    const tenant = requireTenant(request);
+    return sendIdempotent(runtime, request, reply, "POST /v1/webhooks/test", 202, async () => {
+      const event = runtime.webhooks.emit(tenant.merchantId, `${tenant.merchantId}:${request.id}:webhook.test`, "webhook.test", tenant.merchantId, {event: "webhook.test", request_id: request.id});
+      return {data: {event_id: event.id, status: "queued"}};
+    });
+  });
+
+  registerPublicRechargeRoutes(app, runtime);
+  registerWorkspacePage(app);
+  registerPartnerRedemptionRoutes(app, runtime);
+  registerAlipayRoutes(app, runtime, config.publicBaseUrl);
+  registerUsdtRoutes(app, config, runtime);
+  registerLiveTestAdminPage(app);
+  registerOperationsRoutes(app, config, runtime);
+  registerSupplierAdminRoutes(app, config, runtime);
+  if (config.enableSandboxRoutes) registerSandboxRoutes(app, config, runtime);
+  return app;
+}
+
+function registerSandboxRoutes(app: FastifyInstance, config: AppConfig, runtime: Runtime): void {
+  app.addHook("preHandler", async (request) => {
+    if (!request.url.startsWith("/sandbox/")) return;
+    if (request.url.startsWith("/sandbox/pay/")) return;
+    const supplied = header(request, "x-sandbox-token");
+    if (!secureTextEqual(config.sandboxAdminToken, supplied)) throw new AppError(401, "invalid_sandbox_token", "沙箱令牌无效");
+  });
+
+  app.get<{Params: {orderId: string}}>("/sandbox/pay/:orderId", async (request, reply) => {
+    const order = runtime.repository.findOrderInternal(request.params.orderId);
+    if (!order) throw new AppError(404, "order_not_found", "沙箱订单不存在");
+    const isPending = order.paymentStatus === "pending" && order.expiresAt > new Date();
+    const statusText = order.paymentStatus === "paid" ? "已支付" : isPending ? "等待付款" : "不可支付";
+    reply
+      .header("cache-control", "no-store")
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+      .type("text/html; charset=utf-8");
+    const rechargeLink = order.paymentStatus === "paid" ? `<a id="recharge" href="${escapeHtml(order.fulfillmentUrl)}">继续充值或兑换</a>` : `<a id="recharge" href="${escapeHtml(order.fulfillmentUrl)}" hidden>继续充值或兑换</a>`;
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quefa 沙箱付款</title><style>body{font-family:system-ui;margin:0;background:#f4f6fa;color:#172033}.card{max-width:420px;margin:8vh auto;background:white;padding:32px;border-radius:18px;box-shadow:0 12px 40px #17203320}h1{font-size:22px}.amount{font-size:36px;font-weight:700;margin:24px 0}.meta{color:#667085;word-break:break-all}button,a{display:block;box-sizing:border-box;width:100%;padding:14px;border:0;border-radius:10px;background:#1677ff;color:white;font-size:16px;text-align:center;text-decoration:none;margin-top:12px}button:disabled{background:#aab4c3}</style></head><body><main class="card"><h1>Quefa 模拟支付宝</h1><p class="meta">仅用于沙箱，不产生真实扣款</p><div class="amount">¥${minorToMoney(order.saleAmountMinor)}</div><p>状态：<strong id="status">${statusText}</strong></p><p class="meta">订单：${escapeHtml(order.merchantOrderNo)}</p><button id="pay" ${isPending ? "" : "disabled"}>确认模拟付款</button>${rechargeLink}</main><script>document.getElementById('pay').onclick=async()=>{const b=document.getElementById('pay');b.disabled=true;const r=await fetch(location.pathname+'/confirm',{method:'POST'});const j=await r.json();if(!r.ok){document.getElementById('status').textContent=j.error?.message||'付款失败';b.disabled=false;return}document.getElementById('status').textContent='已支付';document.getElementById('recharge').hidden=false;}</script></body></html>`;
+  });
+
+  app.post<{Params: {orderId: string}}>("/sandbox/pay/:orderId/confirm", async (request) => {
+    const order = runtime.repository.findOrderInternal(request.params.orderId);
+    if (!order) throw new AppError(404, "order_not_found", "沙箱订单不存在");
+    if (order.paymentStatus === "paid") return {data: {order_id: order.id, payment_status: order.paymentStatus, fulfillment_url: order.fulfillmentUrl}};
+    if (order.paymentStatus !== "pending" || order.expiresAt <= new Date()) {
+      throw new AppError(409, "sandbox_payment_unavailable", "订单已过期或不可支付");
+    }
+    const paid = runtime.payment.markPaid(order.merchantId, order.id, {
+      providerRef: `sandbox_${order.id}`,
+      receivedMinor: order.saleAmountMinor,
+      feeMinor: 0n,
+    });
+    return {data: {order_id: paid.id, payment_status: paid.paymentStatus, fulfillment_url: paid.fulfillmentUrl}};
+  });
+
+  app.post<{Params: {partnerId: string; orderId: string}}>("/sandbox/merchants/:partnerId/orders/:orderId/pay", async (request) => {
+    const merchant = runtime.repository.findMerchantByPartner(request.params.partnerId);
+    if (!merchant) throw new AppError(404, "merchant_not_found", "代理商不存在");
+    const order = runtime.orders.get(merchant.id, request.params.orderId);
+    const paid = runtime.payment.markPaid(merchant.id, order.id, {providerRef: `sandbox_${order.id}`, receivedMinor: order.saleAmountMinor, feeMinor: 0n});
+    return {data: publicOrder(paid, null)};
+  });
+
+  app.post<{Params: {partnerId: string; refundId: string}}>("/sandbox/merchants/:partnerId/refunds/:refundId/succeed", async (request) => {
+    const merchant = runtime.repository.findMerchantByPartner(request.params.partnerId);
+    if (!merchant) throw new AppError(404, "merchant_not_found", "代理商不存在");
+    return {data: publicRefund(runtime.refunds.completeForSandbox(merchant.id, request.params.refundId))};
+  });
+
+  app.post("/sandbox/worker/fulfillments/tick", async () => {
+    const value = await runtime.fulfillments.processOne();
+    return {data: value ? publicFulfillment(value) : null};
+  });
+
+  app.post("/sandbox/worker/cdks/tick", async () => {
+    const value = await runtime.cdk.issueOne();
+    return {data: value ? {order_id: value.orderId, voucher_code: value.publicCode, status: value.status} : null};
+  });
+}
+
+async function sendIdempotent(
+  runtime: Runtime,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  routeKey: string,
+  successStatus: number,
+  action: () => Promise<unknown>,
+): Promise<unknown> {
+  const tenant = requireTenant(request);
+  const key = header(request, "idempotency-key");
+  const requestHash = createHash("sha256")
+    .update(request.method)
+    .update("\0")
+    .update(request.url)
+    .update("\0")
+    .update(request.rawBody ?? Buffer.alloc(0))
+    .digest("hex");
+  const existing = runtime.repository.getIdempotency(tenant.merchantId, tenant.appId, routeKey, key);
+  if (existing) {
+    if (existing.requestHash !== requestHash) throw new AppError(409, "idempotency_conflict", "同一幂等键对应不同请求");
+    reply.header("Idempotent-Replayed", "true").code(existing.responseStatus);
+    const body = existing.responseBody as Record<string, unknown>;
+    return {...body, idempotent: true};
+  }
+  const body = await action();
+  runtime.repository.saveIdempotency({
+    merchantId: tenant.merchantId, appId: tenant.appId, routeKey, key, requestHash,
+    responseStatus: successStatus, responseBody: body,
+  });
+  reply.code(successStatus);
+  return body;
+}
+
+function requireTenant(request: FastifyRequest): TenantContext {
+  if (!request.tenant) throw new AppError(401, "unauthenticated", "请求未认证");
+  return request.tenant;
+}
+
+function header(request: FastifyRequest, name: string): string {
+  const value = request.headers[name];
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
+function secureTextEqual(expected: string, supplied: string): boolean {
+  const left = Buffer.from(expected);
+  const right = Buffer.from(supplied);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function publicProduct(value: ProductGrant) {
+  return {
+    product_code: value.productCode, name: value.name,
+    supply_price: minorToMoney(value.supplyPriceMinor), max_sale_price: minorToMoney(value.maxSalePriceMinor),
+    currency: value.currency, max_quantity: value.maxQuantity, available: value.available,
+    fulfillment_mode: value.fulfillmentMode,
+    delivery_modes: value.fulfillmentMode === "cdk" ? ["auto_recharge", "cdk"] : ["auto_recharge"],
+  };
+}
+
+function publicOrder(value: Order, fulfillment: Fulfillment | null = null, retryAllowed = fulfillment ? canResubmitFulfillment(fulfillment) : false) {
+  const merchantMargin = value.collectionMode === "agent_collect" ? 0n : value.saleAmountMinor - value.supplyAmountMinor - value.ordinaryRefundedMinor;
+  return {
+    collection_mode: value.collectionMode ?? "platform_collect",
+    payment_scope: value.collectionMode === "agent_collect" ? "procurement" : "retail",
+    order_id: value.id, merchant_order_no: value.merchantOrderNo, product_code: value.productCode,
+    quantity: value.quantity, sale_amount: minorToMoney(value.saleAmountMinor), supply_amount: minorToMoney(value.supplyAmountMinor),
+    refunded_amount: minorToMoney(value.ordinaryRefundedMinor), price_adjustment_amount: minorToMoney(value.priceAdjustmentRefundedMinor),
+    merchant_margin: minorToMoney(merchantMargin), currency: value.currency, payment_status: value.paymentStatus,
+    metadata: value.metadata,
+    qr_payload: value.qrPayload, qr_image_url: value.qrImageUrl, paid_at: value.paidAt?.toISOString() ?? null,
+    fulfillment_mode: value.fulfillmentMode ?? "direct", fulfillment_url: value.fulfillmentUrl,
+    delivery_mode: value.deliveryMode ?? (value.fulfillmentMode === "cdk" ? "cdk" : "auto_recharge"),
+    voucher_code: (value.deliveryMode ?? (value.fulfillmentMode === "cdk" ? "cdk" : "auto_recharge")) === "cdk" ? value.voucherCode : null,
+    fallback_recharge_available: Boolean(value.fallbackRechargeAvailable) && retryAllowed,
+    fulfillment_status: fulfillment?.status ?? null,
+    retry_allowed: retryAllowed,
+    fulfillment_failure_code: fulfillment?.failureCode ?? null,
+    sync_mark: orderSyncMark(value.paymentStatus, fulfillment),
+    created_at: value.createdAt.toISOString(), expires_at: value.expiresAt.toISOString(),
+  };
+}
+
+function publicFulfillment(value: Fulfillment, visibility?: OrderVisibilityField[], retryAllowed = canResubmitFulfillment(value)) {
+  return {
+    fulfillment_id: value.id, order_id: value.orderId, attempt_no: value.attemptNo, status: value.status,
+    ...partnerFulfillmentProgress(value),
+    retry_allowed: retryAllowed,
+    next_action: value.status === "succeeded" ? "none" : retryAllowed ? "resubmit" : "wait",
+    failure_code: value.failureCode, message: partnerFulfillmentMessage(value), account_email_masked: value.accountEmailMasked,
+    ...partnerFulfillmentDetails(value, visibility),
+    fulfillment_mode: value.mode ?? "direct",
+    created_at: value.createdAt.toISOString(), finished_at: value.finishedAt?.toISOString() ?? null,
+  };
+}
+
+function publicRefund(value: Refund) {
+  return {
+    refund_id: value.id, order_id: value.orderId, merchant_refund_no: value.merchantRefundNo,
+    type: value.type, amount: minorToMoney(value.amountMinor), status: value.status,
+    failure_code: value.failureCode, created_at: value.createdAt.toISOString(), refunded_at: value.refundedAt?.toISOString() ?? null,
+  };
+}
+
+function publicSettlement(value: Settlement) {
+  return {
+    settlement_id: value.id, period_from: value.periodFrom.toISOString(), period_to: value.periodTo.toISOString(),
+    status: value.status, gross_amount: minorToMoney(value.grossMinor), adjustment_amount: minorToMoney(value.adjustmentMinor),
+    payable_amount: minorToMoney(value.payableMinor), currency: value.currency,
+    sealed_at: value.sealedAt?.toISOString() ?? null, paid_at: value.paidAt?.toISOString() ?? null,
+    created_at: value.createdAt.toISOString(),
+    lines: value.lines.map((line) => ({line_id: line.id, order_id: line.orderId, type: line.sourceType, amount: minorToMoney(line.amountMinor), original_settlement_line_id: line.originalSettlementLineId})),
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}

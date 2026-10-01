@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Quefa backup restore verification weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:10:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=quefa-restore-test.service
+
+[Install]
+WantedBy=timers.target

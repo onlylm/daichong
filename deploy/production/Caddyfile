@@ -1,0 +1,62 @@
+{
+	admin off
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+tibo.ink {
+	import security_headers
+
+	@root path /
+	redir @root /developers 302
+
+	# 公网主站开放代理商工作台；健康检查与管理面仍不暴露。
+	@blocked path /internal/admin* /sandbox* /health*
+	respond @blocked 404
+
+	reverse_proxy 127.0.0.1:3200 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+www.tibo.ink {
+	redir https://tibo.ink{uri} permanent
+}
+
+api.tibo.ink {
+	import security_headers
+
+	@private path /workspace* /internal/admin* /sandbox* /health*
+	respond @private 404
+
+	reverse_proxy 127.0.0.1:3200 {
+		header_up X-Forwarded-Proto https
+	}
+}
+
+admin.tibo.ink {
+	import security_headers
+
+	# route 保持显式执行顺序，避免兜底 respond 抢在反向代理之前执行。
+	route {
+		@root path /
+		redir @root /workspace 302
+
+		# 独立后台域名只暴露工作台页面与其同源接口，不暴露开放 API、回调或健康检查。
+		@workspace path /workspace*
+		reverse_proxy @workspace 127.0.0.1:3200 {
+			header_up X-Forwarded-Proto https
+		}
+
+		respond 404
+	}
+}

@@ -1,0 +1,540 @@
+openapi: 3.1.0
+info:
+  title: Quefa 充值供应管理内部 API
+  version: 1.0.0
+  description: >-
+    仅供 Quefa 平台运营人员管理充值供应连接、套餐、商品映射和对账。
+    本接口不是代理商开放 API，不提供任何虚拟支付工具的创建、资料查询、充值、退款或状态控制能力。
+servers:
+  - url: https://admin.example.com
+    description: Quefa 内部管理域名（示例）
+security:
+  - platformAdminToken: []
+tags:
+  - name: 供应连接
+  - name: 套餐与映射
+  - name: 供应对账
+paths:
+  /internal/admin/api/supply/test-orders:
+    get:
+      summary: 查询受控实单联调订单
+      operationId: listLiveTestOrders
+      responses:
+        "200":
+          description: 仅返回 Quefa 订单和本地任务状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [order_id, payment_status, fulfillment_mode, voucher_status, fulfillments]
+                      properties:
+                        order_id: {type: string}
+                        payment_status: {type: string}
+                        fulfillment_mode: {type: string, enum: [direct, cdk]}
+                        voucher_status: {type: [string, "null"]}
+                        fulfillments:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              fulfillment_id: {type: string}
+                              status: {type: string}
+                              submission_approved: {type: boolean}
+                              submitted: {type: boolean}
+                              message: {type: [string, "null"]}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/test-orders/{orderId}/disable-cdk:
+    post:
+      summary: 停用未兑换的实单测试 CDK
+      description: 停用不等于退款；结果未知保持锁定，再次调用可核对。不可停用已派发兑换中的码。
+      operationId: disableLiveTestCdk
+      parameters:
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirm_disable]
+              properties:
+                confirm_disable: {type: boolean, const: true}
+      responses:
+        "200":
+          description: 确认停用，无自动退款
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      order_id: {type: string}
+                      voucher_status: {type: string, const: disabled}
+                      service_fee_refund_status: {type: string, const: not_requested}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/test-orders/{orderId}/fulfillments/{fulfillmentId}/{action}:
+    post:
+      summary: 逐笔批准真实充值或取消尚未派发的任务
+      description: approve 可能立即产生上游扣费；cancel 仅限未领取、未派发任务，不保证取消已受理充值。
+      operationId: actOnLiveTestFulfillment
+      parameters:
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+        - {name: fulfillmentId, in: path, required: true, schema: {type: string}}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [approve, cancel]}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  description: action=approve 时使用
+                  additionalProperties: false
+                  required: [acknowledge_real_charge]
+                  properties:
+                    acknowledge_real_charge: {type: boolean, const: true}
+                - type: object
+                  description: action=cancel 时使用
+                  additionalProperties: false
+                  required: [confirm_cancel]
+                  properties:
+                    confirm_cancel: {type: boolean, const: true}
+      responses:
+        "200":
+          description: 操作成功，不代表充值成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      order_id: {type: string}
+                      fulfillment_id: {type: string}
+                      status: {type: string}
+                      submission_approved: {type: boolean}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/connection:
+    get:
+      tags: [供应连接]
+      summary: 查询脱敏后的供应连接
+      operationId: getSupplierConnection
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [供应连接]
+      summary: 保存供应连接
+      description: 敏感值只写；响应仅返回是否已配置，不返回原值。
+      operationId: updateSupplierConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectionInput"
+      responses:
+        "200":
+          description: 保存成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/test:
+    post:
+      tags: [供应连接]
+      summary: 测试鉴权、余额与 GPT 套餐接口
+      operationId: testSupplierConnection
+      responses:
+        "200":
+          description: 测试成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status, balance]
+                    properties:
+                      status: {const: succeeded}
+                      balance: {$ref: "#/components/schemas/Balance"}
+                      pricing_version: {type: [integer, "null"]}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/balance:
+    get:
+      tags: [供应连接]
+      summary: 查询供应账户余额
+      operationId: getSupplierBalance
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: "#/components/schemas/Balance"}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/plans:
+    get:
+      tags: [套餐与映射]
+      summary: 查询最近同步的充值套餐
+      operationId: listSupplierPlans
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/SupplierPlan"}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/plans/sync:
+    post:
+      tags: [套餐与映射]
+      summary: 同步 GPT、Claude 与 Grok 充值套餐
+      operationId: syncSupplierPlans
+      responses:
+        "200":
+          description: 同步成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/SupplierPlan"}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/mappings:
+    get:
+      tags: [套餐与映射]
+      summary: 查询 Quefa 商品映射
+      operationId: listSupplierMappings
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/ProductMapping"}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/mappings/{productCode}:
+    put:
+      tags: [套餐与映射]
+      summary: 更新 Quefa 商品映射
+      operationId: updateSupplierMapping
+      parameters:
+        - name: productCode
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 64}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductMappingInput"
+      responses:
+        "200":
+          description: 保存成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: "#/components/schemas/ProductMapping"}
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/reconciliation/direct-orders:
+    get:
+      tags: [供应对账]
+      summary: 查询脱敏后的直充订单
+      operationId: listSupplierDirectOrders
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectOrderListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/reconciliation/cdks:
+    get:
+      tags: [供应对账]
+      summary: 查询脱敏后的 CDK 库存
+      operationId: listSupplierCdks
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CdkListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /internal/admin/api/supply/reconciliation/cdk-orders:
+    get:
+      tags: [供应对账]
+      summary: 查询脱敏后的 CDK 兑换订单
+      operationId: listSupplierCdkOrders
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CdkOrderListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    platformAdminToken:
+      type: apiKey
+      in: header
+      name: X-Platform-Admin-Token
+      description: 仅 Quefa 内部使用；生产应由 Secret Manager 注入并经内网/WAF 限制。
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+    PageSize:
+      name: page_size
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+  responses:
+    Error:
+      description: 请求失败
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ConnectionInput:
+      type: object
+      additionalProperties: false
+      required: [name, environment, open_api_base, cdk_base, enabled]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        environment: {type: string, enum: [sandbox, production]}
+        open_api_base: {type: string, format: uri, pattern: "^https://"}
+        cdk_base: {type: string, format: uri, pattern: "^https://"}
+        enabled: {type: boolean}
+        api_key: {type: string, minLength: 16, maxLength: 500, writeOnly: true}
+        config_version:
+          type: integer
+          minimum: 1
+          description: 读取配置时的版本；不匹配返回 409，管理页面保存时携带。
+        webhook_secret: {type: string, minLength: 16, maxLength: 500, writeOnly: true}
+        direct_payment_resource_id: {type: integer, minimum: 1, writeOnly: true}
+        clear_api_key: {type: boolean, default: false}
+        clear_webhook_secret: {type: boolean, default: false}
+        clear_direct_payment_resource: {type: boolean, default: false}
+    Connection:
+      type: object
+      required:
+        - id
+        - name
+        - provider
+        - environment
+        - open_api_base
+        - cdk_base
+        - enabled
+        - api_key_configured
+        - webhook_secret_configured
+        - direct_payment_resource_configured
+        - config_version
+        - last_test_status
+        - updated_at
+      properties:
+        id: {type: string}
+        name: {type: string}
+        provider: {const: configured_recharge_supplier}
+        environment: {type: string, enum: [sandbox, production]}
+        open_api_base: {type: string, format: uri}
+        cdk_base: {type: string, format: uri}
+        enabled: {type: boolean}
+        api_key_configured: {type: boolean}
+        webhook_secret_configured: {type: boolean}
+        direct_payment_resource_configured: {type: boolean}
+        config_version: {type: integer, minimum: 1}
+        execution_mode: {type: string, enum: [mock, supplier]}
+        last_test_status: {type: string, enum: [never, succeeded, failed]}
+        last_test_message: {type: [string, "null"]}
+        last_test_at: {type: [string, "null"], format: date-time}
+        last_plan_sync_at: {type: [string, "null"], format: date-time}
+        updated_at: {type: string, format: date-time}
+    ConnectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data: {$ref: "#/components/schemas/Connection"}
+    Balance:
+      type: object
+      required: [balance, spendable_balance, reserve_amount, minimum_deposit_amount, currency]
+      properties:
+        balance: {type: [number, "null"]}
+        spendable_balance: {type: [number, "null"]}
+        reserve_amount: {type: [number, "null"]}
+        minimum_deposit_amount: {type: [number, "null"]}
+        currency: {type: string}
+    SupplierPlan:
+      type: object
+      required: [product, plan, name, enabled, purchasable, service_fee_usd_minor, pricing_version, synced_at]
+      properties:
+        product: {type: string, enum: [gpt, claude, grok]}
+        plan: {type: string}
+        name: {type: string}
+        enabled: {type: boolean}
+        purchasable: {type: boolean}
+        service_fee_usd_minor: {type: [integer, "null"], minimum: 0}
+        pricing_version: {type: [integer, "null"]}
+        synced_at: {type: string, format: date-time}
+    ProductMappingInput:
+      type: object
+      additionalProperties: false
+      required: [fulfillment_mode, supplier_product, supplier_plan, enabled]
+      properties:
+        fulfillment_mode: {type: string, enum: [direct, cdk]}
+        supplier_product: {type: string, enum: [gpt, claude, grok]}
+        supplier_plan: {type: string, minLength: 1, maxLength: 64}
+        enabled: {type: boolean}
+    ProductMapping:
+      type: object
+      additionalProperties: false
+      required: [product_code, fulfillment_mode, supplier_product, supplier_plan, enabled, version, updated_at]
+      properties:
+        product_code: {type: string}
+        fulfillment_mode: {type: string, enum: [direct, cdk]}
+        supplier_product: {type: string, enum: [gpt, claude, grok]}
+        supplier_plan: {type: string}
+        enabled: {type: boolean}
+        version: {type: integer, minimum: 1}
+        updated_at: {type: string, format: date-time}
+    ReconciliationPage:
+      type: object
+      required: [total, list]
+      properties:
+        total: {type: integer, minimum: 0}
+        list: {type: array, items: {type: object}}
+    DirectOrderListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/ReconciliationPage"
+            - type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: "#/components/schemas/RechargeOrderRow"}
+    CdkListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/ReconciliationPage"
+            - type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: "#/components/schemas/CdkRow"}
+    CdkOrderListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/ReconciliationPage"
+            - type: object
+              properties:
+                list:
+                  type: array
+                  items: {$ref: "#/components/schemas/RechargeOrderRow"}
+    RechargeOrderRow:
+      type: object
+      properties:
+        supplier_order_id: {type: [string, number, "null"]}
+        client_request_id: {type: [string, number, "null"]}
+        product: {type: [string, number, "null"]}
+        plan: {type: [string, number, "null"]}
+        status: {type: [string, number, "null"]}
+        stage: {type: [string, number, "null"]}
+        account_email_masked: {type: [string, number, "null"]}
+        quoted_amount_minor: {type: [number, "null"]}
+        final_amount_minor: {type: [number, "null"]}
+        currency: {type: [string, number, "null"]}
+        created_at: {type: [string, number, "null"]}
+        updated_at: {type: [string, number, "null"]}
+    CdkRow:
+      type: object
+      properties:
+        supplier_cdk_id: {type: [string, number, "null"]}
+        plan: {type: [string, number, "null"]}
+        status: {type: [string, number, "null"]}
+        fee_amount_minor: {type: [number, "null"]}
+        created_at: {type: [string, number, "null"]}
+        updated_at: {type: [string, number, "null"]}
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
