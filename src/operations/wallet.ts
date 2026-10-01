@@ -174,12 +174,15 @@ export class WalletService {
     };
   }
 
-  adminEntries(actor: Actor, query: {merchantId?: string | undefined; page: number; limit: number}) {
+  adminEntries(actor: Actor, query: {merchantId?: string | undefined; scope?: "all" | "commission"; page: number; limit: number}) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权执行此操作");
     const merchants = new Map(this.repository.listMerchants().map(m => [m.id, m]));
     const merchantId = query.merchantId && query.merchantId !== "all" ? query.merchantId : undefined;
-    const result=queryRecords(this.repository,'wallet_entry',{...(merchantId?{merchantId}:{}),page:query.page,limit:query.limit});
+    const commissionKinds: WalletEntry["kind"][] = ["earning_release", "earning_reversal", "settlement_payout"];
+    const result=queryRecords(this.repository,'wallet_entry',{...(merchantId?{merchantId}:{}),
+      ...(query.scope==="commission"?{filters:[{field:"kind",op:"in" as const,value:commissionKinds}]}:{}),
+      page:query.page,limit:query.limit});
     const {total,pages,page}=result.meta;
     const data = result.data.map(x => {
       const merchant = merchants.get(x.merchantId);

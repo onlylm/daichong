@@ -709,7 +709,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.get("/workspace/api/wallets/entries", async request => {
     const query = z.object({merchantId: z.string().optional(), page: z.coerce.number().int().min(1).default(1),
-      limit: z.coerce.number().int().min(1).max(100).default(30)}).parse(request.query);
+      limit: z.coerce.number().int().min(1).max(100).default(30),
+      scope: z.enum(["all", "commission"]).default("all")}).parse(request.query);
     return wire(runtime.wallets.adminEntries(account(request), query));
   });
   app.get<{Params: {merchantId: string}}>("/workspace/api/wallets/:merchantId", async request => {

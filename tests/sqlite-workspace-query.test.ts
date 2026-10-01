@@ -46,4 +46,17 @@ describe("SQLite workspace batch reads",()=>{
       prepare.mockClear();r.costs.list(admin);expect(prepare).toHaveBeenCalledTimes(4);expect(fulfillments).not.toHaveBeenCalled();
     }finally{vi.restoreAllMocks();r.close();}
   });
+
+  it("filters commission entries before pagination",()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      const merchant=r.repository.listMerchants()[0]!,createdAt=new Date("2026-10-01T02:00:00.000Z");
+      r.repository.saveOperations("wallet_entry",{id:"commission-release",merchantId:merchant.id,kind:"earning_release",procurementDelta:0n,
+        earningsDelta:500n,frozenDelta:0n,reference:"order-commission",actorId:"system",createdAt},true);
+      r.repository.saveOperations("wallet_entry",{id:"commission-deposit",merchantId:merchant.id,kind:"deposit",procurementDelta:10_000n,
+        earningsDelta:0n,frozenDelta:0n,reference:"deposit-not-commission",actorId:"system",createdAt:new Date(createdAt.getTime()+1_000)},true);
+      const result=r.wallets.adminEntries({id:"query-admin",role:"platform_admin",merchantId:null},{merchantId:merchant.id,scope:"commission",page:1,limit:1});
+      expect(result.meta.total).toBe(1);expect(result.data.map(item=>item.id)).toEqual(["commission-release"]);
+    }finally{r.close();}
+  });
 });
