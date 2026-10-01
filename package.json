@@ -19,6 +19,7 @@
     "sandbox:provision": "node --env-file-if-exists=.env dist/cli/provision-sandbox-agent.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "bench:pagination": "npm run build && node scripts/benchmark-history-pagination.mjs",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run build && node scripts/check-workspace-js.mjs"
   },
