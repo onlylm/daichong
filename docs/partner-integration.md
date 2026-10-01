@@ -140,7 +140,7 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 ## 6. 查单与支付
 
-`GET /v1/orders?payment_status=&cursor=&limit=` 分页查询当前代理商订单，默认每页 20 条、最大 100 条。`next_cursor` 为 `null` 表示没有下一页。代理商仍应在自己的数据库保存 `merchant_order_no ↔ order_id` 映射。
+`GET /v1/orders?payment_status=&cursor=&limit=` 分页查询当前代理商订单，默认每页 20 条、最大 100 条。`next_cursor` 为 `null` 表示没有下一页；继续查询时必须原样保留筛选条件。代理商仍应在自己的数据库保存 `merchant_order_no ↔ order_id` 映射。
 
 `GET /v1/orders/{order_id}` 返回订单价格快照、支付状态和退款金额口径；同时附带最近一次履约摘要字段：
 
@@ -380,8 +380,8 @@ CDK 交付模式恢复时仍可由代理后端使用已购买的公开品牌码�
 
 ## 9. 账单与结算
 
-- `GET /v1/ledger?from=&to=&cursor=`：代理商可见台账，包含买家向 Quefa 的付款、Quefa 供货价、退款、补差、代理商差价、待结算和结算划转；不返回支付密钥、Quefa 内部真实履约成本和 Quefa 毛利。
-- `GET /v1/settlements`：结算单列表。
+- `GET /v1/ledger?from=&to=&cursor=&limit=`：代理商可见台账，`from` 为含边界、`to` 为不含边界，默认每页 50 条、最大 100 条；包含买家向 Quefa 的付款、Quefa 供货价、退款、补差、代理商差价、待结算和结算划转，不返回支付密钥、Quefa 内部真实履约成本和 Quefa 毛利。
+- `GET /v1/settlements?cursor=&limit=`：结算单列表，默认每页 50 条、最大 100 条。
 - `GET /v1/settlements/{settlement_id}`：结算汇总、明细、调整与打款信息。
 
 结算单状态：`draft/reviewing/confirmed/paying/paid/failed`。结算对象是 Quefa 应付给代理商的销售差价，不是代理商向 Quefa 支付货款。封存后的结算单不会因后来退款而修改；相关退款在下一结算期显示为负向调整。若当期为负余额，将结转至后续周期或按合同另行处理。

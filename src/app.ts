@@ -18,6 +18,7 @@ import type {OrderVisibilityField} from "./operations/model.js";
 import {registerPartnerRedemptionRoutes} from "./modules/partner-redemption-routes.js";
 import {registerWorkspacePage} from "./operations/workspace-page.js";
 import {registerUsdtRoutes} from "./modules/usdt-routes.js";
+import type {Repository} from "./infra/repository.js";
 
 const createOrderSchema = z.object({
   merchant_order_no: z.string().min(1).max(64),
@@ -49,7 +50,20 @@ const listOrdersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 }).strict();
 
+const listLedgerQuerySchema = z.object({
+  from: z.string().datetime({offset: true}).optional(),
+  to: z.string().datetime({offset: true}).optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict().refine(value => !value.from || !value.to || Date.parse(value.from) <= Date.parse(value.to), {message: "时间范围无效"});
+
+const listSettlementsQuerySchema = z.object({
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+
 export async function buildApp(config: AppConfig, runtime: Runtime): Promise<FastifyInstance> {
+  const repository:Repository=runtime.repository;
   const app = Fastify({
     logger: {
       level: config.logLevel,
@@ -129,14 +143,18 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
   app.get<{Querystring: {payment_status?: string; cursor?: string; limit?: string}}>("/v1/orders", async (request) => {
     const tenant = requireTenant(request);
     const input = listOrdersQuerySchema.parse(request.query);
-    const filtered = runtime.repository.listOrders(tenant.merchantId)
-      .filter((order) => !input.payment_status || order.paymentStatus === input.payment_status);
-    const cursorIndex = input.cursor ? filtered.findIndex((order) => order.id === input.cursor) : -1;
-    if (input.cursor && cursorIndex < 0) throw new AppError(400, "invalid_cursor", "订单游标无效");
-    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0;
-    const page = filtered.slice(start, start + input.limit);
-    const hasMore = start + page.length < filtered.length;
-    return {data: page.map((order) => publicOrder(order, latestFulfillmentOf(runtime.repository.listFulfillments(tenant.merchantId, order.id)))), next_cursor: hasMore ? page.at(-1)?.id ?? null : null};
+    if(repository.queryPartnerOrders){
+      const query:{paymentStatus?:Order["paymentStatus"];cursor?:string;limit:number}={limit:input.limit};
+      if(input.payment_status)query.paymentStatus=input.payment_status;
+      if(input.cursor)query.cursor=input.cursor;
+      const result=repository.queryPartnerOrders(tenant.merchantId,query);
+      if(!result.cursorValid)throw new AppError(400,"invalid_cursor","订单游标无效");
+      const tasks=new Map(result.fulfillments.map(task=>[task.orderId,task]));
+      return {data:result.orders.map(order=>publicOrder(order,tasks.get(order.id)??null)),next_cursor:result.hasMore?result.orders.at(-1)?.id??null:null};
+    }
+    const filtered = runtime.repository.listOrders(tenant.merchantId).filter(order => !input.payment_status || order.paymentStatus === input.payment_status);
+    const page=cursorPage(filtered,input.cursor,input.limit,"订单游标无效");
+    return {data:page.data.map(order=>publicOrder(order,latestFulfillmentOf(runtime.repository.listFulfillments(tenant.merchantId,order.id)))),next_cursor:page.nextCursor};
   });
 
   app.post("/v1/orders", async (request, reply) => {
@@ -212,20 +230,32 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
     return {data: publicRefund(runtime.refunds.get(tenant.merchantId, request.params.refundId))};
   });
 
-  app.get("/v1/ledger", async (request) => {
+  app.get<{Querystring:{from?:string;to?:string;cursor?:string;limit?:string}}>("/v1/ledger", async (request) => {
     const tenant = requireTenant(request);
+    const input=listLedgerQuerySchema.parse(request.query),filtered=repository.queryPartnerLedger?null:repository.listLedger(tenant.merchantId)
+      .filter(item=>(!input.from||item.occurredAt>=new Date(input.from))&&(!input.to||item.occurredAt<new Date(input.to)));
+    const query:{from?:Date;to?:Date;cursor?:string;limit:number}={limit:input.limit};
+    if(input.from)query.from=new Date(input.from);if(input.to)query.to=new Date(input.to);if(input.cursor)query.cursor=input.cursor;
+    const result=repository.queryPartnerLedger?.(tenant.merchantId,query);
+    if(result&&!result.cursorValid)throw new AppError(400,"invalid_cursor","台账游标无效");
+    const page=result?{data:result.entries,nextCursor:result.hasMore?result.entries.at(-1)?.id??null:null}:cursorPage(filtered!,input.cursor,input.limit,"台账游标无效");
     return {
-      data: runtime.repository.listLedger(tenant.merchantId).map((item) => ({
+      data: page.data.map((item) => ({
         entry_id: item.id, occurred_at: item.occurredAt.toISOString(), order_id: item.orderId,
         type: item.type, amount: minorToMoney(item.amountMinor), direction: item.direction, currency: "CNY",
       })),
-      next_cursor: null,
+      next_cursor: page.nextCursor,
     };
   });
 
-  app.get("/v1/settlements", async (request) => {
+  app.get<{Querystring:{cursor?:string;limit?:string}}>("/v1/settlements", async (request) => {
     const tenant = requireTenant(request);
-    return {data: runtime.repository.listSettlements(tenant.merchantId).map(publicSettlement), next_cursor: null};
+    const input=listSettlementsQuerySchema.parse(request.query),query:{cursor?:string;limit:number}={limit:input.limit};if(input.cursor)query.cursor=input.cursor;
+    const result=repository.queryPartnerSettlements?.(tenant.merchantId,query);
+    if(result&&!result.cursorValid)throw new AppError(400,"invalid_cursor","结算单游标无效");
+    const page=result?{data:result.settlements,nextCursor:result.hasMore?result.settlements.at(-1)?.id??null:null}
+      :cursorPage(runtime.repository.listSettlements(tenant.merchantId),input.cursor,input.limit,"结算单游标无效");
+    return {data:page.data.map(publicSettlement),next_cursor:page.nextCursor};
   });
 
   app.get<{Params: {settlementId: string}}>("/v1/settlements/:settlementId", async (request) => {
@@ -352,6 +382,13 @@ async function sendIdempotent(
 function requireTenant(request: FastifyRequest): TenantContext {
   if (!request.tenant) throw new AppError(401, "unauthenticated", "请求未认证");
   return request.tenant;
+}
+
+function cursorPage<T extends {id:string}>(values:T[],cursor:string|undefined,limit:number,errorMessage:string):{data:T[];nextCursor:string|null} {
+  const cursorIndex=cursor?values.findIndex(value=>value.id===cursor):-1;
+  if(cursor&&cursorIndex<0)throw new AppError(400,"invalid_cursor",errorMessage);
+  const start=cursorIndex<0?0:cursorIndex+1,data=values.slice(start,start+limit),hasMore=start+data.length<values.length;
+  return {data,nextCursor:hasMore?data.at(-1)?.id??null:null};
 }
 
 function header(request: FastifyRequest, name: string): string {

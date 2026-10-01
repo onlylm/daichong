@@ -79,11 +79,13 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tenant_status_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_status_order_relation_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_payment_created_idx ON sandbox_records(kind,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt'));
+      CREATE INDEX IF NOT EXISTS records_tenant_payment_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_payment_provider_due_idx ON sandbox_records(kind,json_extract(payload,'$.provider'),json_extract(payload,'$.status'),json_extract(payload,'$.nextCheckAt'));
       CREATE INDEX IF NOT EXISTS records_paid_at_idx ON sandbox_records(kind,json_extract(payload,'$.paidAt'));
       CREATE INDEX IF NOT EXISTS records_task_attempt_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.orderId'),CAST(json_extract(payload,'$.attemptNo') AS INTEGER) DESC);
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_wallet_entry_time_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC);
+      CREATE INDEX IF NOT EXISTS records_tenant_occurred_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.occurredAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_outbox_cursor_idx ON sandbox_records(kind,id);
       CREATE INDEX IF NOT EXISTS records_upstream_client_request_idx ON sandbox_records(kind,json_extract(payload,'$.upstreamClientRequestId'));
       CREATE INDEX IF NOT EXISTS records_username_idx ON sandbox_records(kind,json_extract(payload,'$.username'));
@@ -314,6 +316,62 @@ export class SqliteRepository implements Repository {
     const orders=rows.map(row=>{const order=decode<Order>(String(row.order_payload));
       if(row.merchant_payload){const merchant=decode<Merchant>(String(row.merchant_payload));merchantNames.set(merchant.id,merchant.name);}return order;});
     return {orders,merchantNames:[...merchantNames].map(([merchantId,name])=>({merchantId,name})),meta:{total,page,limit,pages}};
+  }
+
+  queryPartnerOrders(merchantId:string,q:{paymentStatus?:Order["paymentStatus"];cursor?:string;limit:number}) {
+    const created=`json_extract(o.payload,'$.createdAt')`,conditions=[`o.kind='order'`,`o.merchant_id=?`],args:Array<string|number>=[merchantId];
+    if(q.paymentStatus){conditions.push(`json_extract(o.payload,'$.paymentStatus')=?`);args.push(q.paymentStatus);}
+    let cursorValid=true;
+    if(q.cursor){
+      const cursorConditions=[`kind='order'`,`merchant_id=?`,`id=?`],cursorArgs:Array<string|number>=[merchantId,q.cursor];
+      if(q.paymentStatus){cursorConditions.push(`json_extract(payload,'$.paymentStatus')=?`);cursorArgs.push(q.paymentStatus);}
+      const cursor=this.db.prepare(`SELECT json_extract(payload,'$.createdAt') AS createdAt FROM sandbox_records WHERE ${cursorConditions.join(' AND ')} LIMIT 1`).get(...cursorArgs);
+      cursorValid=!!cursor;
+      if(cursor){conditions.push(`(${created}<? OR (${created}=? AND o.id<?))`);args.push(String(cursor.createdAt),String(cursor.createdAt),q.cursor);}
+    }
+    if(!cursorValid)return {orders:[],fulfillments:[],hasMore:false,cursorValid:false};
+    const limit=Math.min(100,Math.max(1,q.limit)),rows=this.db.prepare(`SELECT o.payload AS order_payload,f.payload AS fulfillment_payload
+      FROM sandbox_records o LEFT JOIN sandbox_records f ON f.rowid=(SELECT ff.rowid FROM sandbox_records ff
+        WHERE ff.kind='fulfillment' AND ff.merchant_id=o.merchant_id AND json_extract(ff.payload,'$.orderId')=o.id
+        ORDER BY CAST(json_extract(ff.payload,'$.attemptNo') AS INTEGER) DESC,ff.id DESC LIMIT 1)
+      WHERE ${conditions.join(' AND ')} ORDER BY ${created} DESC,o.id DESC LIMIT ?`).all(...args,limit+1);
+    const page=rows.slice(0,limit);
+    return {orders:page.map(row=>decode<Order>(String(row.order_payload))),
+      fulfillments:page.flatMap(row=>row.fulfillment_payload?[decode<Fulfillment>(String(row.fulfillment_payload))]:[]),
+      hasMore:rows.length>limit,cursorValid:true};
+  }
+
+  queryPartnerLedger(merchantId:string,q:{from?:Date;to?:Date;cursor?:string;limit:number}) {
+    const occurred=`json_extract(payload,'$.occurredAt')`,conditions=[`kind='ledger'`,`merchant_id=?`],args:Array<string|number>=[merchantId];
+    if(q.from){conditions.push(`${occurred}>=?`);args.push(q.from.toISOString());}
+    if(q.to){conditions.push(`${occurred}<?`);args.push(q.to.toISOString());}
+    let cursorValid=true;
+    if(q.cursor){
+      const cursorConditions=[`kind='ledger'`,`merchant_id=?`,`id=?`],cursorArgs:Array<string|number>=[merchantId,q.cursor];
+      if(q.from){cursorConditions.push(`${occurred}>=?`);cursorArgs.push(q.from.toISOString());}
+      if(q.to){cursorConditions.push(`${occurred}<?`);cursorArgs.push(q.to.toISOString());}
+      const cursor=this.db.prepare(`SELECT ${occurred} AS occurredAt FROM sandbox_records WHERE ${cursorConditions.join(' AND ')} LIMIT 1`).get(...cursorArgs);
+      cursorValid=!!cursor;
+      if(cursor){conditions.push(`(${occurred}<? OR (${occurred}=? AND id<?))`);args.push(String(cursor.occurredAt),String(cursor.occurredAt),q.cursor);}
+    }
+    if(!cursorValid)return {entries:[],hasMore:false,cursorValid:false};
+    const limit=Math.min(100,Math.max(1,q.limit)),rows=this.db.prepare(`SELECT payload FROM sandbox_records WHERE ${conditions.join(' AND ')}
+      ORDER BY ${occurred} DESC,id DESC LIMIT ?`).all(...args,limit+1);
+    return {entries:rows.slice(0,limit).map(row=>decode<LedgerItem>(String(row.payload))),hasMore:rows.length>limit,cursorValid:true};
+  }
+
+  queryPartnerSettlements(merchantId:string,q:{cursor?:string;limit:number}) {
+    const created=`json_extract(payload,'$.createdAt')`,conditions=[`kind='settlement'`,`merchant_id=?`],args:Array<string|number>=[merchantId];
+    let cursorValid=true;
+    if(q.cursor){
+      const cursor=this.db.prepare(`SELECT ${created} AS createdAt FROM sandbox_records WHERE kind='settlement' AND merchant_id=? AND id=? LIMIT 1`).get(merchantId,q.cursor);
+      cursorValid=!!cursor;
+      if(cursor){conditions.push(`(${created}<? OR (${created}=? AND id<?))`);args.push(String(cursor.createdAt),String(cursor.createdAt),q.cursor);}
+    }
+    if(!cursorValid)return {settlements:[],hasMore:false,cursorValid:false};
+    const limit=Math.min(100,Math.max(1,q.limit)),rows=this.db.prepare(`SELECT payload FROM sandbox_records WHERE ${conditions.join(' AND ')}
+      ORDER BY ${created} DESC,id DESC LIMIT ?`).all(...args,limit+1);
+    return {settlements:rows.slice(0,limit).map(row=>decode<Settlement>(String(row.payload))),hasMore:rows.length>limit,cursorValid:true};
   }
 
   findDuePaymentOrder(provider:string,now:Date):Order|null {
