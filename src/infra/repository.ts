@@ -35,6 +35,12 @@ export interface ClaimedWebhookDelivery {
   event: OutboxEvent;
 }
 
+export type IdempotencyClaim =
+  | {state: "claimed"}
+  | {state: "replay"; record: IdempotencyRecord}
+  | {state: "conflict"}
+  | {state: "processing"; leaseUntil: Date};
+
 export interface Repository {
   queryRecords?<K extends keyof import('./record-query.js').QueryRecords>(kind:K,query:import('./record-query.js').RecordQuery):import('./record-query.js').RecordPage<import('./record-query.js').QueryRecords[K]>;
   walletTotals?(merchantId:string):{procurement:bigint;earnings:bigint;frozen:bigint};
@@ -169,5 +175,8 @@ export interface Repository {
 
   getIdempotency(merchantId: string, appId: string, routeKey: string, key: string): IdempotencyRecord | null;
   saveIdempotency(value: IdempotencyRecord): void;
+  claimIdempotency(value: IdempotencyRecord, leaseToken: string, now: Date, leaseUntil: Date): IdempotencyClaim;
+  completeIdempotency(value: IdempotencyRecord, leaseToken: string): boolean;
+  releaseIdempotency(merchantId: string, appId: string, routeKey: string, key: string, leaseToken: string): void;
   close?(): void;
 }

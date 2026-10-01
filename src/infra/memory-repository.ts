@@ -22,7 +22,7 @@ import type {
   WebhookDelivery,
   WebhookEndpoint,
 } from "../domain/model.js";
-import type { ClaimedWebhookDelivery, CredentialBundle, Repository } from "./repository.js";
+import type { ClaimedWebhookDelivery, CredentialBundle, IdempotencyClaim, Repository } from "./repository.js";
 import type {OperationsRecords} from "../operations/model.js";
 import {formatPublicOrderNo} from "../domain/public-order-no.js";
 
@@ -466,7 +466,38 @@ export class MemoryRepository implements Repository {
   }
 
   saveIdempotency(value: IdempotencyRecord): void {
-    this.idempotency.set(idempotencyKey(value.merchantId, value.appId, value.routeKey, value.key), clone(value));
+    this.idempotency.set(idempotencyKey(value.merchantId, value.appId, value.routeKey, value.key), clone({...value,
+      state: "completed" as const, leaseToken: null, leaseUntil: null}));
+  }
+
+  claimIdempotency(value: IdempotencyRecord, leaseToken: string, now: Date, leaseUntil: Date): IdempotencyClaim {
+    return this.transaction(() => {
+      const id = idempotencyKey(value.merchantId, value.appId, value.routeKey, value.key);
+      const current = this.idempotency.get(id);
+      if (current) {
+        if (current.requestHash !== value.requestHash) return {state: "conflict"};
+        if (current.state !== "processing") return {state: "replay", record: clone(current)};
+        if (current.leaseUntil && current.leaseUntil > now) return {state: "processing", leaseUntil: new Date(current.leaseUntil)};
+      }
+      this.idempotency.set(id, clone({...value, state: "processing" as const, leaseToken, leaseUntil}));
+      return {state: "claimed"};
+    });
+  }
+
+  completeIdempotency(value: IdempotencyRecord, leaseToken: string): boolean {
+    return this.transaction(() => {
+      const id = idempotencyKey(value.merchantId, value.appId, value.routeKey, value.key), current = this.idempotency.get(id);
+      if (!current || current.state !== "processing" || current.leaseToken !== leaseToken) return false;
+      this.idempotency.set(id, clone({...value, state: "completed" as const, leaseToken: null, leaseUntil: null}));
+      return true;
+    });
+  }
+
+  releaseIdempotency(merchantId: string, appId: string, routeKey: string, key: string, leaseToken: string): void {
+    this.transaction(() => {
+      const id = idempotencyKey(merchantId, appId, routeKey, key), current = this.idempotency.get(id);
+      if (current?.state === "processing" && current.leaseToken === leaseToken) this.idempotency.delete(id);
+    });
   }
 
   close(): void {}

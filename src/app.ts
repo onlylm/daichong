@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import Fastify, {type FastifyInstance, type FastifyReply, type FastifyRequest} from "fastify";
 import { z, ZodError } from "zod";
 import type { AppConfig } from "./config.js";
@@ -417,20 +417,30 @@ async function sendIdempotent(
     .update("\0")
     .update(request.rawBody ?? Buffer.alloc(0))
     .digest("hex");
-  const existing = runtime.repository.getIdempotency(tenant.merchantId, tenant.appId, routeKey, key);
-  if (existing) {
-    if (existing.requestHash !== requestHash) throw new AppError(409, "idempotency_conflict", "同一幂等键对应不同请求");
-    reply.header("Idempotent-Replayed", "true").code(existing.responseStatus);
-    const body = existing.responseBody as Record<string, unknown>;
+  const leaseToken = randomUUID(), now = new Date();
+  const record = {merchantId: tenant.merchantId, appId: tenant.appId, routeKey, key, requestHash,
+    responseStatus: 0, responseBody: null};
+  const claim = runtime.repository.claimIdempotency(record, leaseToken, now, new Date(now.getTime() + 300_000));
+  if (claim.state === "conflict") throw new AppError(409, "idempotency_conflict", "同一幂等键对应不同请求");
+  if (claim.state === "processing") {
+    reply.header("retry-after", String(Math.max(1, Math.ceil((claim.leaseUntil.getTime() - Date.now()) / 1000))));
+    throw new AppError(409, "idempotency_in_progress", "相同请求正在处理中，请稍后查询或使用原幂等键重试", true);
+  }
+  if (claim.state === "replay") {
+    reply.header("Idempotent-Replayed", "true").code(claim.record.responseStatus);
+    const body = claim.record.responseBody as Record<string, unknown>;
     return {...body, idempotent: true};
   }
-  const body = await action();
-  runtime.repository.saveIdempotency({
-    merchantId: tenant.merchantId, appId: tenant.appId, routeKey, key, requestHash,
-    responseStatus: successStatus, responseBody: body,
-  });
-  reply.code(successStatus);
-  return body;
+  try {
+    const body = await action();
+    const completed = runtime.repository.completeIdempotency({...record, responseStatus: successStatus, responseBody: body}, leaseToken);
+    if (!completed) throw new AppError(409, "idempotency_lease_lost", "请求执行状态已变化，请查询原业务结果", true);
+    reply.code(successStatus);
+    return body;
+  } catch (error) {
+    runtime.repository.releaseIdempotency(tenant.merchantId, tenant.appId, routeKey, key, leaseToken);
+    throw error;
+  }
 }
 
 function requireTenant(request: FastifyRequest): TenantContext {

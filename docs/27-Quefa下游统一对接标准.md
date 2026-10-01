@@ -184,6 +184,7 @@ METHOD\nPATH\nCANONICAL_QUERY\nTIMESTAMP\nNONCE\nKEY_ID\nIDEMPOTENCY_KEY\nSHA256
 | 2xx | 成功（履约受理常见 202，表示已受理不是已开通） |
 | 4xx（429 除外）且 `retryable: false` | 永久错误，修正后用新业务键 |
 | 429 / 5xx / 超时 / `retryable: true` | 退避重试；写操作保持原 `Idempotency-Key` |
+| 409 `idempotency_in_progress` | 原请求仍在执行；先查询原订单/任务，再以原业务键和新 Nonce 退避重试 |
 | 支付/履约结果未知 | **只查单**，不要盲目再开一单或再开一次兑换 |
 
 ### 3.4 金额与时间

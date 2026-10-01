@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: 充值分销开放平台 API
-  version: 1.2.0
+  version: 1.2.1
   description: |
     面向代理商销售渠道服务端的开单、查付、履约、退款申请、账单与结算接口。
     支持平台收款分销，或授权代理自收款后以采购余额支付供货价；后者的 paid 仅代表供货款已扣。
@@ -41,6 +41,12 @@ x-rate-limit:
   buckets: [read, write]
   response_headers: [X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset]
   exceeded: {status: 429, code: rate_limited, retry_header: Retry-After}
+x-idempotency-claim:
+  lease_seconds: 300
+  concurrent_status: 409
+  concurrent_code: idempotency_in_progress
+  retry_header: Retry-After
+  guidance: 保留原业务 Idempotency-Key，重新生成时间戳与 Nonce；先查询原业务结果，再退避重试
 webhooks:
   fulfillmentProgress:
     post:

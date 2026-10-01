@@ -26,7 +26,7 @@ import type {
   WebhookDelivery,
   WebhookEndpoint,
 } from "../domain/model.js";
-import type {ClaimedWebhookDelivery, CredentialBundle, Repository} from "./repository.js";
+import type {ClaimedWebhookDelivery, CredentialBundle, IdempotencyClaim, Repository} from "./repository.js";
 import type {OperationsRecords} from "../operations/model.js";
 import {formatPublicOrderNo} from "../domain/public-order-no.js";
 import type {QueryRecords,RecordQuery,RecordPage} from './record-query.js';
@@ -811,7 +811,44 @@ export class SqliteRepository implements Repository {
   }
   saveIdempotency(value: IdempotencyRecord): void {
     const id = idempotencyId(value.merchantId, value.appId, value.routeKey, value.key);
-    this.put("idempotency", id, value.merchantId, `${value.appId}:${value.routeKey}:${value.key}`, value);
+    this.put("idempotency", id, value.merchantId, `${value.appId}:${value.routeKey}:${value.key}`, {...value,
+      state: "completed" as const, leaseToken: null, leaseUntil: null});
+  }
+
+  claimIdempotency(value: IdempotencyRecord, leaseToken: string, now: Date, leaseUntil: Date): IdempotencyClaim {
+    return this.transaction(() => {
+      const id = idempotencyId(value.merchantId, value.appId, value.routeKey, value.key);
+      const current = this.get<IdempotencyRecord>("idempotency", id, value.merchantId);
+      if (current) {
+        if (current.requestHash !== value.requestHash) return {state: "conflict"};
+        if (current.state !== "processing") return {state: "replay", record: current};
+        if (current.leaseUntil && current.leaseUntil > now) return {state: "processing", leaseUntil: current.leaseUntil};
+      }
+      const pending = {...value, state: "processing" as const, leaseToken, leaseUntil};
+      if (current) this.put("idempotency", id, value.merchantId, `${value.appId}:${value.routeKey}:${value.key}`, pending);
+      else this.insert("idempotency", id, value.merchantId, `${value.appId}:${value.routeKey}:${value.key}`, pending);
+      return {state: "claimed"};
+    });
+  }
+
+  completeIdempotency(value: IdempotencyRecord, leaseToken: string): boolean {
+    return this.transaction(() => {
+      const id = idempotencyId(value.merchantId, value.appId, value.routeKey, value.key);
+      const current = this.get<IdempotencyRecord>("idempotency", id, value.merchantId);
+      if (!current || current.state !== "processing" || current.leaseToken !== leaseToken) return false;
+      this.put("idempotency", id, value.merchantId, `${value.appId}:${value.routeKey}:${value.key}`, {...value,
+        state: "completed" as const, leaseToken: null, leaseUntil: null});
+      return true;
+    });
+  }
+
+  releaseIdempotency(merchantId: string, appId: string, routeKey: string, key: string, leaseToken: string): void {
+    this.transaction(() => {
+      const id = idempotencyId(merchantId, appId, routeKey, key), current = this.get<IdempotencyRecord>("idempotency", id, merchantId);
+      if (current?.state === "processing" && current.leaseToken === leaseToken) {
+        this.db.prepare("DELETE FROM sandbox_records WHERE kind='idempotency' AND id=? AND merchant_id=?").run(id, merchantId);
+      }
+    });
   }
 
   close(): void { this.db.close(); }

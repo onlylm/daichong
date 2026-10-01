@@ -377,4 +377,7 @@ export interface IdempotencyRecord {
   requestHash: string;
   responseStatus: number;
   responseBody: unknown;
+  state?: "processing" | "completed";
+  leaseToken?: string | null;
+  leaseUntil?: Date | null;
 }
