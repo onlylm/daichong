@@ -583,6 +583,17 @@ export class SqliteRepository implements Repository {
     return row?decode<Order>(String(row.order_payload)):null;
   }
 
+  hasSupplierOutstandingOrders(now:Date):boolean {
+    return !!this.db.prepare(`SELECT 1 FROM sandbox_records o WHERE o.kind='order' AND (
+      EXISTS(SELECT 1 FROM sandbox_records v WHERE v.kind='cdk_voucher' AND json_extract(v.payload,'$.orderId')=o.id
+        AND json_extract(v.payload,'$.status') IN ('issuing','unused','reserved','disabling'))
+      OR (json_extract(o.payload,'$.paymentStatus')='pending' AND json_extract(o.payload,'$.expiresAt')>?)
+      OR (json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded') AND NOT EXISTS(
+        SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded'))
+      ) LIMIT 1`).get(now.toISOString());
+  }
+
   consumeNonce(key: string, expiresAt: number, now: number): boolean {
     return this.transaction(() => {
       this.db.prepare("DELETE FROM request_nonces WHERE expires_at <= ?").run(now);

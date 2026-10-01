@@ -317,10 +317,12 @@ export class SupplierManagementService {
   }
 
   private hasOutstandingOrders(): boolean {
+    const now = new Date();
+    if (this.repository.hasSupplierOutstandingOrders) return this.repository.hasSupplierOutstandingOrders(now);
     return this.repository.listOrdersInternal().some((order) => {
       const voucher = this.repository.findCdkVoucherByOrder(order.id);
       if (voucher && ["issuing", "unused", "reserved", "disabling"].includes(voucher.status)) return true;
-      if (order.paymentStatus === "pending" && order.expiresAt > new Date()) return true;
+      if (order.paymentStatus === "pending" && order.expiresAt > now) return true;
       if (!["paid", "partially_refunded"].includes(order.paymentStatus)) return false;
       return !this.repository.listFulfillments(order.merchantId, order.id).some((item) => item.status === "succeeded");
     });

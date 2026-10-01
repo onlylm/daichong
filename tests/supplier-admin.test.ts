@@ -159,6 +159,28 @@ describe("platform recharge supplier administration", () => {
     })).toThrow("存在未完成订单");
   });
 
+  it("checks supplier-switch safety with an indexed SQLite existence query", async () => {
+    const sqliteConfig = {...adminConfig(), storageDriver: "sqlite" as const, sqlitePath: ":memory:"};
+    const sqlite = createRuntime(sqliteConfig);
+    try {
+      sqlite.supplierManagement.saveConnection({name: "原供应", environment: "sandbox", openApiBase: sqliteConfig.zovocardApiBase,
+        cdkBase: sqliteConfig.zovocardCdkBase, enabled: true, apiKey: "original-supplier-test-only-key"});
+      const bundle = sqlite.repository.findCredential(sqliteConfig.demoPartnerId, sqliteConfig.demoKeyId)!;
+      const tenant = {merchantId: bundle.merchant.id, partnerId: bundle.merchant.partnerId, appId: bundle.app.id, keyId: bundle.key.keyId};
+      const order = await sqlite.orders.create(tenant, {merchantOrderNo: "supplier-indexed-pending", productCode: "chatgpt_plus_cdk_1m",
+        quantity: 1, saleAmount: "135.00"});
+      const fullScan = vi.spyOn(sqlite.repository, "listOrdersInternal");
+      const change = {name: "切换供应", environment: "production" as const, openApiBase: "https://zovocard.com/openapi/v1",
+        cdkBase: "https://zovocard.com/api/v1/cdk", enabled: true, apiKey: "replacement-supplier-test-only-key"};
+      expect(() => sqlite.supplierManagement.saveConnection(change)).toThrow("存在未完成订单");
+      sqlite.repository.updateOrder({...order, expiresAt: new Date(Date.now() - 1_000)});
+      expect(sqlite.supplierManagement.saveConnection(change)).toMatchObject({environment: "production"});
+      expect(fullScan).not.toHaveBeenCalled();
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("syncs only recharge products and sanitizes all reconciliation responses", async () => {
     await configureSupplier(app, config);
     vi.stubGlobal("fetch", supplierFetch());

@@ -83,6 +83,7 @@ export interface Repository {
   findRefundedCdkCleanupOrder?(now:Date):Order|null;
   findRefundedFulfillmentCleanupOrder?(now:Date):Order|null;
   findCostReadCandidate?(now:Date,createdAfter:Date):Order|null;
+  hasSupplierOutstandingOrders?(now:Date):boolean;
   findMerchantById(id: string): Merchant | null;
   listMerchants(): Merchant[];
   listApps(merchantId: string): PartnerApp[];
