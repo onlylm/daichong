@@ -11,7 +11,9 @@ export class WebhookService {
   }
 
   private emitLocked(merchantId: string, eventKey: string, eventType: string, aggregateId: string, payload: Record<string, unknown>): OutboxEvent {
-    const existing = this.repository.listOutbox(merchantId).find((event) => event.eventKey === eventKey);
+    const existing = this.repository.findOutboxByEventKey
+      ? this.repository.findOutboxByEventKey(merchantId, eventKey)
+      : this.repository.listOutbox(merchantId).find((event) => event.eventKey === eventKey);
     if (existing) return existing;
     const event: OutboxEvent = {
       id: `evt_${randomUUID().replaceAll("-", "")}`,

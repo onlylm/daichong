@@ -154,6 +154,7 @@ export interface Repository {
   listSettlements(merchantId: string): Settlement[];
 
   appendOutbox(value: OutboxEvent): void;
+  findOutboxByEventKey?(merchantId: string, eventKey: string): OutboxEvent | null;
   listOutbox(merchantId: string): OutboxEvent[];
   saveWebhookEndpoint(value: WebhookEndpoint): void;
   listWebhookEndpoints(merchantId: string): WebhookEndpoint[];

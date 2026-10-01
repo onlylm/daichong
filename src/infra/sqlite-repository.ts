@@ -716,6 +716,9 @@ export class SqliteRepository implements Repository {
     if (this.getByUnique("outbox", value.merchantId, value.eventKey)) return;
     this.put("outbox", value.id, value.merchantId, value.eventKey, value);
   }
+  findOutboxByEventKey(merchantId: string, eventKey: string): OutboxEvent | null {
+    return this.getByUnique("outbox", merchantId, eventKey);
+  }
   listOutbox(merchantId: string): OutboxEvent[] { return this.list("outbox", merchantId); }
   saveWebhookEndpoint(value: WebhookEndpoint): void { this.put("webhook_endpoint", value.id, value.merchantId, value.url, value); }
   listWebhookEndpoints(merchantId: string): WebhookEndpoint[] { return this.list("webhook_endpoint", merchantId); }

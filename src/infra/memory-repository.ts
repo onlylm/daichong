@@ -385,6 +385,10 @@ export class MemoryRepository implements Repository {
     this.outbox.push(clone(value));
   }
 
+  findOutboxByEventKey(merchantId: string, eventKey: string): OutboxEvent | null {
+    return copyOrNull(this.outbox.find((item) => item.merchantId === merchantId && item.eventKey === eventKey));
+  }
+
   listOutbox(merchantId: string): OutboxEvent[] {
     return this.outbox.filter((item) => item.merchantId === merchantId).map(clone);
   }

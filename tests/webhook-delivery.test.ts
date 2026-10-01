@@ -46,6 +46,23 @@ describe("webhook delivery", () => {
       runtime.close();
     }
   });
+
+  it("deduplicates an emitted event by its indexed key without loading outbox history", () => {
+    const config = {...webhookConfig(), storageDriver: "sqlite" as const};
+    const runtime = createRuntime(config);
+    try {
+      const merchant = runtime.repository.findMerchantByPartner(config.demoPartnerId)!;
+      const list = vi.spyOn(runtime.repository, "listOutbox");
+      const first = runtime.webhooks.emit(merchant.id, "test:webhook:exact-key", "webhook.test", merchant.id, {value: 1});
+      const replay = runtime.webhooks.emit(merchant.id, "test:webhook:exact-key", "webhook.test", merchant.id, {value: 1});
+      expect(replay.id).toBe(first.id);
+      expect(runtime.repository.findOutboxByEventKey?.(merchant.id, "test:webhook:exact-key")?.id).toBe(first.id);
+      expect(list).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      runtime.close();
+    }
+  });
 });
 
 function webhookConfig(): AppConfig {
