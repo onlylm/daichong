@@ -60,4 +60,16 @@ describe("wallet transactional consistency", () => {
     expect(runtime.repository.listOperations("ticket_message", merchantId).filter(item => item.ticketId === ticket.id)).toHaveLength(2);
     expect(runtime.repository.listOperations("wallet_entry", merchantId).filter(item => item.id === "withdraw_release:" + withdrawal.id)).toHaveLength(1);
   });
+
+  it("binds a manual balance adjustment to the reviewed balance snapshot", () => {
+    const first = runtime.wallets.adjustBalance(admin, merchantId, {account: "procurement", direction: "credit", amount: "110.00",
+      reason: "补登已核实的采购款", requestKey: "manual-adjustment-001", expectedBalance: "0.00"});
+    expect(first).toMatchObject({beforeMinor: 0n, afterMinor: 11_000n, procurementDelta: 11_000n});
+    expect(runtime.wallets.adjustBalance(admin, merchantId, {account: "procurement", direction: "credit", amount: "110.00",
+      reason: "补登已核实的采购款", requestKey: "manual-adjustment-001", expectedBalance: "0.00"}).id).toBe(first.id);
+    expect(() => runtime.wallets.adjustBalance(admin, merchantId, {account: "procurement", direction: "credit", amount: "110.00",
+      reason: "补登已核实的采购款", requestKey: "manual-adjustment-001", expectedBalance: "110.00"})).toThrow("调整编号已用于不同请求");
+    expect(() => runtime.wallets.adjustBalance(admin, merchantId, {account: "procurement", direction: "debit", amount: "10.00",
+      reason: "核减采购余额测试", requestKey: "manual-adjustment-002", expectedBalance: "0.00"})).toThrow("余额已变动");
+  });
 });

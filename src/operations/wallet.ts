@@ -467,18 +467,19 @@ export class WalletService {
     const amount = requirePositive(input.amount), reason = input.reason.trim();
     if (reason.length < 4 || reason.length > 500) throw new AppError(422, "adjustment_reason_required", "请填写 4 至 500 字的调整原因");
     const delta = input.direction === "credit" ? amount : -amount;
+    const expected = input.expectedBalance.startsWith("-") ? -moneyToMinor(input.expectedBalance.slice(1)) : moneyToMinor(input.expectedBalance);
     const id = "adjustment:" + merchantId + ":" + input.requestKey;
     return this.repository.transaction(() => {
       if (!this.repository.findMerchantById(merchantId)) throw new AppError(404, "merchant_not_found", "代理商不存在");
       const old = this.repository.getOperations("wallet_entry", id);
       if (old) {
-        if (old.adjustmentAccount !== input.account || old.reason !== reason || (input.account === "procurement" ? old.procurementDelta : old.earningsDelta) !== delta) {
+        if (old.adjustmentAccount !== input.account || old.reason !== reason || old.beforeMinor !== expected
+          || (input.account === "procurement" ? old.procurementDelta : old.earningsDelta) !== delta) {
           throw new AppError(409, "adjustment_conflict", "调整编号已用于不同请求");
         }
         return old;
       }
       const totals = this.totals(merchantId), before = totals[input.account];
-      const expected = input.expectedBalance.startsWith("-") ? -moneyToMinor(input.expectedBalance.slice(1)) : moneyToMinor(input.expectedBalance);
       if (before !== expected) throw new AppError(409, "wallet_balance_changed", "余额已变动，请刷新并重新确认调整");
       if (delta < 0n && before + delta < 0n) throw new AppError(409, "wallet_balance_insufficient", "扣减金额超过可用余额");
       const entry: WalletEntry = {id, merchantId, kind: "adjustment", procurementDelta: input.account === "procurement" ? delta : 0n,
