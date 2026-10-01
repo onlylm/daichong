@@ -415,7 +415,7 @@ export class SqliteRepository implements Repository {
   listDailySettlementCandidates(periodTo:Date) {
     const rows=this.db.prepare(`SELECT o.payload AS order_payload,c.payload AS credit_payload FROM sandbox_records c
       JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=c.merchant_id AND o.id=json_extract(c.payload,'$.orderId')
-      JOIN sandbox_records m ON m.kind='merchant' AND m.id=c.merchant_id AND json_extract(m.payload,'$.status')='active'
+      JOIN sandbox_records m ON m.kind='merchant' AND m.id=c.merchant_id
       JOIN sandbox_records p ON p.kind='payment_attempt' AND p.merchant_id=o.merchant_id AND json_extract(p.payload,'$.orderId')=o.id
       WHERE c.kind='ops_wallet_credit' AND json_extract(c.payload,'$.createdAt')<?
       AND CAST(COALESCE(json_extract(c.payload,'$.recognizedMinor.__bigint'),'0') AS INTEGER)>0

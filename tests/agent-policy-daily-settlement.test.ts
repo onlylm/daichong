@@ -95,6 +95,32 @@ describe("2026-10-01 agent policy", () => {
     expect(runtime.dailySettlements.reconcile(admin, statement.id, "代理确认到账，金额流水一致").status).toBe("reconciled");
   });
 
+  it.each(["suspended", "closed"] as const)("keeps %s agents' earned commission in manual daily settlement", async status => {
+    for (const storageDriver of ["memory", "sqlite"] as const) {
+      const isolated = createRuntime(loadConfig({NODE_ENV: "test", STORAGE_DRIVER: storageDriver,
+        SQLITE_PATH: ":memory:", LOG_LEVEL: "silent"}));
+      try {
+        publishTestRechargeProduct(isolated);
+        const order = await seedSettlementEarning(isolated, `inactive-${storageDriver}-${status}`);
+        const merchant = isolated.repository.findMerchantById(order.merchantId)!;
+        isolated.repository.saveMerchant({...merchant, status});
+
+        expect(isolated.dailySettlements.generate("2026-09-30")).toMatchObject({generated: true, count: 1});
+        const statement = isolated.repository.getOperations("daily_settlement", `ds_20260930_${merchant.id}`)!;
+        expect(statement).toMatchObject({status: "pending_payment", orderIds: [order.id], agentEarningsMinor: 2_500n,
+          payableMinor: 2_500n});
+        const earningsBalance = () => isolated.repository.listOperations("wallet_entry", merchant.id)
+          .reduce((sum, entry) => sum + entry.earningsDelta, 0n);
+        expect(earningsBalance()).toBe(2_500n);
+        expect(isolated.dailySettlements.confirmPaid(admin, statement.id, {method: "bank",
+          reference: `inactive-${storageDriver}-${status}-payment`, evidence: "真实付款凭证已归档"}).status).toBe("paid");
+        expect(earningsBalance()).toBe(0n);
+      } finally {
+        isolated.close();
+      }
+    }
+  });
+
   it("blocks payout when a pending refund can still reduce released earnings", async () => {
     const order=await seedSettlementEarning(runtime,"pending-refund");
     runtime.dailySettlements.generate("2026-09-30");

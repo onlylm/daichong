@@ -41,7 +41,9 @@ export class DailySettlementService {
       const funds=new Map((this.repository.dailySettlementFunds?.([...candidatesByMerchant.keys()])??[]).map(value=>[value.merchantId,value]));
       const catalog=this.repository.getOperations("global_product_catalog","default")?.products??[];
       let count = 0;
-      for (const merchant of this.repository.listMerchants().filter(item => item.status === "active")) {
+      // Suspension/closure stops new business, but does not erase an already
+      // earned liability. A statement only calculates it; payout stays manual.
+      for (const merchant of this.repository.listMerchants()) {
         const id = `ds_${businessDate.replaceAll("-", "")}_${merchant.id}`;
         if (this.repository.getOperations("daily_settlement", id)) continue;
         const candidates=databaseCandidates?candidatesByMerchant.get(merchant.id)??[]:this.fallbackCandidates(merchant.id,periodTo);
