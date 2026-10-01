@@ -35,6 +35,21 @@ export function listCompletedTierOrders(repository: Repository, merchantId: stri
   });
 }
 
+export function completedTierOrderMetrics(repository: Repository, merchantId: string): {
+  completedOrders: number;
+  completedSupplyMinor: bigint;
+  agentCollectSupplyMinor: bigint;
+} {
+  if (repository.tierOrderMetrics) return repository.tierOrderMetrics(merchantId);
+  const orders = listCompletedTierOrders(repository, merchantId);
+  return {
+    completedOrders: orders.length,
+    completedSupplyMinor: orders.reduce((sum, order) => sum + order.supplyAmountMinor, 0n),
+    agentCollectSupplyMinor: orders.filter(order => (order.collectionMode ?? "platform_collect") === "agent_collect")
+      .reduce((sum, order) => sum + order.supplyAmountMinor, 0n),
+  };
+}
+
 export function resolveTierUpgradeRequirement(tierCode: string, rules: TierRules): TierUpgradeRequirement | null {
   const level = rules.levels.find(item => item.code === tierCode);
   if (!level || level.code === "standard") return null;
@@ -46,6 +61,7 @@ export function resolveTierUpgradeRequirement(tierCode: string, rules: TierRules
 }
 
 function procurementBalanceMinor(repository: Repository, merchantId: string): bigint {
+  if (repository.walletTotals) return repository.walletTotals(merchantId).procurement;
   return repository.listOperations("wallet_entry", merchantId).reduce((sum, entry) => sum + entry.procurementDelta, 0n);
 }
 
@@ -58,12 +74,11 @@ export function evaluateTierUpgradeEligibility(repository: Repository, merchantI
   const level = rules.levels.find(item => item.code === targetTier);
   if (!level) return {eligible: false, targetTier, missing: ["目标等级无效"], metrics: emptyMetrics()};
   const requirement = resolveTierUpgradeRequirement(targetTier, rules);
-  const orders = listCompletedTierOrders(repository, merchantId);
-  const completedSupplyMinor = orders.reduce((sum, order) => sum + order.supplyAmountMinor, 0n);
-  const completedOrders = BigInt(orders.length);
+  const completed = completedTierOrderMetrics(repository, merchantId);
+  const completedSupplyMinor = completed.completedSupplyMinor;
+  const completedOrders = BigInt(completed.completedOrders);
   const progressValue = rules.metric === "supply_amount" ? completedSupplyMinor : completedOrders;
-  const agentCollectSupplyMinor = orders.filter(order => (order.collectionMode ?? "platform_collect") === "agent_collect")
-    .reduce((sum, order) => sum + order.supplyAmountMinor, 0n);
+  const agentCollectSupplyMinor = completed.agentCollectSupplyMinor;
   const agentCollectShareBps = completedSupplyMinor > 0n ? Number(agentCollectSupplyMinor * 10_000n / completedSupplyMinor) : 0;
   const metrics: TierUpgradeMetrics = {
     completedSupplyMinor,

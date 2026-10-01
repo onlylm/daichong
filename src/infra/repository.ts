@@ -38,6 +38,7 @@ export interface ClaimedWebhookDelivery {
 export interface Repository {
   queryRecords?<K extends keyof import('./record-query.js').QueryRecords>(kind:K,query:import('./record-query.js').RecordQuery):import('./record-query.js').RecordPage<import('./record-query.js').QueryRecords[K]>;
   walletTotals?(merchantId:string):{procurement:bigint;earnings:bigint;frozen:bigint};
+  tierOrderMetrics?(merchantId:string):{completedOrders:number;completedSupplyMinor:bigint;agentCollectSupplyMinor:bigint};
   walletOverview?():Array<{merchantId:string;procurement:bigint;earnings:bigint;frozen:bigint;pendingEarning:bigint;lastEntryAt:Date|null}>;
   pendingEarningOrders?(merchantId:string):Order[];
   listPendingRefunds?(category:"customer"|"price_adjustment"):Refund[];

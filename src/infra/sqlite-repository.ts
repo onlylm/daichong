@@ -136,6 +136,26 @@ export class SqliteRepository implements Repository {
     return {procurement:BigInt(String(row.procurement)),earnings:BigInt(String(row.earnings)),frozen:BigInt(String(row.frozen))};
   }
 
+  tierOrderMetrics(merchantId:string) {
+    const amount=`CAST(COALESCE(json_extract(o.payload,'$.supplyAmountMinor.__bigint'),'0') AS INTEGER)`;
+    const row=this.db.prepare(`SELECT COUNT(*) AS completedOrders,
+      CAST(COALESCE(SUM(${amount}),0) AS TEXT) AS completedSupplyMinor,
+      CAST(COALESCE(SUM(CASE WHEN COALESCE(json_extract(o.payload,'$.collectionMode'),'platform_collect')='agent_collect' THEN ${amount} ELSE 0 END),0) AS TEXT) AS agentCollectSupplyMinor
+      FROM sandbox_records o
+      WHERE o.kind='order' AND o.merchant_id=?
+      AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0
+      AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded')
+      AND CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)=0
+      AND EXISTS(SELECT 1 FROM sandbox_records p WHERE p.kind='payment_attempt' AND p.merchant_id=o.merchant_id
+        AND json_extract(p.payload,'$.orderId')=o.id AND json_extract(p.payload,'$.status')='paid'
+        AND json_extract(p.payload,'$.provider') IN ('alipay_page','dujiaopay','agent_wallet'))
+      AND EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded'
+        AND json_extract(f.payload,'$.upstreamProvider') IS NOT NULL AND json_extract(f.payload,'$.upstreamProvider')!='mock')`).get(merchantId)!;
+    return {completedOrders:Number(row.completedOrders),completedSupplyMinor:BigInt(String(row.completedSupplyMinor)),
+      agentCollectSupplyMinor:BigInt(String(row.agentCollectSupplyMinor))};
+  }
+
   walletOverview() {
     const totals=this.db.prepare(`SELECT merchant_id,
       CAST(COALESCE(SUM(CAST(json_extract(payload,'$.procurementDelta.__bigint') AS INTEGER)),0) AS TEXT) AS procurement,

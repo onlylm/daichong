@@ -3,7 +3,10 @@ import {describe,expect,it,vi} from "vitest";
 import {createRuntime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {listWorkspaceOrders} from "../src/operations/order-view.js";
+import {procurementBalanceMinor} from "../src/operations/agents.js";
+import {completedTierOrderMetrics} from "../src/operations/tier-upgrade.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
+import {fundAndApproveApi} from "./fixtures/funded-api.js";
 
 describe("SQLite workspace batch reads",()=>{
   it("uses bounded scoped count and page queries without per-order scans",async()=>{
@@ -58,5 +61,30 @@ describe("SQLite workspace batch reads",()=>{
       const result=r.wallets.adminEntries({id:"query-admin",role:"platform_admin",merchantId:null},{merchantId:merchant.id,scope:"commission",page:1,limit:1});
       expect(result.meta.total).toBe(1);expect(result.data.map(item=>item.id)).toEqual(["commission-release"]);
     }finally{r.close();}
+  });
+
+  it("loads agent tier totals and procurement balance with bounded aggregate queries",async()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      publishTestRechargeProduct(r);
+      const b=r.repository.findCredential(cfg.demoPartnerId,cfg.demoKeyId)!,tenant={merchantId:b.merchant.id,appId:b.app.id,keyId:b.key.keyId,partnerId:b.merchant.partnerId};
+      const funded=fundAndApproveApi(r,cfg.demoPartnerId,"220.00"),profile=r.agents.profile(b.merchant.id);
+      r.agents.saveProfile(funded.admin,b.merchant.id,{...profile,collectionModes:["platform_collect","agent_collect"]});
+      const paid=await r.orders.create(tenant,{merchantOrderNo:"AGENT-METRICS-001",productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00",collectionMode:"agent_collect"});
+      const voucher=(await r.cdk.issueOne())!;
+      const task=r.fulfillments.createCdkPublic(paid,voucher,r.cdk.readUpstreamCode(voucher),{mode:"session",session:"aggregate-test"});
+      r.fulfillments.applyUpstreamEvent(task.id,{orderId:"supplier-metrics",lookupToken:null,status:"completed",stage:"completed",
+        accountEmail:null,quotedAmountMinor:null,currency:"USD",message:"completed"});
+      const finished=r.repository.findFulfillment(paid.merchantId,task.id)!;
+      r.repository.updateFulfillment({...finished,upstreamProvider:"zovocard"});
+
+      const db=(r.repository as unknown as {db:DatabaseSync}).db,prepare=vi.spyOn(db,"prepare");
+      expect(completedTierOrderMetrics(r.repository,paid.merchantId)).toEqual({completedOrders:1,completedSupplyMinor:paid.supplyAmountMinor,
+        agentCollectSupplyMinor:paid.supplyAmountMinor});
+      expect(prepare).toHaveBeenCalledTimes(1);
+      prepare.mockClear();
+      expect(procurementBalanceMinor(r.repository,paid.merchantId)).toBe(22_000n-paid.supplyAmountMinor);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    }finally{vi.restoreAllMocks();r.close();}
   });
 });

@@ -8,11 +8,12 @@ import {SupportService, safeText} from "./support.js";
 import {managedGptProduct, managedGptProducts, newProductGrant} from "../modules/gpt-products.js";
 import {globalProductGrantsForMerchant, seedGlobalProductCatalog} from "./global-product-catalog.js";
 import {defaultTierLevels, mergedCollectionModes, resolveTierBenefits, seedDefaultTierRules, tierCatalogProducts} from "./tier-benefits.js";
-import {evaluateTierUpgradeEligibility, listCompletedTierOrders} from "./tier-upgrade.js";
+import {completedTierOrderMetrics, evaluateTierUpgradeEligibility} from "./tier-upgrade.js";
 import type {AccountService, AccountSession} from "./accounts.js";
 import {assertCdkPrefix, assertCdkTemplate, normalizeCdkPrefix, normalizeCdkTemplate} from "../modules/cdk-code.js";
 
 export function procurementBalanceMinor(repository: Repository, merchantId: string): bigint {
+  if (repository.walletTotals) return repository.walletTotals(merchantId).procurement;
   return repository.listOperations("wallet_entry", merchantId).reduce((sum, entry) => sum + entry.procurementDelta, 0n);
 }
 
@@ -203,15 +204,14 @@ export class AgentService {
     const profile = this.profile(merchantId);
     const effective = effectiveCollectionModes(this.repository, merchantId, profile);
     const visibleProfile = isPlatform(actor) ? profile : {...profile, collectionModes: effective};
-    const orders = listCompletedTierOrders(this.repository, merchantId);
-    const completedSupplyMinor = orders.reduce((sum, order) => sum + order.supplyAmountMinor, 0n);
+    const completed = completedTierOrderMetrics(this.repository, merchantId);
     const productSupplyPrices = Object.fromEntries(
       globalProductGrantsForMerchant(this.repository, merchantId).filter(grant => grant.available)
         .map(grant => [grant.productCode, grant.supplyPriceMinor.toString()]),
     );
     const merchant = this.repository.findMerchantById(merchantId)!;
     return {merchant: {id: merchant.id, partnerId: merchant.partnerId, name: merchant.name, status: merchant.status},
-      profile: visibleProfile, completedOrders: orders.length, completedSupplyMinor: completedSupplyMinor.toString(),
+      profile: visibleProfile, completedOrders: completed.completedOrders, completedSupplyMinor: completed.completedSupplyMinor.toString(),
       productSupplyPrices, collectionModes: effective, customRedemptionEnabled: profile.customRedemptionEnabled};
   }
   private createMerchantBundle(partnerId: string, name: string) {
