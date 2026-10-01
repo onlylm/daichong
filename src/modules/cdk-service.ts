@@ -68,7 +68,8 @@ export class CdkService {
   private claimIssuance(): {order: Order; pending: CdkVoucher} | null {
     const now=new Date(),candidates=this.repository.listCdkIssuanceCandidates?.(20,now)??this.repository.listOrdersInternal();
     const order = candidates.find((item) =>
-      item.fulfillmentMode === "cdk"
+      item.paymentPurpose !== "payment_test"
+      && item.fulfillmentMode === "cdk"
       && (!this.livePolicy || this.livePolicy.canFulfill(item))
       && ["paid", "partially_refunded"].includes(item.paymentStatus)
       && item.ordinaryRefundedMinor === 0n

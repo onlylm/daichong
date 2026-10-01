@@ -10,6 +10,7 @@ import { PortalTokenService } from "./portal-token.js";
 import {LiveTestPolicy} from "./live-test-policy.js";
 import type {WalletService} from "../operations/wallet.js";
 import {effectiveCollectionModes} from "../operations/agents.js";
+import {PAYMENT_TEST_AMOUNT_MINOR, PAYMENT_TEST_PRODUCT_CODE} from "../domain/payment-test.js";
 
 export class OrderService {
   constructor(
@@ -133,6 +134,41 @@ export class OrderService {
       return this.wallets.purchase(order);
     }
     return order;
+    });
+  }
+
+  /** Fixed ¥1 payment-channel test. It deliberately bypasses the sellable GPT catalogue. */
+  async createPaymentTest(tenant:TenantContext,input:{merchantOrderNo:string;notifyUrl?:string}):Promise<Order>{
+    const existing=this.repository.findOrderByMerchantNo(tenant.merchantId,input.merchantOrderNo);
+    if(existing){
+      if(existing.paymentPurpose!=="payment_test"||(existing.notifyUrl??null)!==(input.notifyUrl??null))
+        throw new AppError(409,"merchant_order_conflict","代理商订单号已用于不同请求");
+      return existing;
+    }
+    const now=new Date(),id=this.repository.transaction(()=>this.repository.allocatePublicOrderNo()),expiresAt=new Date(now.getTime()+15*60_000);
+    const payment=await this.payment.create(id,PAYMENT_TEST_AMOUNT_MINOR,expiresAt,this.payment.name==="managed"?"alipay_page":undefined);
+    const order:Order={id,merchantId:tenant.merchantId,appId:tenant.appId,merchantOrderNo:input.merchantOrderNo,
+      collectionMode:"platform_collect",deliveryMode:"auto_recharge",fallbackRechargeAvailable:false,liveTest:true,
+      paymentPurpose:"payment_test",productCode:PAYMENT_TEST_PRODUCT_CODE,quantity:1,saleAmountMinor:PAYMENT_TEST_AMOUNT_MINOR,
+      supplyAmountMinor:PAYMENT_TEST_AMOUNT_MINOR,ordinaryRefundedMinor:0n,priceAdjustmentRefundedMinor:0n,currency:"CNY",
+      metadata:{payment_test:true},notifyUrl:input.notifyUrl??null,paymentStatus:"pending",paymentProviderRef:payment.providerRef,
+      paymentReceivedMinor:null,paymentFeeMinor:null,qrPayload:payment.qrPayload,qrImageUrl:null,fulfillmentMode:"direct",
+      upstreamProduct:"gpt",upstreamPlan:"payment_test_no_fulfillment",fulfillmentUrl:"",voucherCode:null,settlementId:null,
+      paidAt:null,expiresAt:payment.expiresAt,createdAt:now,updatedAt:now};
+    return this.repository.transaction(()=>{
+      const concurrent=this.repository.findOrderByMerchantNo(tenant.merchantId,input.merchantOrderNo);
+      if(concurrent){
+        if(concurrent.paymentPurpose!=="payment_test"||(concurrent.notifyUrl??null)!==(input.notifyUrl??null))
+          throw new AppError(409,"merchant_order_conflict","代理商订单号已用于不同请求");
+        return concurrent;
+      }
+      this.payment.validateCreation?.(payment);
+      this.repository.insertOrder(order);
+      this.repository.insertPaymentAttempt({id:`pay_${randomUUID().replaceAll("-","")}`,merchantId:tenant.merchantId,orderId:id,
+        provider:payment.channel??this.payment.name,...(payment.paymentConfigId?{paymentConfigId:payment.paymentConfigId}:{}),status:"pending",
+        providerRef:payment.providerRef,requestedMinor:PAYMENT_TEST_AMOUNT_MINOR,receivedMinor:null,feeMinor:null,qrPayload:payment.qrPayload,
+        expiresAt:payment.expiresAt,paidAt:null,createdAt:now,updatedAt:now});
+      return order;
     });
   }
 

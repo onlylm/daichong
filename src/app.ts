@@ -33,6 +33,11 @@ const createOrderSchema = z.object({
   metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
 }).strict();
 
+const createPaymentTestSchema=z.object({
+  merchant_order_no:z.string().min(1).max(64),
+  notify_url:z.string().url().optional(),
+}).strict();
+
 const fulfillmentSchema = z.object({
   session_data: z.record(z.string(), z.unknown()),
   customer_confirmed_email: z.literal(true),
@@ -196,6 +201,21 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
       });
       runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "order.create", targetType: "order", targetId: order.id, requestId: request.id});
       return {data: publicOrder(order, null), idempotent: false};
+    });
+  });
+
+  app.post("/v1/payment-tests",async(request,reply)=>{
+    const tenant=requireTenant(request),input=createPaymentTestSchema.parse(request.body);
+    if(input.notify_url&&!input.notify_url.startsWith("https://")&&!config.enableSandboxRoutes)
+      throw new AppError(422,"https_webhook_required","生产 Webhook 地址必须使用 HTTPS");
+    if(input.notify_url)input.notify_url=new URL(input.notify_url).toString().replace(/\/$/,"");
+    runtime.webhooks.assertRegisteredEndpoint(tenant.merchantId,input.notify_url);
+    return sendIdempotent(runtime,request,reply,"POST /v1/payment-tests",201,async()=>{
+      const order=await runtime.orders.createPaymentTest(tenant,{merchantOrderNo:input.merchant_order_no,
+        ...(input.notify_url?{notifyUrl:input.notify_url}:{})});
+      runtime.audit.record({merchantId:tenant.merchantId,actorId:tenant.keyId,action:"payment_test.create",targetType:"order",
+        targetId:order.id,requestId:request.id});
+      return {data:publicOrder(order,null),idempotent:false};
     });
   });
 
@@ -483,6 +503,7 @@ function publicOrder(value: Order, fulfillment: Fulfillment | null = null, retry
   const merchantMargin = value.collectionMode === "agent_collect" ? 0n : value.saleAmountMinor - value.supplyAmountMinor - value.ordinaryRefundedMinor;
   return {
     collection_mode: value.collectionMode ?? "platform_collect",
+    purpose:value.paymentPurpose??"subscription",
     payment_scope: value.collectionMode === "agent_collect" ? "procurement" : "retail",
     order_id: value.id, merchant_order_no: value.merchantOrderNo, product_code: value.productCode,
     quantity: value.quantity, sale_amount: minorToMoney(value.saleAmountMinor), supply_amount: minorToMoney(value.supplyAmountMinor),
@@ -490,8 +511,9 @@ function publicOrder(value: Order, fulfillment: Fulfillment | null = null, retry
     merchant_margin: minorToMoney(merchantMargin), currency: value.currency, payment_status: value.paymentStatus,
     metadata: value.metadata,
     qr_payload: value.qrPayload, qr_image_url: value.qrImageUrl, paid_at: value.paidAt?.toISOString() ?? null,
-    fulfillment_mode: value.fulfillmentMode ?? "direct", fulfillment_url: value.fulfillmentUrl,
-    delivery_mode: value.deliveryMode ?? (value.fulfillmentMode === "cdk" ? "cdk" : "auto_recharge"),
+    fulfillment_mode: value.paymentPurpose==="payment_test"?null:value.fulfillmentMode ?? "direct",
+    fulfillment_url:value.paymentPurpose==="payment_test"?null:value.fulfillmentUrl,
+    delivery_mode:value.paymentPurpose==="payment_test"?null:value.deliveryMode ?? (value.fulfillmentMode === "cdk" ? "cdk" : "auto_recharge"),
     voucher_code: (value.deliveryMode ?? (value.fulfillmentMode === "cdk" ? "cdk" : "auto_recharge")) === "cdk" ? value.voucherCode : null,
     fallback_recharge_available: Boolean(value.fallbackRechargeAvailable) && retryAllowed,
     fulfillment_status: fulfillment?.status ?? null,

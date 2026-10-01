@@ -38,6 +38,7 @@ export class InvoiceService {
     return this.repository.transaction(() => {
       const order = this.repository.findOrder(actor.merchantId!, orderId);
       if (!order) throw new AppError(404, "order_not_found", "订单不存在");
+      if(order.paymentPurpose==="payment_test")throw new AppError(409,"invoice_payment_test_denied","1 元支付联调订单不能申请开票");
       if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
         throw new AppError(409, "invoice_order_not_paid", "只有已付款且未全额退款的订单可以申请开票");
       }

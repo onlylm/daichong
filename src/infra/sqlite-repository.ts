@@ -568,6 +568,7 @@ export class SqliteRepository implements Repository {
     return this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
       LEFT JOIN sandbox_records v ON v.kind='cdk_voucher' AND json_extract(v.payload,'$.orderId')=o.id
       WHERE o.kind='order' AND json_extract(o.payload,'$.archivedAt') IS NULL
+      AND COALESCE(json_extract(o.payload,'$.paymentPurpose'),'')!='payment_test'
       AND json_extract(o.payload,'$.fulfillmentMode')='cdk'
       AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded')
       AND CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)=0
@@ -626,7 +627,8 @@ export class SqliteRepository implements Repository {
   }
 
   hasSupplierOutstandingOrders(now:Date):boolean {
-    return !!this.db.prepare(`SELECT 1 FROM sandbox_records o WHERE o.kind='order' AND (
+    return !!this.db.prepare(`SELECT 1 FROM sandbox_records o WHERE o.kind='order'
+      AND COALESCE(json_extract(o.payload,'$.paymentPurpose'),'')!='payment_test' AND (
       EXISTS(SELECT 1 FROM sandbox_records v WHERE v.kind='cdk_voucher' AND json_extract(v.payload,'$.orderId')=o.id
         AND json_extract(v.payload,'$.status') IN ('issuing','unused','reserved','disabling'))
       OR (json_extract(o.payload,'$.paymentStatus')='pending' AND json_extract(o.payload,'$.expiresAt')>?)
@@ -748,6 +750,7 @@ export class SqliteRepository implements Repository {
     return this.db.prepare(`SELECT f.payload AS payload FROM sandbox_records f
       LEFT JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=f.merchant_id AND o.id=json_extract(f.payload,'$.orderId')
       WHERE f.kind='fulfillment' AND json_extract(f.payload,'$.status') IN ('queued','running')
+      AND COALESCE(json_extract(o.payload,'$.paymentPurpose'),'')!='payment_test'
       AND COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt'))<=?
       AND (json_extract(f.payload,'$.status')!='queued' OR COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 OR COALESCE(json_extract(f.payload,'$.liveSubmissionApproved'),0)=1)
       AND (json_extract(f.payload,'$.status')='running' OR NOT EXISTS(

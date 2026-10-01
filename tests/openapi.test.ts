@@ -10,7 +10,7 @@ describe("OpenAPI document", () => {
     const document = YAML.parse(readFileSync(join(here, "../openapi/openapi.yaml"), "utf8"));
     expect(document.openapi).toBe("3.1.0");
     for (const path of [
-      "/v1/products", "/v1/payment-methods", "/v1/orders", "/v1/orders/{order_id}", "/v1/orders/{order_id}/payment-code",
+      "/v1/products", "/v1/payment-methods", "/v1/payment-tests", "/v1/orders", "/v1/orders/{order_id}", "/v1/orders/{order_id}/payment-code",
       "/v1/orders/{order_id}/fulfillments", "/v1/orders/{order_id}/refunds",
       "/v1/ledger", "/v1/settlements", "/v1/settlements/{settlement_id}", "/v1/webhooks/test",
       "/v1/redemptions", "/v1/redemptions/{redemption_id}", "/v1/tier-applications", "/v1/tickets", "/v1/wallet",
@@ -21,7 +21,8 @@ describe("OpenAPI document", () => {
       .toMatchObject({additionalProperties: false, maxProperties: 0});
     expect(document.components.schemas.Order.properties.qr_payload.description).toContain("付款页 URL");
     expect(document.components.schemas.PaymentCode.properties.qr_image_data_url.pattern).toBe("^data:image/png;base64,");
-    expect(document.info.version).toBe("1.2.1");
+    expect(document.info.version).toBe("1.3.0");
+    expect(document.paths["/v1/payment-tests"].post.description).toContain("不会生成 CDK");
     expect(document["x-rate-limit"]).toMatchObject({scope: "API Key", buckets: ["read", "write"],
       exceeded: {status: 429, code: "rate_limited", retry_header: "Retry-After"}});
     expect(document.components.responses.RateLimited.headers).toHaveProperty("X-RateLimit-Reset");

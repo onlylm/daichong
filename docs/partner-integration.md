@@ -13,6 +13,8 @@
 
 实际可售状态、最新价格和版本以 `GET /v1/products` 为准。套餐仍由订单绑定 CDK 支撑，交付方式继续可选 CDK 或自动直充，不需要固定指定银行卡。
 
+另有独立的固定 1 元纯支付联调入口 `POST /v1/payment-tests`。它不属于上述四款商品，只验证签名、平台收款、支付宝到账、查单和 Webhook；付款成功后不会签发 CDK、创建充值任务、计算佣金或调用上游。
+
 平台不发送邮件。异常通过站内工单跟踪，API 对接使用 `fulfillment.updated` 及终态 Webhook，并保留订单查询兜底。上游结果未知时不能取消或重复提交；明确失败且响应允许重提时，在原订单重新提交，展示代理商自己的充值入口，不泄露上游兑换码。
 
 退差基准与实际美元成本是两个概念：前者按下单时约定冻结，后者须以该订单对应的已核实上游清算为准。平台退差不冲减代理基础分佣。核算或确认凭证不代表已经退款。
@@ -139,6 +141,12 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 `notify_url` 必须与 Quefa 为该代理商预登记的 Webhook 地址完全一致，不能按订单临时指定任意地址；生产必须使用 HTTPS，HTTP 仅允许隔离沙箱本机联调。
 
 平台代收订单的支付入口由平台支付配置生成。代理商应在自己的页面展示付款按钮并轮询订单状态，不需要维护平台支付宝密钥。付款后继续使用代理商自己的订单链接；通过服务端调用 `/v1/redemptions` 提交自动直充，不把客户跳转到平台品牌页。
+
+### 5.0 上线前 1 元纯支付联调
+
+首次接入支付时先调用 `POST /v1/payment-tests`，请求只传 `merchant_order_no` 和可选的已登记 `notify_url`。平台固定生成 `product_code=payment_test_1_cny`、`purpose=payment_test`、金额 `1.00 CNY` 的平台收款订单。不得通过正式 GPT 商品改价为 1 元替代。
+
+该订单沿用普通查单和支付通知，但 `fulfillment_mode`、`delivery_mode`、`fulfillment_url` 均为 `null`。即使付款成功，CDK 和充值接口也会拒绝，不会触发上游。完成到账与 Webhook 验收后，再使用 `/v1/orders` 创建四款正式商品订单。
 
 ### 5.1 自有页面直出付款码（按代理开通）
 

@@ -87,6 +87,8 @@ export interface Order {
   /** Automatic redemption ended unsuccessfully; the agent may offer its own branded retry entry. */
   fallbackRechargeAvailable?: boolean;
   liveTest?: boolean;
+  /** Payment-channel integration only; never enters any fulfillment path. */
+  paymentPurpose?: "payment_test";
   id: string;
   merchantId: string;
   appId: string;

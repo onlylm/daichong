@@ -31,6 +31,7 @@ export class FulfillmentService {
   create(tenant: TenantContext, orderId: string, sessionData: Record<string, unknown>): Fulfillment {
     const order = this.repository.findOrder(tenant.merchantId, orderId);
     if (!order) throw notFound("order");
+    this.assertFulfillableOrder(order);
     if ((order.fulfillmentMode ?? "direct") !== "direct") {
       throw new AppError(409, "cdk_redemption_required", "该商品必须通过 Quefa CDK 兑换入口完成");
     }
@@ -38,17 +39,20 @@ export class FulfillmentService {
   }
 
   createDirectPublic(order: Order, credential: RechargeCredential): Fulfillment {
+    this.assertFulfillableOrder(order);
     if ((order.fulfillmentMode ?? "direct") !== "direct") throw new AppError(409, "invalid_fulfillment_mode", "该订单不是直接充值商品");
     return this.createForOrder(order, {credential});
   }
 
   createCdkPublic(order: Order, voucher: CdkVoucher, upstreamCdkCode: string, credential: RechargeCredential): Fulfillment {
+    this.assertFulfillableOrder(order);
     return this.repository.transaction(() => this.reserveAndCreateCdk(order, voucher, upstreamCdkCode, credential));
   }
 
   async preflightPublic(order: Order, credential: RechargeCredential, upstreamCdkCode?: string): Promise<{
     accountEmail: string; currentPlan: string | null; targetPlan: string | null;
   }> {
+    this.assertFulfillableOrder(order);
     if (this.repository.findOrderInternal(order.id)?.archivedAt) throw new AppError(410, "order_archived", "该测试订单已归档，不能继续充值");
     if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
       throw new AppError(409, "order_not_paid", "只有已支付订单可以提交充值");
@@ -242,6 +246,7 @@ export class FulfillmentService {
 
   private insertForOrder(order: Order, payload: QueuedPayload, voucherId: string | null): Fulfillment {
     order = this.repository.findOrderInternal(order.id) ?? order;
+    this.assertFulfillableOrder(order);
     if (order.archivedAt) throw new AppError(410, "order_archived", "该测试订单已归档，不能继续充值");
     if (order.paymentStatus !== "paid" && order.paymentStatus !== "partially_refunded") {
       throw new AppError(409, "order_not_paid", "只有已支付订单可以提交充值");
@@ -295,9 +300,14 @@ export class FulfillmentService {
     return this.saveProgress(fulfillment, true);
   }
 
+  private assertFulfillableOrder(order:Order):void {
+    if(order.paymentPurpose==="payment_test")throw new AppError(409,"payment_test_has_no_fulfillment","1 元支付联调订单不提供 CDK 或充值履约");
+  }
+
   private async submit(current: Fulfillment): Promise<Fulfillment> {
     const order = this.repository.findOrder(current.merchantId, current.orderId);
     if (!order) return this.fail(current, "other", "订单不存在");
+    if(order.paymentPurpose==="payment_test")return this.fail(current,"other","1 元支付联调订单不提供充值履约");
     const aad = fulfillmentAad(current.merchantId, current.orderId, current.id);
     const onSubmitting = (lookupToken: string | null) => this.repository.transaction(() => {
       const latest = this.repository.findFulfillment(current.merchantId, current.id)!;
@@ -348,6 +358,8 @@ export class FulfillmentService {
 
   private async poll(current: Fulfillment): Promise<Fulfillment> {
     try {
+      const order=this.repository.findOrder(current.merchantId,current.orderId);
+      if(order?.paymentPurpose==="payment_test")return this.fail(current,"other","1 元支付联调订单不提供充值履约");
       if (current.upstreamProvider && current.upstreamProvider !== this.upstream.name) throw new UpstreamRequestError("upstream_configuration_error", true);
       const lookup = current.lookupPayload?.ciphertext
         ? this.cipher.decrypt(current.lookupPayload, `${fulfillmentAad(current.merchantId, current.orderId, current.id)}:lookup`) as {token: string}

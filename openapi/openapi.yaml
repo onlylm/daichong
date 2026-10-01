@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: 充值分销开放平台 API
-  version: 1.2.1
+  version: 1.3.0
   description: |
     面向代理商销售渠道服务端的开单、查付、履约、退款申请、账单与结算接口。
     支持平台收款分销，或授权代理自收款后以采购余额支付供货价；后者的 paid 仅代表供货款已扣。
@@ -121,6 +121,34 @@ paths:
                       properties:
                         code: {type: string, enum: [alipay]}
                         name: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/payment-tests:
+    post:
+      tags: [Orders]
+      operationId: createPaymentTest
+      summary: 创建固定 1 元纯支付联调订单
+      description: 独立于四款 GPT 正式商品，只验证平台收款、支付宝通知、查单和 Webhook。付款后不会生成 CDK、充值任务、代理佣金或上游调用。
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreatePaymentTestRequest'}
+      responses:
+        '201':
+          description: 已创建固定 1 元支付测试订单
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}
+        '200':
+          description: 幂等重放首次响应
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}
         default: {$ref: '#/components/responses/Error'}
   /v1/redemptions:
     post:
@@ -870,6 +898,16 @@ components:
           format: uri
           description: 必须与 Quefa 为当前代理商预登记的 Webhook 地址完全一致；沙箱本机联调可由 Quefa 放行 HTTP 地址。
         metadata: {type: object, maxProperties: 32, additionalProperties: {type: [string, number, boolean, 'null']}}
+    CreatePaymentTestRequest:
+      type: object
+      additionalProperties: false
+      required: [merchant_order_no]
+      properties:
+        merchant_order_no: {type: string, minLength: 1, maxLength: 64}
+        notify_url:
+          type: string
+          format: uri
+          description: 可选；必须与当前代理预登记的 Webhook 地址完全一致，生产只接受 HTTPS。
     OrderEnvelope:
       type: object
       required: [data]
@@ -898,8 +936,9 @@ components:
         expires_at: {type: string, format: date-time}
     Order:
       type: object
-      required: [order_id, merchant_order_no, product_code, quantity, sale_amount, supply_amount, merchant_margin, currency, payment_status, fulfillment_mode, delivery_mode, fulfillment_url, voucher_code, fallback_recharge_available, created_at, expires_at]
+      required: [purpose, order_id, merchant_order_no, product_code, quantity, sale_amount, supply_amount, merchant_margin, currency, payment_status, fulfillment_mode, delivery_mode, fulfillment_url, voucher_code, fallback_recharge_available, created_at, expires_at]
       properties:
+        purpose: {type: string, enum: [subscription, payment_test], description: payment_test 为固定 1 元纯支付联调，不含任何履约权益}
         collection_mode: {type: string, enum: [platform_collect, agent_collect]}
         payment_scope: {type: string, enum: [retail, procurement], description: procurement 的 paid 不证明客户已向代理付款}
         order_id: {type: string}
@@ -917,9 +956,9 @@ components:
         qr_payload: {type: [string, 'null'], description: 平台代收的 Quefa 付款页 URL，应展示为付款按钮，不是支付宝当面付或链上转账二维码内容}
         qr_image_url: {type: [string, 'null'], format: uri}
         paid_at: {type: [string, 'null'], format: date-time}
-        fulfillment_mode: {type: string, enum: [direct, cdk]}
-        delivery_mode: {type: string, enum: [auto_recharge, cdk]}
-        fulfillment_url: {type: string, format: uri, description: 平台兼容入口；正式代理商网站应使用自身订单页和 /v1/redemptions 接口，不把客户跳转到平台品牌页面}
+        fulfillment_mode: {type: [string, 'null'], enum: [direct, cdk, null]}
+        delivery_mode: {type: [string, 'null'], enum: [auto_recharge, cdk, null]}
+        fulfillment_url: {type: [string, 'null'], format: uri, description: 支付联调订单为 null；正式代理商网站应使用自身订单页和 /v1/redemptions 接口，不把客户跳转到平台品牌页面}
         voucher_code: {type: [string, 'null'], pattern: '^[A-Z0-9][A-Z0-9_-]{7,63}$', description: 仅 delivery_mode=cdk 时返回；代理可配置受控品牌格式，接入方必须当作不透明字符串处理，自动直充不返回明文 CDK}
         fallback_recharge_available: {type: boolean, description: 仅上游明确失败且允许重提后为 true；在自有订单页重新开放入口}
         retry_allowed: {type: boolean, description: 最新尝试明确失败并允许安全重提；未知结果为 false}
