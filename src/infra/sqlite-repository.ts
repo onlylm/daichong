@@ -99,6 +99,8 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_ticket_message_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.ticketId'),json_extract(payload,'$.createdAt'));
       CREATE INDEX IF NOT EXISTS records_withdrawal_application_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.withdrawalApplication.withdrawalId'));
       CREATE INDEX IF NOT EXISTS records_tier_request_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.tierApplication.requestKey'));
+      CREATE INDEX IF NOT EXISTS records_wallet_credit_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt'),json_extract(payload,'$.orderId'));
+      CREATE INDEX IF NOT EXISTS records_daily_settlement_status_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'));
     `);
   }
 
@@ -372,6 +374,44 @@ export class SqliteRepository implements Repository {
     const limit=Math.min(100,Math.max(1,q.limit)),rows=this.db.prepare(`SELECT payload FROM sandbox_records WHERE ${conditions.join(' AND ')}
       ORDER BY ${created} DESC,id DESC LIMIT ?`).all(...args,limit+1);
     return {settlements:rows.slice(0,limit).map(row=>decode<Settlement>(String(row.payload))),hasMore:rows.length>limit,cursorValid:true};
+  }
+
+  listDailySettlementCandidates(periodTo:Date) {
+    const rows=this.db.prepare(`SELECT o.payload AS order_payload,c.payload AS credit_payload FROM sandbox_records c
+      JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=c.merchant_id AND o.id=json_extract(c.payload,'$.orderId')
+      JOIN sandbox_records m ON m.kind='merchant' AND m.id=c.merchant_id AND json_extract(m.payload,'$.status')='active'
+      JOIN sandbox_records p ON p.kind='payment_attempt' AND p.merchant_id=o.merchant_id AND json_extract(p.payload,'$.orderId')=o.id
+      WHERE c.kind='ops_wallet_credit' AND json_extract(c.payload,'$.createdAt')<?
+      AND CAST(COALESCE(json_extract(c.payload,'$.recognizedMinor.__bigint'),'0') AS INTEGER)>0
+      AND json_extract(o.payload,'$.archivedAt') IS NULL AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0
+      AND COALESCE(json_extract(o.payload,'$.collectionMode'),'platform_collect')='platform_collect'
+      AND json_extract(p.payload,'$.status')='paid'
+      AND CAST(COALESCE(json_extract(p.payload,'$.receivedMinor.__bigint'),json_extract(o.payload,'$.paymentReceivedMinor.__bigint'),'0') AS INTEGER)
+        =CAST(json_extract(o.payload,'$.saleAmountMinor.__bigint') AS INTEGER)
+      AND EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded')
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records s,json_each(s.payload,'$.orderIds') assigned
+        WHERE s.kind='ops_daily_settlement' AND s.merchant_id=c.merchant_id
+        AND json_extract(s.payload,'$.status')!='voided' AND assigned.value=json_extract(c.payload,'$.orderId'))
+      ORDER BY c.merchant_id,json_extract(c.payload,'$.createdAt'),c.id`).all(periodTo.toISOString());
+    return rows.map(row=>({order:decode<Order>(String(row.order_payload)),credit:decode<OperationsRecords['wallet_credit']>(String(row.credit_payload))}));
+  }
+
+  dailySettlementFunds(merchantIds:readonly string[]) {
+    const unique=[...new Set(merchantIds)].filter(Boolean);if(!unique.length)return [];
+    const result:Array<{merchantId:string;earningsBalance:bigint;alreadyScheduled:bigint}>=[];
+    for(let start=0;start<unique.length;start+=400){
+      const ids=unique.slice(start,start+400),placeholders=ids.map(()=>'?').join(',');
+      const rows=this.db.prepare(`SELECT m.id AS merchantId,
+        CAST(COALESCE((SELECT SUM(CAST(json_extract(e.payload,'$.earningsDelta.__bigint') AS INTEGER)) FROM sandbox_records e
+          WHERE e.kind='ops_wallet_entry' AND e.merchant_id=m.id),0) AS TEXT) AS earningsBalance,
+        CAST(COALESCE((SELECT SUM(CAST(json_extract(s.payload,'$.payableMinor.__bigint') AS INTEGER)) FROM sandbox_records s
+          WHERE s.kind='ops_daily_settlement' AND s.merchant_id=m.id AND json_extract(s.payload,'$.status')='pending_payment'),0) AS TEXT) AS alreadyScheduled
+        FROM sandbox_records m WHERE m.kind='merchant' AND m.id IN (${placeholders})`).all(...ids);
+      result.push(...rows.map(row=>({merchantId:String(row.merchantId),earningsBalance:BigInt(String(row.earningsBalance)),
+        alreadyScheduled:BigInt(String(row.alreadyScheduled))})));
+    }
+    return result;
   }
 
   findDuePaymentOrder(provider:string,now:Date):Order|null {
@@ -727,6 +767,7 @@ const dateKeys = new Set([
   "notBefore", "expiresAt", "paidAt", "createdAt", "updatedAt", "finishedAt", "clearedAt", "progressUpdatedAt",
   "refundedAt", "occurredAt", "periodFrom", "periodTo", "sealedAt", "nextAttemptAt", "leaseUntil", "deliveredAt",
   "verifiedAt", "activatedAt", "sentAt", "nextCheckAt", "consumedAt", "receivedAt", "processedAt", "lastTestAt", "lastPlanSyncAt", "syncedAt",
+  "generatedAt", "reconciledAt",
 ]);
 
 function encode(value: unknown): string {

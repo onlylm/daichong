@@ -60,6 +60,8 @@ export interface Repository {
     entries:LedgerItem[];hasMore:boolean;cursorValid:boolean};
   queryPartnerSettlements?(merchantId:string,query:{cursor?:string;limit:number}):{
     settlements:Settlement[];hasMore:boolean;cursorValid:boolean};
+  listDailySettlementCandidates?(periodTo:Date):Array<{order:Order;credit:import("../operations/model.js").WalletCredit}>;
+  dailySettlementFunds?(merchantIds:readonly string[]):Array<{merchantId:string;earningsBalance:bigint;alreadyScheduled:bigint}>;
   listTicketMessages?(merchantId:string,ticketId:string,includeInternal:boolean):import("../operations/model.js").TicketMessage[];
   findDuePaymentOrder?(provider:string,now:Date):Order|null;
   findDueRefund?(provider:string,now:Date):Refund|null;

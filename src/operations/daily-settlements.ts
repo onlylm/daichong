@@ -33,36 +33,30 @@ export class DailySettlementService {
       const periodFrom = new Date(periodTo.getTime() - DAY);
       if (periodTo.getTime() > Date.now() + 60_000) return {generated: false, businessDate, count: 0};
       const now = new Date();
+      const databaseCandidates=this.repository.listDailySettlementCandidates?.(periodTo)??null;
+      const candidatesByMerchant=new Map<string,NonNullable<typeof databaseCandidates>>();
+      for(const candidate of databaseCandidates??[]){const values=candidatesByMerchant.get(candidate.order.merchantId)??[];values.push(candidate);candidatesByMerchant.set(candidate.order.merchantId,values);}
+      const funds=new Map((this.repository.dailySettlementFunds?.([...candidatesByMerchant.keys()])??[]).map(value=>[value.merchantId,value]));
+      const catalog=this.repository.getOperations("global_product_catalog","default")?.products??[];
       let count = 0;
       for (const merchant of this.repository.listMerchants().filter(item => item.status === "active")) {
         const id = `ds_${businessDate.replaceAll("-", "")}_${merchant.id}`;
         if (this.repository.getOperations("daily_settlement", id)) continue;
-        const assigned = new Set(this.repository.listOperations("daily_settlement", merchant.id)
-          .filter(statement => statement.status !== "voided").flatMap(statement => statement.orderIds));
-        // Scan the full historical unassigned pool, not just today's orders.
-        // Wallet credits are only created after real payment + successful real fulfillment.
-        const credits = this.repository.listOperations("wallet_credit", merchant.id)
-          .filter(credit => credit.createdAt < periodTo && credit.recognizedMinor > 0n && !assigned.has(credit.orderId));
-        const orders = credits.map(credit => this.repository.findOrderInternal(credit.orderId)).filter((order): order is NonNullable<typeof order> => {
-          if (!order || order.archivedAt || order.liveTest || (order.collectionMode ?? "platform_collect") !== "platform_collect") return false;
-          const payment = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id);
-          const received = payment?.receivedMinor ?? order.paymentReceivedMinor;
-          return payment?.status === "paid" && received === order.saleAmountMinor
-            && this.repository.listFulfillments(order.merchantId, order.id).some(task => task.status === "succeeded");
-        });
+        const candidates=databaseCandidates?candidatesByMerchant.get(merchant.id)??[]:this.fallbackCandidates(merchant.id,periodTo);
+        const orders=candidates.map(value=>value.order);
         if (orders.length === 0) continue;
         const orderIds = orders.map(order => order.id);
         const supplyAmountMinor = orders.reduce((sum, order) => sum + order.supplyAmountMinor, 0n);
         const platformCostMinor = orders.reduce((sum, order) => {
-          const configured = this.repository.getOperations("global_product_catalog", "default")?.products
-            .find(item => item.productCode === order.productCode)?.standardCostCnyMinor;
+          const configured = catalog.find(item => item.productCode === order.productCode)?.standardCostCnyMinor;
           const unit = order.costTerms?.standardCnyMinor ?? configured ?? managedGptProduct(order.productCode)?.costPriceMinor ?? 0n;
           return sum + unit * BigInt(order.quantity);
         }, 0n);
-        const agentEarningsMinor = orderIds.reduce((sum, orderId) => sum + (this.repository.getOperations("wallet_credit", orderId)?.recognizedMinor ?? 0n), 0n);
-        const earningsBalance = this.repository.listOperations("wallet_entry", merchant.id).reduce((sum, entry) => sum + entry.earningsDelta, 0n);
-        const alreadyScheduled = this.repository.listOperations("daily_settlement", merchant.id)
-          .filter(statement => statement.status === "pending_payment").reduce((sum, statement) => sum + statement.payableMinor, 0n);
+        const agentEarningsMinor = candidates.reduce((sum,value)=>sum+value.credit.recognizedMinor,0n);
+        const financial=funds.get(merchant.id),earningsBalance=financial?.earningsBalance??this.repository.walletTotals?.(merchant.id).earnings
+          ??this.repository.listOperations("wallet_entry",merchant.id).reduce((sum,entry)=>sum+entry.earningsDelta,0n);
+        const alreadyScheduled=financial?.alreadyScheduled??this.repository.listOperations("daily_settlement",merchant.id)
+          .filter(statement=>statement.status==="pending_payment").reduce((sum,statement)=>sum+statement.payableMinor,0n);
         const payableMinor = min(agentEarningsMinor, positive(earningsBalance - alreadyScheduled));
         const statement: DailySettlementStatement = {
           id, merchantId: merchant.id, businessDate, periodFrom, periodTo,
@@ -78,6 +72,14 @@ export class DailySettlementService {
       this.repository.saveOperations("service_checkpoint", {id: checkpointId, merchantId: null, createdAt: now}, true);
       return {generated: true, businessDate, count};
     });
+  }
+
+  private fallbackCandidates(merchantId:string,periodTo:Date) {
+    const assigned=new Set(this.repository.listOperations("daily_settlement",merchantId).filter(statement=>statement.status!=="voided").flatMap(statement=>statement.orderIds));
+    return this.repository.listOperations("wallet_credit",merchantId).filter(credit=>credit.createdAt<periodTo&&credit.recognizedMinor>0n&&!assigned.has(credit.orderId))
+      .flatMap(credit=>{const order=this.repository.findOrderInternal(credit.orderId);if(!order||order.archivedAt||order.liveTest||(order.collectionMode??"platform_collect")!=="platform_collect")return [];
+        const payment=this.repository.findPaymentAttemptByOrder(order.merchantId,order.id),received=payment?.receivedMinor??order.paymentReceivedMinor;
+        return payment?.status==="paid"&&received===order.saleAmountMinor&&this.repository.listFulfillments(order.merchantId,order.id).some(task=>task.status==="succeeded")?[{order,credit}]:[];});
   }
 
   list(actor: Actor, merchantId?: string) {

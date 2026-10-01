@@ -1,9 +1,10 @@
-import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it,vi} from "vitest";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import type {Actor, WalletEntry} from "../src/operations/model.js";
 import {managedGptProducts} from "../src/modules/gpt-products.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
+import type {Repository} from "../src/infra/repository.js";
 
 const admin: Actor = {id: "policy-admin", role: "platform_admin", merchantId: null};
 
@@ -88,5 +89,35 @@ describe("2026-10-01 agent policy", () => {
     expect(paid.status).toBe("paid");
     expect(runtime.repository.listOperations("wallet_entry", created.merchantId).reduce((sum, item) => sum + item.earningsDelta, 0n)).toBe(0n);
     expect(runtime.dailySettlements.reconcile(admin, statement.id, "代理确认到账，金额流水一致").status).toBe("reconciled");
+  });
+
+  it("builds SQLite settlement candidates and balances without per-order historical scans",async()=>{
+    const sqlite=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
+    try{
+      publishTestRechargeProduct(sqlite);
+      const credential=sqlite.repository.findCredential("pt_demo_a","key_demo_a_01")!,tenant={merchantId:credential.merchant.id,
+        partnerId:credential.merchant.partnerId,appId:credential.app.appId,keyId:credential.key.keyId};
+      const created=await sqlite.orders.create(tenant,{merchantOrderNo:"settlement-sqlite",productCode:"chatgpt_plus_cdk_1m",
+        quantity:1,saleAmount:"135.00",collectionMode:"platform_collect"}),at=new Date("2026-09-30T12:00:00.000Z");
+      sqlite.repository.updateOrder({...created,paymentStatus:"paid",paymentProviderRef:"ali_settlement_sqlite",paymentReceivedMinor:created.saleAmountMinor,
+        paymentFeeMinor:0n,paidAt:at,createdAt:at,updatedAt:at});
+      const attempt=sqlite.repository.findPaymentAttemptByOrder(created.merchantId,created.id)!;
+      sqlite.repository.updatePaymentAttempt({...attempt,status:"paid",providerRef:"ali_settlement_sqlite",receivedMinor:created.saleAmountMinor,
+        feeMinor:0n,paidAt:at,createdAt:at,updatedAt:at});
+      sqlite.repository.insertFulfillment({id:"ful_settlement_sqlite",merchantId:created.merchantId,orderId:created.id,attemptNo:1,status:"succeeded",
+        failureCode:null,message:null,accountEmailMasked:null,sessionPayload:{ciphertext:null,iv:null,authTag:null,keyVersion:"test",clearedAt:null},mode:"cdk",
+        voucherId:null,upstreamProvider:"zovocard",upstreamOrderId:"up_settlement_sqlite",upstreamClientRequestId:"req_settlement_sqlite",
+        upstreamLookupToken:null,upstreamStatus:"completed",upstreamStage:"completed",upstreamQuoteMinor:1576,upstreamCurrency:"USD",nextCheckAt:at,createdAt:at,finishedAt:at});
+      sqlite.repository.saveOperations("wallet_credit",{id:created.id,merchantId:created.merchantId,orderId:created.id,recognizedMinor:2_500n,createdAt:at},true);
+      sqlite.repository.saveOperations("wallet_entry",{id:"earning:"+created.id,merchantId:created.merchantId,kind:"earning_release",procurementDelta:0n,
+        earningsDelta:2_500n,frozenDelta:0n,reference:created.id,actorId:"system",createdAt:at},true);
+      const fullOperations=vi.spyOn(sqlite.repository,"listOperations"),orders=vi.spyOn(sqlite.repository,"findOrderInternal"),
+        payments=vi.spyOn(sqlite.repository,"findPaymentAttemptByOrder"),fulfillments=vi.spyOn(sqlite.repository,"listFulfillments");
+      expect(sqlite.dailySettlements.generate("2026-09-30")).toMatchObject({generated:true,count:1});
+      const statement=sqlite.repository.getOperations("daily_settlement",`ds_20260930_${created.merchantId}`)!;
+      expect(statement).toMatchObject({orderIds:[created.id],agentEarningsMinor:2_500n,payableMinor:2_500n,platformProfitMinor:200n});
+      expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();expect(fulfillments).not.toHaveBeenCalled();
+      expect((sqlite.repository as Repository).listDailySettlementCandidates?.(new Date("2026-10-01T14:00:00.000Z"))).toEqual([]);
+    }finally{vi.restoreAllMocks();sqlite.close();}
   });
 });
