@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
@@ -9,6 +9,7 @@ import {workspaceOrderDetail} from "../src/operations/order-view.js";
 import {refundReconciliationId} from "../src/domain/provider-refund-review.js";
 import {loginPlatform} from "./fixtures/mfa.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
+import {RefundService} from "../src/modules/refund-service.js";
 
 const admin:Actor={id:"manual-admin",role:"platform_admin",merchantId:null};
 const state=(status:string)=>({orderId:"provider-attempt-1",lookupToken:null,status,stage:status,
@@ -85,6 +86,72 @@ for(const driver of ["memory","sqlite"] as const)describe(`manual recharge compl
     expect(()=>runtime.manualCompletions.record(admin,order.id,proof,"req-2")).toThrow("退款");
     expect(runtime.repository.listFulfillments(tenant.merchantId,order.id)).toHaveLength(1);
     expect(runtime.repository.getOperations("wallet_credit",order.id)).toBeNull();
+  });
+
+  it("blocks a retryable failed ordinary refund until its conflict is resolved",async()=>{
+    const {tenant,order,task}=await setup();
+    runtime.fulfillments.applyUpstreamEvent(task.id,state("failed_precharge"));
+    const refund=runtime.refunds.request(tenant,order.id,{merchantRefundNo:"old-failed-refund",type:"full",
+      amount:"135.00",reason:"原充值失败退款"});
+    runtime.repository.updateRefund({...refund,status:"failed",failureCode:"channel_failed"});
+    expect(()=>runtime.manualCompletions.record(admin,order.id,input(),"req-failed-refund"))
+      .toThrow("待处理退款");
+    expect(runtime.repository.getOperations("manual_completion",order.id)).toBeNull();
+    expect(runtime.repository.listFulfillments(tenant.merchantId,order.id)).toHaveLength(1);
+  });
+
+  it("allows a price adjustment after a resolved ordinary refund conflict and one manual success",async()=>{
+    const {tenant,order,task}=await setup();
+    runtime.fulfillments.applyUpstreamEvent(task.id,state("failed_precharge"));
+    const old=runtime.refunds.request(tenant,order.id,{merchantRefundNo:"old-requested-refund",type:"full",
+      amount:"135.00",reason:"原充值失败退款"});
+    expect(()=>runtime.manualCompletions.record(admin,order.id,input(),"req-before-refund-review"))
+      .toThrow("待处理退款");
+    expect(runtime.refunds.reject(admin,old.id,"核实尚未发起渠道退款，改为人工完成").status).toBe("rejected");
+    runtime.manualCompletions.record(admin,order.id,input(),"req-after-refund-review");
+    const execute=vi.fn(async()=>"provider-adjustment-001");
+    const refunds=new RefundService(runtime.repository,runtime.ledger,runtime.webhooks,{
+      providerFor:()=>"alipay_page",execute,
+    });
+    const adjustment=refunds.requestPriceAdjustment(admin,order.id,{amount:"5.00",reason:"核实后的合法差价",
+      requestKey:"manual-adjustment-001"});
+    const paid=await refunds.approve(admin,adjustment.id);
+    expect(paid).toMatchObject({status:"succeeded",type:"price_adjustment"});
+    expect(execute).toHaveBeenCalledOnce();
+    const updated=runtime.repository.findOrderInternal(order.id)!;
+    expect(updated.ordinaryRefundedMinor).toBe(0n);
+    expect(updated.priceAdjustmentRefundedMinor).toBe(500n);
+    expect(runtime.repository.listFulfillments(tenant.merchantId,order.id).filter(value=>value.status==="succeeded")).toHaveLength(1);
+  });
+
+  it("rechecks fulfillment inside the refund claim transaction after a late upstream success",async()=>{
+    const {tenant,order,task}=await setup();
+    runtime.fulfillments.applyUpstreamEvent(task.id,state("failed_precharge"));
+    const refund=runtime.refunds.request(tenant,order.id,{merchantRefundNo:"race-refund",type:"full",
+      amount:"135.00",reason:"自动失败后申请退款"});
+    const execute=vi.fn(async()=>"must-not-refund");
+    let interleaved=false;
+    const repository=new Proxy(runtime.repository,{
+      get(target,property,receiver){
+        if(property==="findPaymentAttemptByOrder")return (merchantId:string,orderId:string)=>{
+          if(!interleaved){
+            interleaved=true;
+            const latest=target.findFulfillment(tenant.merchantId,task.id)!;
+            target.updateFulfillment({...latest,status:"succeeded"});
+          }
+          return target.findPaymentAttemptByOrder(merchantId,orderId);
+        };
+        const value=Reflect.get(target,property,receiver);
+        return typeof value==="function"?value.bind(target):value;
+      },
+    });
+    const refunds=new RefundService(repository,runtime.ledger,runtime.webhooks,{
+      providerFor:()=>"alipay_page",execute,
+    });
+    await expect(refunds.approve(admin,refund.id)).rejects.toMatchObject({code:"fulfillment_blocks_refund"});
+    expect(interleaved).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(runtime.repository.findRefund(tenant.merchantId,refund.id)?.status).toBe("requested");
   });
 
   it("requires matching confirmed collection evidence, not just the order's paid label",async()=>{

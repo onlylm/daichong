@@ -20,7 +20,7 @@ export function manualCompletionBlock(repo: Repository, order: Order): string | 
   if (!hasConfirmedOrderPayment(order, repo.findPaymentAttemptByOrder(order.merchantId, order.id)))
     return "订单收款记录尚未一致确认，不能登记人工完成";
   if (repo.getOperations("manual_completion", order.id)) return "该订单已登记人工完成";
-  if (repo.listRefundsForOrder(order.merchantId, order.id).some(value => ["requested", "approved", "processing"].includes(value.status))
+  if (repo.listRefundsForOrder(order.merchantId, order.id).some(value => ["requested", "approved", "processing", "failed"].includes(value.status))
       || hasUnreconciledProviderRefund(repo, order.merchantId, order.id)) return "订单存在待处理退款或渠道退款差异";
   const attempts = repo.listFulfillments(order.merchantId, order.id);
   if (!attempts.length) return "尚无失败的自动充值记录，不能补记人工完成";

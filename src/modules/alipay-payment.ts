@@ -157,7 +157,10 @@ export class AlipayPaymentService {
       }
       if (result.code !== "10000") throw new Error("query_failed");
       this.accept(order, result as Record<string, string>);
-    } catch {
+    } catch (error) {
+      if (error instanceof AppError && ["payment_binding_mismatch", "payment_channel_mismatch", "payment_amount_mismatch",
+        "payment_reference_mismatch", "payment_attempt_conflict", "payment_time_unconfirmed", "invalid_state_transition"].includes(error.code))
+        throw error;
       throw new AppError(503, "payment_query_pending", "支付结果暂未确认，请稍后查询；不要重复付款", true);
     }
   }
@@ -177,13 +180,24 @@ export class AlipayPaymentService {
     return tradeNo;
   }
 
-  async queryRefund(orderId: string, refundId: string, expectedAmount: bigint): Promise<{status: "succeeded"; providerRefundNo: string} | {status: "not_confirmed"}> {
+  async queryRefund(orderId: string, refundId: string, expectedAmount: bigint): Promise<{status: "succeeded"; providerRefundNo: string} | {status: "not_confirmed"; bindingVerified?: boolean}> {
     const order = this.order(orderId);
     const result = await this.client.exec("alipay.trade.fastpay.refund.query", {
       bizContent: {out_trade_no: order.id, out_request_no: refundId.slice(0, 64)},
     }, {validateSign: true});
     if (result.code !== "10000") throw new AppError(503, "refund_query_pending", "退款结果待核对", true);
-    if (result.refund_status !== "REFUND_SUCCESS") return {status: "not_confirmed"};
+    // Even a negative observation must not accept a different order/request.
+    // Missing fields do not prove terminal failure or permit manual cancellation.
+    if ((result.out_trade_no !== undefined && result.out_trade_no !== order.id)
+        || (result.out_request_no !== undefined && result.out_request_no !== refundId.slice(0, 64))
+        || (result.refund_amount !== undefined && amountMinor(result.refund_amount) !== expectedAmount)
+        || (result.total_amount !== undefined && amountMinor(result.total_amount) !== order.saleAmountMinor)
+        || (result.trade_no !== undefined && (typeof result.trade_no !== "string" || !/^\d{8,64}$/.test(result.trade_no)))) {
+      throw new AppError(409, "refund_binding_mismatch", "退款查询结果与原退款单不一致");
+    }
+    if (result.refund_status !== "REFUND_SUCCESS") return {status: "not_confirmed", bindingVerified:
+      result.out_trade_no === order.id && result.out_request_no === refundId.slice(0, 64)
+      && result.refund_amount !== undefined && result.total_amount !== undefined && typeof result.trade_no === "string"};
     if (result.out_trade_no !== order.id || result.out_request_no !== refundId.slice(0, 64)
         || amountMinor(result.refund_amount) !== expectedAmount || amountMinor(result.total_amount) !== order.saleAmountMinor
         || typeof result.trade_no !== "string" || !/^\d{8,64}$/.test(result.trade_no)) {

@@ -1022,6 +1022,14 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const input = z.object({reason: text}).strict().parse(request.body);
     return wire({data: workspaceRefund(runtime, runtime.refunds.reject(actor, request.params.id, input.reason))});
   });
+  app.post<{Params: {id: string}}>("/workspace/api/refunds/:id/close-failed", async request => {
+    const input = z.object({refundRequestNo: identifier, evidenceReference: z.string().trim().min(6).max(120),
+      evidence: z.string().trim().min(12).max(1000), reason: z.string().trim().min(4).max(500),
+      evidenceAt: z.coerce.date(), confirmChannelTerminatedWithoutRefund: z.literal(true)}).strict().parse(request.body);
+    const refund = await runtime.refunds.closeFailedWithEvidence(account(request), request.params.id, input, request.id);
+    runtime.wallets.reconcileMerchantEarnings(refund.merchantId);
+    return wire({data: workspaceRefund(runtime, refund)});
+  });
 
   // Existing HMAC identity is reused. Partner API cannot approve funds, publish, assign roles or withdraw.
   registerPaymentSettingsRoutes(app, runtime, account);

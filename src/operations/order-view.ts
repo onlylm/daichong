@@ -314,6 +314,7 @@ export function workspaceOrderDetail(
       providerRefundNo: refund.providerRefundNo ?? null,
       createdAt: refund.createdAt.toISOString(),
       refundedAt: refund.refundedAt?.toISOString() ?? null,
+      cancelledReview: isPlatform(actor) ? refund.cancelledReview ?? null : null,
     }));
   const reservedMinor = refundRecords
     .filter(item => !["rejected", "cancelled"].includes(item.status))

@@ -17,6 +17,7 @@ docs/33-20260930代理资金与支付宝收款只读审计.md
 
 # Local browser and visual-QA state
 .playwright-cli/
+output/playwright/
 .tmp-video-frames/
 artifacts/
 .visual-qa.sqlite*

@@ -281,6 +281,13 @@ export interface Refund {
   providerRefundNo?: string | null;
   nextCheckAt?: Date | null;
   recoveryAttempts?: number;
+  /** Ownership fences asynchronous refund queries and channel execution across API/worker processes. */
+  leaseToken?: string | null;
+  leaseUntil?: Date | null;
+  /** ISO timestamp keeps existing JSON records compatible without a storage migration. */
+  lastSubmittedAt?: string | null;
+  cancelledReview?: {actorId: string; reviewedAt: string; evidenceAt: string; evidenceReference: string;
+    evidence: string; reason: string; refundRequestNo: string};
   createdAt: Date;
   refundedAt: Date | null;
 }

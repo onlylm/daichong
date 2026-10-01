@@ -24,7 +24,7 @@ const refundTransitions: Record<RefundStatus, readonly RefundStatus[]> = {
   requested: ["approved", "rejected", "cancelled"],
   approved: ["processing"],
   processing: ["processing", "succeeded", "failed"],
-  failed: ["approved"],
+  failed: ["approved", "cancelled"],
   succeeded: [],
   rejected: [],
   cancelled: [],

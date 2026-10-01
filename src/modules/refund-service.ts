@@ -15,7 +15,7 @@ import {queryRecords} from "../infra/record-query.js";
 export type RefundExecutor = {
   providerFor(orderId: string): string | null;
   execute(orderId: string, refund: Refund): Promise<string>;
-  query?(orderId: string, refund: Refund): Promise<{status: "succeeded"; providerRefundNo: string} | {status: "not_confirmed"}>;
+  query?(orderId: string, refund: Refund): Promise<{status: "succeeded"; providerRefundNo: string} | {status: "not_confirmed"; bindingVerified?: boolean}>;
 };
 
 export type ProviderRefundObserver = {
@@ -341,36 +341,38 @@ export class RefundService {
     if (provider !== "alipay_page" && provider !== "mock") throw new AppError(409, "auto_refund_unsupported", "该渠道不支持自动退款");
     if (provider === "alipay_page" && !this.executor) throw new AppError(503, "alipay_unavailable", "支付宝退款通道未配置");
 
-    this.repository.transaction(() => {
+    const processing = this.repository.transaction(() => {
       const current = this.get(refund.merchantId, refundId);
       if (!["requested", "failed"].includes(current.status)) throw new AppError(409, "refund_changed", "退款单已处理，请刷新");
+      if (current.leaseToken && (!current.leaseUntil || current.leaseUntil > new Date()))
+        throw new AppError(409, "refund_review_in_progress", "退款正在核对或执行，请稍后刷新");
+      this.assertRefundExecutable(current, provider);
       if (current.status === "requested") assertRefundTransition("requested", "approved");
       else assertRefundTransition("failed", "approved");
       assertRefundTransition("approved", "processing");
-      this.repository.updateRefund({...current, status: "processing", failureCode: null, nextCheckAt: new Date(Date.now() + 60_000), recoveryAttempts: 0});
+      const next = {...current, status: "processing" as const, failureCode: null,
+        nextCheckAt: new Date(Date.now() + 60_000), recoveryAttempts: 0,
+        leaseToken: randomUUID(), leaseUntil: new Date(Date.now() + 60_000), lastSubmittedAt: new Date().toISOString()};
+      this.repository.updateRefund(next);
+      return next;
     });
 
     let providerRefundNo: string | null = null;
     try {
       if (provider === "alipay_page") {
         if (!this.executor) throw new AppError(503, "alipay_unavailable", "支付宝退款通道未配置");
-        providerRefundNo = await this.executor.execute(refund.orderId, {...refund, status: "processing"});
+        providerRefundNo = await this.executor.execute(refund.orderId, processing);
       } else if (provider === "mock") {
         providerRefundNo = "mock:" + refund.id;
       } else {
         throw new AppError(409, "auto_refund_unsupported", "该支付方式不支持自动退款，请人工打款后使用确认入账");
       }
     } catch (error) {
-      this.repository.transaction(() => {
-        const current = this.get(refund.merchantId, refundId);
-        if (current.status !== "processing") return;
-        this.repository.updateRefund({...current, status: "processing", failureCode: "refund_result_unknown",
-          nextCheckAt: new Date(Date.now() + 60_000)});
-      });
+      this.deferOwnedRefund(processing, "refund_result_unknown", 60_000);
       return this.get(refund.merchantId, refundId);
     }
 
-    return this.repository.transaction(() => this.completeLocked(refund.merchantId, refundId, providerRefundNo));
+    return this.repository.transaction(() => this.completeLocked(refund.merchantId, refundId, providerRefundNo, true));
   }
 
   /** Query uncertain refunds first; recovery always reuses the original refund ID and amount. */
@@ -381,8 +383,10 @@ export class RefundService {
         .flatMap(order => this.repository.listRefundsForOrder(order.merchantId, order.id))
         .find(item => item.status === "processing" && (!item.nextCheckAt || item.nextCheckAt <= now)
           && this.paymentProvider(item.orderId) === "alipay_page");
-      if (!candidate) return null;
-      const claimed = {...candidate, nextCheckAt: new Date(Date.now() + 60_000)};
+      if (!candidate || candidate.status !== "processing"
+          || (candidate.leaseToken && (!candidate.leaseUntil || candidate.leaseUntil > now))) return null;
+      const claimed = {...candidate, nextCheckAt: new Date(now.getTime() + 60_000),
+        leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() + 60_000)};
       this.repository.updateRefund(claimed);
       return claimed;
     });
@@ -390,26 +394,115 @@ export class RefundService {
     try {
       const result = await this.executor.query(refund.orderId, refund);
       if (result.status === "succeeded") {
-        this.repository.transaction(() => this.completeLocked(refund.merchantId, refund.id, result.providerRefundNo));
+        // A signed success is a financial fact, even if this query's lease has since been replaced.
+        this.repository.transaction(() => this.completeLocked(refund.merchantId, refund.id, result.providerRefundNo, true));
         return;
       }
       // Official query succeeded but did not confirm a refund. Never use a new request number.
-      if (refund.recoveryAttempts === undefined || refund.recoveryAttempts >= 3) {
-        this.repository.updateRefund({...this.get(refund.merchantId, refund.id), failureCode: "refund_manual_review",
-          nextCheckAt: new Date(Date.now() + 300_000)});
-        return;
-      }
-      this.repository.transaction(() => {
+      const execution = this.repository.transaction(() => {
         const current = this.get(refund.merchantId, refund.id);
-        this.repository.updateRefund({...current, recoveryAttempts: (current.recoveryAttempts ?? 0) + 1});
+        if (!this.ownsRefundLease(current, refund)) return null;
+        if (current.recoveryAttempts === undefined || current.recoveryAttempts >= 3) {
+          this.deferOwnedRefund(refund, "refund_manual_review", 300_000);
+          return null;
+        }
+        this.assertRefundExecutable(current, "alipay_page");
+        const next = {...current, recoveryAttempts: current.recoveryAttempts + 1,
+          lastSubmittedAt: new Date().toISOString(), leaseUntil: new Date(Date.now() + 60_000),
+          nextCheckAt: new Date(Date.now() + 60_000)};
+        this.repository.updateRefund(next);
+        return next;
       });
-      const reference = await this.executor.execute(refund.orderId, refund);
-      this.repository.transaction(() => this.completeLocked(refund.merchantId, refund.id, reference));
-    } catch {
+      if (!execution) return;
+      const reference = await this.executor.execute(execution.orderId, execution);
+      this.repository.transaction(() => this.completeLocked(refund.merchantId, refund.id, reference, true));
+    } catch (error) {
+      const blocked = error instanceof AppError && ["fulfillment_blocks_refund", "order_not_refundable",
+        "refund_order_not_found", "refund_provider_changed", "use_customer_refund"].includes(error.code);
+      this.deferOwnedRefund(refund, blocked ? "refund_manual_review" : "refund_result_unknown", blocked ? 300_000 : 60_000);
+    }
+  }
+
+  /** Close a legacy failed request only on independently verified channel evidence.
+   * A negative query is an additional binding check, never proof of finality by itself.
+   * Processing/unknown requests must continue reconciliation and cannot use this path.
+   */
+  async closeFailedWithEvidence(actor: Actor, refundId: string, input: {
+    refundRequestNo: string; evidenceReference: string; evidence: string; reason: string;
+    evidenceAt: Date; confirmChannelTerminatedWithoutRefund: true;
+  }, requestId: string): Promise<Refund> {
+    if (actor.role !== "platform_admin" || actor.merchantId !== null)
+      throw new AppError(403, "permission_denied", "仅平台管理员可核实结束失败退款");
+    const proof = {refundRequestNo: input.refundRequestNo.trim(), evidenceReference: input.evidenceReference.trim(),
+      evidence: input.evidence.trim(), reason: input.reason.trim(), evidenceAt: input.evidenceAt};
+    if (!input.confirmChannelTerminatedWithoutRefund || proof.refundRequestNo !== refundId
+        || proof.evidenceReference.length < 6 || proof.evidenceReference.length > 120
+        || proof.evidence.length < 12 || proof.evidence.length > 1000 || proof.reason.length < 4 || proof.reason.length > 500)
+      throw new AppError(422, "refund_closure_evidence_required", "须核对原退款请求号，并提供渠道已终结且未退款的真实凭证及原因");
+    if (!Number.isFinite(proof.evidenceAt.getTime()) || proof.evidenceAt > new Date())
+      throw new AppError(422, "refund_closure_time_invalid", "渠道核验时间无效，不得晚于当前时间");
+    const claimed = this.repository.transaction(() => {
+      const refund = this.findRefundById(refundId);
+      if (!refund) throw notFound("refund");
+      if (refund.status === "cancelled" && refund.cancelledReview) {
+        const previous = refund.cancelledReview;
+        if (previous.refundRequestNo !== proof.refundRequestNo || previous.evidenceReference !== proof.evidenceReference
+            || previous.evidence !== proof.evidence || previous.reason !== proof.reason || previous.evidenceAt !== proof.evidenceAt.toISOString())
+          throw new AppError(409, "refund_closure_conflict", "该退款已核实结束，不能覆盖原核验凭证");
+        return refund;
+      }
+      if (refund.status === "succeeded") return refund;
+      if (refund.status !== "failed") throw new AppError(409, "refund_changed", "仅旧失败退款可核实结束；处理中或结果未知的退款须继续核对");
+      const now = new Date();
+      if (refund.leaseToken && (!refund.leaseUntil || refund.leaseUntil > now))
+        throw new AppError(409, "refund_review_in_progress", "退款正在核对或执行，请稍后刷新");
+      const lastSubmitted = refund.lastSubmittedAt ? new Date(refund.lastSubmittedAt) : null;
+      if (lastSubmitted && (!Number.isFinite(lastSubmitted.getTime()) || now.getTime() - lastSubmitted.getTime() < 60_000))
+        throw new AppError(409, "refund_review_in_progress", "退款刚发起或发起时间不明，不能结束，须先核实渠道终态");
+      if (proof.evidenceAt < refund.createdAt || (lastSubmitted && proof.evidenceAt < lastSubmitted))
+        throw new AppError(422, "refund_closure_time_invalid", "渠道凭证时间不能早于退款申请或最近一次退款执行");
+      if (refund.providerRefundNo) throw new AppError(409, "refund_result_unconfirmed", "已有渠道退款流水，请先核对真实退款结果");
+      if (this.paymentProvider(refund.orderId) !== "alipay_page" || !this.executor?.query)
+        throw new AppError(503, "refund_query_unavailable", "渠道精确退款查询不可用，不能结束失败退款");
+      const next = {...refund, leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() + 60_000)};
+      this.repository.updateRefund(next);
+      return next;
+    });
+    if (claimed.status !== "failed") return claimed;
+    try {
+      const result = await this.executor!.query!(claimed.orderId, claimed);
+      return this.repository.transaction(() => {
+        const current = this.get(claimed.merchantId, claimed.id);
+        if (result.status === "succeeded") {
+          // Never discard an actual refund merely because a review lease expired.
+          const completed = this.completeLocked(current.merchantId, current.id, result.providerRefundNo, true);
+          if (current.status !== "succeeded") this.repository.appendAudit({id: `aud_${randomUUID().replaceAll("-", "")}`,
+            merchantId: current.merchantId, actorId: actor.id, actorType: "platform_user", action: "refund.failed_review.found_refunded",
+            targetType: "refund", targetId: current.id, requestId, createdAt: new Date()});
+          return completed;
+        }
+        if (current.status !== "failed" || current.leaseToken !== claimed.leaseToken || !current.leaseUntil || current.leaseUntil <= new Date())
+          throw new AppError(409, "refund_changed", "退款状态或核验占用已变化，请刷新后重新核实");
+        if (result.bindingVerified !== true)
+          throw new AppError(409, "refund_result_unconfirmed", "渠道未返回完整的原订单与退款请求绑定结果；查无记录不能作为结束依据");
+        if (current.lastSubmittedAt !== claimed.lastSubmittedAt || current.amountMinor !== claimed.amountMinor
+            || this.paymentProvider(current.orderId) !== "alipay_page")
+          throw new AppError(409, "refund_changed", "退款执行事实已变化，请刷新后重新核实");
+        assertRefundTransition(current.status, "cancelled");
+        const now = new Date(), updated: Refund = {...current, status: "cancelled", nextCheckAt: null, leaseToken: null, leaseUntil: null,
+          cancelledReview: {...proof, evidenceAt: proof.evidenceAt.toISOString(), reviewedAt: now.toISOString(), actorId: actor.id}};
+        // Keep the original failureCode and reason; the review is separate evidence.
+        this.repository.updateRefund(updated);
+        this.repository.appendAudit({id: `aud_${randomUUID().replaceAll("-", "")}`, merchantId: current.merchantId,
+          actorId: actor.id, actorType: "platform_user", action: "refund.failed_review.cancel", targetType: "refund",
+          targetId: current.id, requestId, createdAt: now});
+        return updated;
+      });
+    } finally {
       this.repository.transaction(() => {
-        const current = this.get(refund.merchantId, refund.id);
-        if (current.status !== "processing") return;
-        this.repository.updateRefund({...current, failureCode: "refund_result_unknown", nextCheckAt: new Date(Date.now() + 60_000)});
+        const current = this.get(claimed.merchantId, claimed.id);
+        if (current.status === "failed" && current.leaseToken === claimed.leaseToken)
+          this.repository.updateRefund({...current, leaseToken: null, leaseUntil: null});
       });
     }
   }
@@ -442,9 +535,48 @@ export class RefundService {
     return this.repository.findPaymentAttemptByOrder(order.merchantId, orderId)?.provider ?? null;
   }
 
-  private completeLocked(merchantId: string, refundId: string, providerRefundNo: string | null = null): Refund {
+  private ownsRefundLease(current: Refund, claimed: Refund): boolean {
+    return current.status === "processing" && !!claimed.leaseToken && current.leaseToken === claimed.leaseToken
+      && !!current.leaseUntil && current.leaseUntil > new Date();
+  }
+
+  private deferOwnedRefund(claimed: Refund, failureCode: string, delayMs: number): void {
+    this.repository.transaction(() => {
+      const current = this.get(claimed.merchantId, claimed.id);
+      if (!this.ownsRefundLease(current, claimed)) return;
+      this.repository.updateRefund({...current, failureCode, nextCheckAt: new Date(Date.now() + delayMs),
+        leaseToken: null, leaseUntil: null});
+    });
+  }
+
+  /** Both initial approval and every recovery submission must recheck under the write transaction. */
+  private assertRefundExecutable(refund: Refund, expectedProvider: string | null): void {
+    const order = this.repository.findOrder(refund.merchantId, refund.orderId);
+    if (!order || order.collectionMode !== "platform_collect")
+      throw new AppError(409, "refund_order_not_found", "仅平台代收订单可自动退款");
+    if (this.paymentProvider(order.id) !== expectedProvider)
+      throw new AppError(409, "refund_provider_changed", "退款渠道已变化，请刷新后核对");
+    if (!["paid", "partially_refunded"].includes(order.paymentStatus))
+      throw new AppError(409, "order_not_refundable", "当前支付状态不可退款");
+    if (refund.type !== "price_adjustment") this.assertOrdinaryRefundExecutable(order);
+    if (refund.type === "price_adjustment"
+        && order.ordinaryRefundedMinor + order.priceAdjustmentRefundedMinor + refund.amountMinor >= order.saleAmountMinor)
+      throw new AppError(409, "use_customer_refund", "全额退款不能使用差价退款；请先安全处理充值任务，再选择客户退款");
+  }
+
+  /** Run while holding the same write transaction that claims the refund for channel execution. */
+  private assertOrdinaryRefundExecutable(order: Order): void {
+    if (this.repository.getOperations("manual_completion", order.id)
+        || this.repository.listFulfillments(order.merchantId, order.id).some(task => !!task.leaseToken || !isConfirmedUnsuccessfulFulfillment(task))) {
+      throw new AppError(409, "fulfillment_blocks_refund", "充值处理中、结果未知或已完成，不能执行普通退款");
+    }
+  }
+
+  private completeLocked(merchantId: string, refundId: string, providerRefundNo: string | null = null, providerConfirmed = false): Refund {
     const current = this.get(merchantId, refundId);
     let status = current.status;
+    // A later channel success corrects a local closure; it must not disappear behind an expired lease.
+    if (providerConfirmed && ["cancelled", "rejected"].includes(status)) status = "processing";
     if (status === "requested" || status === "failed") {
       assertRefundTransition(status, "approved");
       status = "approved";
@@ -453,7 +585,12 @@ export class RefundService {
       assertRefundTransition(status, "processing");
       status = "processing";
     }
-    if (status === "succeeded") return current;
+    if (status === "succeeded") {
+      if (!current.nextCheckAt && !current.leaseToken && !current.leaseUntil) return current;
+      const settled = {...current, nextCheckAt: null, leaseToken: null, leaseUntil: null};
+      this.repository.updateRefund(settled);
+      return settled;
+    }
     assertRefundTransition(status, "succeeded");
     const refund: Refund = {
       ...current,
@@ -461,6 +598,9 @@ export class RefundService {
       providerRefundNo: providerRefundNo ?? current.providerRefundNo ?? null,
       refundedAt: new Date(),
       failureCode: null,
+      nextCheckAt: null,
+      leaseToken: null,
+      leaseUntil: null,
     };
     this.repository.updateRefund(refund);
 

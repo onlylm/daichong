@@ -63,6 +63,20 @@ describe("Alipay payment reconciliation", () => {
     app=await buildApp(config,runtime);
   }
 
+  it("does not treat a missing or mismatched negative refund response as verified termination", async () => {
+    const order = await orderWithAlipayAttempt(), refundId = "rf_query_binding";
+    await expect(service({code:"10000"}).queryRefund(order.id,refundId,100n))
+      .resolves.toEqual({status:"not_confirmed",bindingVerified:false});
+    await expect(service({code:"10000",out_trade_no:"wrong-order"}).queryRefund(order.id,refundId,100n))
+      .rejects.toMatchObject({code:"refund_binding_mismatch"});
+    await expect(service({code:"10000",out_trade_no:order.id,out_request_no:refundId,refund_amount:"1.00",
+      total_amount:"135.00",trade_no:"2026100200000001"}).queryRefund(order.id,refundId,100n))
+      .resolves.toEqual({status:"not_confirmed",bindingVerified:true});
+    // Verified binding is still NOT a terminal failure. An independent channel proof is required.
+    await expect(service({code:"10000",out_trade_no:order.id,out_request_no:refundId,refund_amount:"2.00"})
+      .queryRefund(order.id,refundId,100n)).rejects.toMatchObject({code:"refund_binding_mismatch"});
+  });
+
   it("reuses one provider precreate call for concurrent payment-code requests", async () => {
     const order = await orderWithAlipayAttempt();
     let release!: () => void;
@@ -114,6 +128,28 @@ describe("Alipay payment reconciliation", () => {
       providerRef:tradeNo,receivedMinor:order.saleAmountMinor,paidAt:original.paidAt});
     expect(runtime.repository.listLedger(order.merchantId)).toHaveLength(ledgerCount);
     expect(paidEvents()).toHaveLength(1);
+  });
+
+  it("reports verified payment-binding conflicts instead of disguising them as a transient query failure",async()=>{
+    const order=await orderWithAlipayAttempt(),tradeNo="2026100200000004";
+    await expect(service({code:"10000",out_trade_no:order.id,total_amount:"134.00",trade_no:tradeNo,
+      trade_status:"TRADE_SUCCESS",seller_id:"2088000000000000",app_id:"test-app"}).reconcile(order.id))
+      .rejects.toMatchObject({statusCode:409,code:"payment_binding_mismatch",retryable:false});
+    expect(runtime.repository.findOrderInternal(order.id)?.paymentStatus).toBe("pending");
+
+    runtime.payment.markPaid(order.merchantId,order.id,{channel:"alipay_page",providerRef:tradeNo,
+      receivedMinor:order.saleAmountMinor});
+    const paid=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...paid,status:"pending",providerRef:"different-trade",receivedMinor:null,
+      paidAt:null,nextCheckAt:new Date(Date.now()-1_000)});
+    await expect(service({code:"10000",out_trade_no:order.id,total_amount:"135.00",trade_no:tradeNo,
+      trade_status:"TRADE_SUCCESS",seller_id:"2088000000000000",app_id:"test-app"}).reconcile(order.id))
+      .rejects.toMatchObject({statusCode:409,code:"payment_attempt_conflict",retryable:false});
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)?.providerRef).toBe("different-trade");
+    const conflicted=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...conflicted,nextCheckAt:new Date(Date.now()-1_000)});
+    await expect(service({code:"20000"}).reconcile(order.id))
+      .rejects.toMatchObject({statusCode:503,code:"payment_query_pending",retryable:true});
   });
 
   it("rejects a cross-process precreate race while the database lease is active", async () => {
