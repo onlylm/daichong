@@ -501,6 +501,15 @@ export class SqliteRepository implements Repository {
     return false;
   }
 
+  findPayoutReferenceUsage(reference:string):{kind:"daily_settlement"|"wallet_withdrawal";id:string}|null {
+    const row=this.db.prepare(`SELECT kind,id FROM sandbox_records
+      WHERE kind IN ('ops_daily_settlement','ops_wallet_withdrawal')
+      AND lower(trim(CAST(json_extract(payload,'$.payoutReference') AS TEXT)))=?
+      ORDER BY updated_at ASC,id ASC LIMIT 1`).get(reference.trim().toLowerCase());
+    if(!row)return null;
+    return {kind:String(row.kind)==="ops_daily_settlement"?"daily_settlement":"wallet_withdrawal",id:String(row.id)};
+  }
+
   creditedDepositTotal(merchantId:string) {
     const row=this.db.prepare(`SELECT CAST(COALESCE(SUM(CAST(json_extract(payload,'$.amountMinor.__bigint') AS INTEGER)),0) AS TEXT) AS total
       FROM sandbox_records WHERE kind='ops_wallet_deposit' AND merchant_id=? AND json_extract(payload,'$.status')='credited'`).get(merchantId)!;

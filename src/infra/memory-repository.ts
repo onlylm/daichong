@@ -88,6 +88,14 @@ export class MemoryRepository implements Repository {
     }, 0n);
   }
 
+  findPayoutReferenceUsage(reference: string): {kind: "daily_settlement" | "wallet_withdrawal"; id: string} | null {
+    const normalized = reference.trim().toLowerCase();
+    const statement = this.listOperations("daily_settlement").find(item => item.payoutReference?.trim().toLowerCase() === normalized);
+    if (statement) return {kind: "daily_settlement", id: statement.id};
+    const withdrawal = this.listOperations("wallet_withdrawal").find(item => item.payoutReference?.trim().toLowerCase() === normalized);
+    return withdrawal ? {kind: "wallet_withdrawal", id: withdrawal.id} : null;
+  }
+
   allocatePublicOrderNo(): string {
     const current = this.sequences.get("public_order_no") ?? 0n;
     const next = current + 1n;

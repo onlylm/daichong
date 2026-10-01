@@ -72,6 +72,7 @@ export interface Repository {
   earningReversalCandidates?(merchantId:string,onlyOrderId?:string):Array<{credit:import("../operations/model.js").WalletCredit;order:Order|null;targetMinor:bigint}>;
   hasPendingRefundForReleasedEarnings?(merchantId:string,orderIds?:readonly string[]):boolean;
   hasUnreconciledProviderRefundForReleasedEarnings?(merchantId:string,orderIds?:readonly string[]):boolean;
+  findPayoutReferenceUsage?(reference:string):{kind:"daily_settlement"|"wallet_withdrawal";id:string}|null;
   creditedDepositTotal?(merchantId:string):bigint;
   findVerifiedDeposit?(merchantId:string,minimumMinor:bigint):import("../operations/model.js").WalletDeposit|null;
   apiAccessOverview?():Array<{merchantId:string;name:string;partnerId:string;apiEnabled:boolean;accessVersion:number;

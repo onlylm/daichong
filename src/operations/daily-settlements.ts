@@ -8,6 +8,7 @@ import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, DailySettlementStatement, WalletEntry} from "./model.js";
 import {queryRecords} from "../infra/record-query.js";
 import {hasUnreconciledProviderRefundForReleasedEarnings} from "../domain/provider-refund-review.js";
+import {findPayoutReferenceUsage, normalizePayoutReference} from "../domain/payout-reference.js";
 
 const DAY = 86_400_000;
 
@@ -114,7 +115,7 @@ export class DailySettlementService {
 
   confirmPaid(actor: Actor, id: string, input: {method: "alipay" | "bank" | "other"; reference: string; evidence?: string | undefined; note?: string | undefined}) {
     if (actor.role !== "platform_admin" || actor.merchantId !== null) throw new AppError(403, "permission_denied", "仅平台管理员可确认核算单打款");
-    const reference = input.reference.trim();
+    const reference = normalizePayoutReference(input.reference);
     const evidence = input.evidence?.trim() || null;
     const note = input.note?.trim() || null;
     if (reference.length < 6 || reference.length > 120) throw new AppError(422, "invalid_payout_reference", "请填写 6–120 位真实付款流水号");
@@ -124,15 +125,13 @@ export class DailySettlementService {
       const current = this.repository.getOperations("daily_settlement", id);
       if (!current) throw new AppError(404, "daily_settlement_not_found", "每日核算单不存在");
       if (current.status === "paid") {
-        if (current.payoutReference === reference && current.payoutMethod === input.method
+        if (current.payoutReference && normalizePayoutReference(current.payoutReference) === reference && current.payoutMethod === input.method
           && current.payoutEvidence === evidence && current.note === note) return current;
         throw new AppError(409, "daily_settlement_payment_conflict", "该核算单已登记打款，重放内容与原付款记录不一致");
       }
       if (current.status !== "pending_payment" || current.payableMinor <= 0n) throw new AppError(409, "daily_settlement_final", "该核算单不可确认打款");
-      const duplicateStatement = queryRecords(this.repository,"daily_settlement",{filters:[{field:"payoutReference",value:reference},
-        {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length>0;
-      const duplicateWithdrawal = queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference}],limit:1,count:false}).data.length>0;
-      if (duplicateStatement || duplicateWithdrawal) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
+      const usage=findPayoutReferenceUsage(this.repository,reference);
+      if (usage && !(usage.kind==="daily_settlement"&&usage.id===id)) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
       const refundPending=this.repository.hasPendingRefundForReleasedEarnings?.(current.merchantId,current.orderIds)
         ??current.orderIds.some(orderId=>this.repository.listRefundsForOrder(current.merchantId,orderId)
           .some(refund=>["requested","approved","processing"].includes(refund.status)));

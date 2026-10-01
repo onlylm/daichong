@@ -121,4 +121,49 @@ describe("wallet transactional consistency", () => {
       .toThrow("渠道退款差异尚未核实");
     expect(runtime.repository.getOperations("wallet_entry", "withdraw_paid:" + withdrawal.id)).toBeNull();
   });
+
+  it("uses one payout reference registry across withdrawals and daily settlements", () => {
+    const first=runtime.wallets.requestWithdrawal(owner,merchantId,"5.00","cross-payout-first",
+      {method:"alipay",account:"agent@example.com",name:"测试代理"});
+    expect(runtime.wallets.reviewWithdrawal(admin,first.id,"paid","Shared-Payout-0001")).toMatchObject({status:"paid",
+      payoutReference:"shared-payout-0001"});
+    const now=new Date(),statementId="ds_cross_payout_1";
+    runtime.repository.saveOperations("daily_settlement",{id:statementId,merchantId,businessDate:"2026-10-01",
+      periodFrom:new Date(now.getTime()-86_400_000),periodTo:now,status:"pending_payment",orderIds:[],orderCount:0,
+      supplyAmountMinor:0n,agentEarningsMinor:0n,platformCostMinor:0n,platformProfitMinor:0n,payableMinor:500n,currency:"CNY",
+      payoutMethod:null,payoutReference:null,payoutEvidence:null,note:null,confirmedBy:null,version:1,generatedAt:now,paidAt:null,
+      reconciledAt:null,updatedAt:now},true);
+    expect(()=>runtime.dailySettlements.confirmPaid(admin,statementId,{method:"alipay",reference:"SHARED-PAYOUT-0001",
+      evidence:"支付宝付款凭证已归档"})).toThrow("付款流水号已使用");
+
+    const usedByStatement="ds_cross_payout_2";
+    runtime.repository.saveOperations("daily_settlement",{id:usedByStatement,merchantId,businessDate:"2026-10-01",
+      periodFrom:new Date(now.getTime()-86_400_000),periodTo:now,status:"paid",orderIds:[],orderCount:0,supplyAmountMinor:0n,
+      agentEarningsMinor:0n,platformCostMinor:0n,platformProfitMinor:0n,payableMinor:500n,currency:"CNY",payoutMethod:"bank",
+      payoutReference:"Shared-Payout-0002",payoutEvidence:"银行付款凭证已归档",note:null,confirmedBy:admin.id,version:2,
+      generatedAt:now,paidAt:now,reconciledAt:null,updatedAt:now},true);
+    const second=runtime.wallets.requestWithdrawal(owner,merchantId,"5.00","cross-payout-second",
+      {method:"bank",account:"6222000000000000",name:"测试公司"});
+    expect(()=>runtime.wallets.reviewWithdrawal(admin,second.id,"paid","shared-payout-0002")).toThrow("流水无效或已使用");
+    expect(runtime.repository.getOperations("wallet_entry","withdraw_paid:"+second.id)).toBeNull();
+  });
+
+  it("enforces cross-entry payout reference uniqueness in SQLite", () => {
+    const sqlite=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
+    try {
+      const sqliteMerchant=sqlite.repository.findMerchantByPartner("pt_demo_a")!.id,now=new Date();
+      sqlite.repository.saveOperations("wallet_entry",{id:"sqlite-earning",merchantId:sqliteMerchant,kind:"earning_release",
+        procurementDelta:0n,earningsDelta:2_000n,frozenDelta:0n,reference:"seed",actorId:"test",createdAt:now},true);
+      sqlite.repository.saveOperations("daily_settlement",{id:"ds_sqlite_used_payout",merchantId:sqliteMerchant,businessDate:"2026-10-01",
+        periodFrom:new Date(now.getTime()-86_400_000),periodTo:now,status:"paid",orderIds:[],orderCount:0,supplyAmountMinor:0n,
+        agentEarningsMinor:0n,platformCostMinor:0n,platformProfitMinor:0n,payableMinor:500n,currency:"CNY",payoutMethod:"alipay",
+        payoutReference:"SQLite-Payout-0001",payoutEvidence:"支付宝付款凭证已归档",note:null,confirmedBy:admin.id,version:2,
+        generatedAt:now,paidAt:now,reconciledAt:null,updatedAt:now},true);
+      const sqliteOwner:Actor={id:"sqlite-owner",role:"agent_owner",merchantId:sqliteMerchant};
+      const withdrawal=sqlite.wallets.requestWithdrawal(sqliteOwner,sqliteMerchant,"5.00","sqlite-cross-payout",
+        {method:"alipay",account:"agent@example.com",name:"测试代理"});
+      expect(()=>sqlite.wallets.reviewWithdrawal(admin,withdrawal.id,"paid","sqlite-payout-0001")).toThrow("流水无效或已使用");
+      expect(sqlite.repository.findPayoutReferenceUsage?.("SQLITE-PAYOUT-0001")).toEqual({kind:"daily_settlement",id:"ds_sqlite_used_payout"});
+    } finally { sqlite.close(); }
+  });
 });

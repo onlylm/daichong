@@ -9,6 +9,7 @@ import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, WalletDeposit, WalletEntry, WalletWithdrawal} from "./model.js";
 import {queryRecords} from '../infra/record-query.js';
 import {hasUnreconciledProviderRefundForReleasedEarnings} from "../domain/provider-refund-review.js";
+import {findPayoutReferenceUsage, normalizePayoutReference} from "../domain/payout-reference.js";
 
 export class WalletService {
   constructor(private readonly repository: Repository, private readonly audit: AuditService, private readonly webhooks: WebhookService) {}
@@ -405,7 +406,7 @@ export class WalletService {
   }
   reviewWithdrawal(actor: Actor, id: string, action: "approve" | "reject" | "paid", reference: string): WalletWithdrawal {
     requirePermission(actor, "wallet.review");
-    reference = action === "paid" ? reference.trim().toLowerCase() : reference.trim();
+    reference = action === "paid" ? normalizePayoutReference(reference) : reference.trim();
     if (action === "reject" && (reference.length < 4 || reference.length > 120)) {
       throw new AppError(422, "withdrawal_reject_reason_required", "请填写 4–120 字提现驳回原因");
     }
@@ -415,7 +416,8 @@ export class WalletService {
       this.reconcileEarnings(current.merchantId);
       if (current.status === "approved" && action === "approve") return current;
       if (current.status === "rejected" && action === "reject" && current.reason === reference) return current;
-      if (current.status === "paid" && action === "paid" && current.payoutReference === reference) return current;
+      if (current.status === "paid" && action === "paid" && current.payoutReference
+        && normalizePayoutReference(current.payoutReference) === reference) return current;
       if (!["requested", "approved"].includes(current.status)) throw new AppError(409, "withdrawal_final", "提现申请已终结");
       if (action !== "reject") this.assertNoPendingRefund(current.merchantId);
       if (action !== "reject" && this.totals(current.merchantId).earnings < 0n) throw new AppError(409, "wallet_debt", "存在退款冲减欠额，请先处理");
@@ -431,8 +433,8 @@ export class WalletService {
         if (!["requested", "approved"].includes(current.status)) {
           throw new AppError(409, "withdrawal_final", "提现申请已终结");
         }
-        if (reference.trim().length < 6 || queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference},
-          {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length) {
+        const usage=findPayoutReferenceUsage(this.repository,reference);
+        if (reference.length < 6 || (usage && !(usage.kind==="wallet_withdrawal"&&usage.id===id))) {
           throw new AppError(409, "invalid_payout_reference", "打款流水无效或已使用");
         }
         if (current.status === "requested") {
