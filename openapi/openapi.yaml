@@ -434,8 +434,9 @@ paths:
     post:
       tags: [Fulfillments]
       operationId: createFulfillment
-      summary: 为 direct 商品提交凭据并创建异步履约任务
-      description: 仅用于代理商明确选择服务端代提交的 direct 商品；推荐让买家直接打开订单 fulfillment_url，避免代理商接触敏感凭据。CDK 商品必须走 Quefa 兑换入口。
+      deprecated: true
+      summary: 历史 direct 商品履约接口
+      description: 仅为旧订单兼容保留。当前四项 GPT 套餐均为 CDK 履约，新接入必须使用 /v1/redemptions 并选择 delivery_mode=auto_recharge 或 cdk。
       parameters:
         - $ref: '#/components/parameters/XPartnerId'
         - $ref: '#/components/parameters/XKeyId'
@@ -690,7 +691,9 @@ paths:
     post:
       tags: [CustomerRecharge]
       operationId: submitDirectRecharge
-      summary: 客户从 Quefa 页面提交直接充值
+      deprecated: true
+      summary: 历史 direct 订单的客户提交入口
+      description: 仅用于旧订单兼容；当前四项套餐不会生成此类订单。
       security: []
       parameters:
         - $ref: '#/components/parameters/OrderId'

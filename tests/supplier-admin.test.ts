@@ -108,6 +108,10 @@ describe("platform recharge supplier administration", () => {
   it("requires a non-placeholder admin token and serves a syntactically valid management page", async () => {
     const page = await app.inject({method: "GET", url: "/internal/admin/supply"});
     expect(page.statusCode).toBe(200);
+    expect(page.body).toContain("chatgpt_plus_cdk_1m");
+    expect(page.body).toContain("chatgpt_pro_50x_cdk_1m");
+    expect(page.body).not.toContain("Codex 点数");
+    expect(page.body).not.toContain('id="mode"');
     const script = page.body.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
@@ -115,6 +119,17 @@ describe("platform recharge supplier administration", () => {
     const blocked = await app.inject({method: "GET", url: "/internal/admin/api/supply/connection", headers: adminHeaders(config)});
     expect(blocked.statusCode).toBe(503);
     expect(blocked.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("rejects legacy direct mappings at the admin API boundary", async () => {
+    const before = runtime.supplierManagement.listMappings().find(item => item.productCode === "chatgpt_plus_cdk_1m");
+    const response = await app.inject({
+      method: "PUT", url: "/internal/admin/api/supply/mappings/chatgpt_plus_cdk_1m", headers: adminHeaders(config),
+      payload: {fulfillment_mode: "direct", supplier_product: "gpt", supplier_plan: "plus", enabled: true},
+    });
+    expect(response.statusCode).toBe(400);
+    expect(runtime.supplierManagement.listMappings().find(item => item.productCode === "chatgpt_plus_cdk_1m"))
+      .toEqual(before);
   });
 
   it("defaults every production GPT mapping and every new-agent product grant to disabled", () => {

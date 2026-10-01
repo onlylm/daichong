@@ -22,7 +22,7 @@ const connectionSchema = z.object({
 
 const mappingSchema = z.object({
   expected_version: z.number().int().nonnegative(),
-  fulfillment_mode: z.enum(["direct", "cdk"]),
+  fulfillment_mode: z.literal("cdk"),
   supplier_product: z.literal("gpt"),
   supplier_plan: z.string().min(1).max(64),
   enabled: z.boolean(),

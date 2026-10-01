@@ -200,27 +200,13 @@ Content-Type: application/json
 
 推荐流程是由代理商页面展示付款入口；确认 `payment_status=paid` 后，在代理商自己的订单页收集本次授权凭据，再由代理商后端签名调用 `/v1/redemptions`。浏览器只调用代理商后端，平台密钥不得进入浏览器。
 
-### 7.1 直接充值
+### 7.1 自动代充
 
-`fulfillment_mode=direct` 时，客户打开 `fulfillment_url`，选择凭据类型并提交。Quefa 加密保存短期凭据、创建异步充值任务并在页面轮询结果。代理商通过 `GET /v1/orders/{order_id}/fulfillments` 或 Webhook 获取 `queued/running/succeeded/failed/cancelled` 稳定状态，并通过 `result_code/result_stage` 获取实际业务结果。
+`delivery_mode=auto_recharge` 时，客户在代理商自有页面提交凭据，代理商后端调用 `/v1/redemptions`。Quefa 用该订单已签发的内部 CDK 创建异步充值任务；不存在新的 `fulfillment_mode=direct` 商品。代理商通过兑换查询或 Webhook 获取 `queued/running/succeeded/failed/cancelled` 稳定状态。
 
 `fulfillment_url` 不是永久入口。订单关闭、过期、发生普通退款或进入退款处理中后，平台立即以 HTTP 410 关闭页面和凭据接口；充值进行中或已经成功时页面只显示进度/结果，不再显示输入框。只有最近一次尝试由上游明确判定失败、服务端返回允许重提，或平台管理员对未派发任务选择“允许重新提交”时，原链接才会重新开放。纯差价退款不取消尚未使用的履约权益。代理页面同样必须按这些规则关闭自己的入口，不能只隐藏按钮后继续调用接口。
 
-如果代理商经双方安全评审后确实需要服务端代提交，可调用下列接口；普通商城不要使用此方式，以免接触客户敏感凭据。
-
-`POST /v1/orders/{order_id}/fulfillments` 仅允许已支付且未被退款锁定的订单：
-
-```json
-{
-  "session_data": {
-    "user": {"email": "buyer@example.com"},
-    "accessToken": "仅示例，禁止使用真实值"
-  },
-  "customer_confirmed_email": true
-}
-```
-
-该接口只接受 `direct` 商品，成功受理返回 `fulfillment_id` 和 `queued`。
+新接入统一调用 `/v1/redemptions`。`POST /v1/orders/{order_id}/fulfillments` 是旧 direct 商品的兼容接口，不用于当前四项套餐，也不应再对新代理商接入。
 
 ### 7.2 CDK 与自动直充
 
@@ -486,7 +472,7 @@ X-Quefa-Signature: t=1790323200,v1=<hex>
 2. 同幂等键同请求重放一致；同键异请求返回冲突。
 3. 商品授权和价格边界正确。
 4. 创建订单、模拟支付、查单、Webhook 验签完成。
-5. direct 充值成功、Quefa CDK 签发/兑换、Session 无效、服务超时与结果未知场景完成。
+5. CDK 交付与自动代充成功、Session 无效、服务超时与结果未知场景完成。
 6. 普通退款、补差退款、重复退款和退款审核完成。
 7. 验证 135/110 示例得到代理商差价 25 元；再发生 10 元 `price_adjustment` 后差价仍为 25 元；再发生 10 元普通退款后差价变为 15 元。
 8. 验证结算后退款只进入下一期负向调整。
