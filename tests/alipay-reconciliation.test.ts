@@ -99,6 +99,23 @@ describe("Alipay payment reconciliation", () => {
       precreateLeaseToken:null,precreateLeaseUntil:null});
   });
 
+  it("repairs a stale payment attempt from the signed Alipay query without recording payment twice",async()=>{
+    const order=await orderWithAlipayAttempt(),tradeNo="2026100200000002";
+    runtime.payment.markPaid(order.merchantId,order.id,{channel:"alipay_page",providerRef:tradeNo,
+      receivedMinor:order.saleAmountMinor});
+    const original=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...original,status:"pending",providerRef:order.id,receivedMinor:null,paidAt:null});
+    const ledgerCount=runtime.repository.listLedger(order.merchantId).length;
+    const paidEvents=()=>runtime.repository.listOutbox(order.merchantId).filter(item=>item.eventType==="order.paid");
+    const alipay=service({code:"10000",out_trade_no:order.id,total_amount:"135.00",trade_no:tradeNo,
+      trade_status:"TRADE_SUCCESS",seller_id:"2088000000000000",app_id:"test-app"});
+    await alipay.reconcile(order.id);
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)).toMatchObject({status:"paid",
+      providerRef:tradeNo,receivedMinor:order.saleAmountMinor,paidAt:original.paidAt});
+    expect(runtime.repository.listLedger(order.merchantId)).toHaveLength(ledgerCount);
+    expect(paidEvents()).toHaveLength(1);
+  });
+
   it("rejects a cross-process precreate race while the database lease is active", async () => {
     const order = await orderWithAlipayAttempt(), attempt = runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
     runtime.repository.updatePaymentAttempt({...attempt, precreateLeaseToken: "another-process",

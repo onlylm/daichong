@@ -377,7 +377,7 @@ export class WalletService {
     });
   }
 
-  /** Called when fulfillment succeeds — credits margin into withdrawable earnings immediately. */
+  /** Called when payment or fulfillment becomes confirmed; credits margin only if both facts are present. */
   creditEarningOnFulfillmentSuccess(orderId: string): void {
     this.repository.transaction(() => {
       this.creditEarningLocked(orderId, "system");

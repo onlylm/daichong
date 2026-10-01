@@ -93,8 +93,8 @@ export function createRuntime(config: AppConfig) {
   const paymentProvider = config.paymentProvider === "managed"
     ? new ManagedPaymentProvider(paymentSettings, config.publicBaseUrl, portalTokens) : config.paymentProvider === "alipay_page"
     ? new AlipayPagePaymentProvider(config.publicBaseUrl, portalTokens) : new MockPaymentProvider(config.publicBaseUrl);
-  const payment = new PaymentService(repository, ledger, webhooks);
   const wallets = new WalletService(repository, audit, webhooks);
+  const payment = new PaymentService(repository, ledger, webhooks, orderId => wallets.creditEarningOnFulfillmentSuccess(orderId));
   const walletAlipay = config.paymentProvider === "managed"
     ? new WalletAlipayService(repository, paymentSettings, wallets, config.publicBaseUrl, portalTokens) : null;
   const accounts = new AccountService(repository, audit, config.portalTokenSecret, cipher);

@@ -4,6 +4,7 @@ import { AppError, notFound } from "../domain/errors.js";
 import { assertPaymentTransition } from "../domain/state-machines.js";
 import { LedgerService } from "./ledger-service.js";
 import { WebhookService } from "./webhook-service.js";
+import {hasConfirmedOrderPayment} from "../domain/payment-confirmation.js";
 
 export interface PaymentCreation {
   channel?: import("../operations/model.js").PaymentChannel;
@@ -35,6 +36,7 @@ export class PaymentService {
     private readonly repository: Repository,
     private readonly ledger: LedgerService,
     private readonly webhooks: WebhookService,
+    private readonly onConfirmedPayment?: (orderId: string) => void,
   ) {}
 
   markPaid(merchantId: string, orderId: string, input: {providerRef: string; receivedMinor: bigint; feeMinor?: bigint; channel?: "mock" | "alipay_page" | "dujiaopay"}): Order {
@@ -90,8 +92,23 @@ export class PaymentService {
     }
     if (["paid", "partially_refunded", "refunded"].includes(order.paymentStatus)) {
       if (order.paymentProviderRef !== input.providerRef) throw new AppError(409, "payment_reference_mismatch", "支付流水不匹配");
+      if (order.paymentStatus === "refunded" || attempt?.status === "refunded" || hasConfirmedOrderPayment(order, attempt)) return order;
+      const provisionalAlipayRef = attempt?.provider === "alipay_page" && attempt.providerRef === order.id;
+      if (!attempt || (attempt.providerRef && attempt.providerRef !== input.providerRef && !provisionalAlipayRef)
+          || (attempt.receivedMinor !== null && attempt.receivedMinor !== input.receivedMinor))
+        throw new AppError(409, "payment_attempt_conflict", "支付尝试记录与已确认的渠道流水冲突，须人工核对");
+      const paidAt = attempt.paidAt ?? order.paidAt;
+      if (!paidAt) throw new AppError(409, "payment_time_unconfirmed", "原付款时间尚未确认，须人工核对");
+      this.repository.updatePaymentAttempt({...attempt, status: "paid", providerRef: input.providerRef,
+        receivedMinor: input.receivedMinor, feeMinor: attempt.feeMinor ?? input.feeMinor ?? order.paymentFeeMinor ?? 0n,
+        paidAt, updatedAt: new Date()});
+      this.onConfirmedPayment?.(order.id);
       return order;
     }
+    if (attempt?.status === "refunded" || (attempt?.status === "paid" && attempt.providerRef
+        && attempt.providerRef !== input.providerRef && !(attempt.provider === "alipay_page" && attempt.providerRef === order.id))
+        || (attempt && attempt.receivedMinor !== null && attempt.receivedMinor !== input.receivedMinor))
+      throw new AppError(409, "payment_attempt_conflict", "支付尝试记录与已确认的渠道流水冲突，须人工核对");
     assertPaymentTransition(order.paymentStatus, "paid");
     const paid: Order = {
       ...order,
@@ -116,6 +133,7 @@ export class PaymentService {
     }
     this.ledger.recordPayment(paid);
     this.webhooks.emit(merchantId, `${orderId}:order.paid`, "order.paid", orderId, {event: "order.paid", order_id: orderId, merchant_order_no: order.merchantOrderNo});
+    this.onConfirmedPayment?.(order.id);
     return paid;
   }
 }
