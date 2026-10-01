@@ -572,6 +572,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   app.put<{Params: {id: string}}>("/workspace/api/agents/:id", async request => {
     const input = z.object({tier: z.string().min(1).max(32), collectionModes: z.array(z.enum(["platform_collect", "agent_collect"])).min(1).max(2),
       customRedemptionEnabled: z.boolean().optional(), cdkCodePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,8}$/).optional(),
+      cdkCodeTemplate: z.string().trim().min(1).max(120).optional(),
       orderVisibility: z.array(z.enum(orderVisibilityFields)).max(orderVisibilityFields.length).optional(),
       version: z.number().int().nonnegative()}).strict().parse(request.body);
     return {data: runtime.agents.saveProfile(account(request), request.params.id, input)};
@@ -581,7 +582,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     return {data: runtime.agents.rename(account(request), request.params.id, input)};
   });
   app.patch<{Params: {id: string}}>("/workspace/api/agents/:id/cdk-settings", async request => {
-    const input = z.object({cdkCodePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,8}$/), version: z.number().int().nonnegative()}).strict().parse(request.body);
+    const input = z.object({cdkCodePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,8}$/),
+      cdkCodeTemplate: z.string().trim().min(1).max(120).optional(), version: z.number().int().nonnegative()}).strict().parse(request.body);
     return {data: runtime.agents.saveCdkSettings(account(request), request.params.id, input)};
   });
   app.get("/workspace/api/tier-rules", async request => {

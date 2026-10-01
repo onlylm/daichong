@@ -35,6 +35,6 @@ describe("workspace static assets", () => {
     expect(identity.body).toContain('button("刷新订单"');
 
     const page = await app.inject({url: "/workspace/app"});
-    expect(page.body).toContain("20261001-workspace-shell-v3");
+    expect(page.body).toContain("20261001-cdk-template-v5");
   });
 });

@@ -22,8 +22,10 @@ export interface MfaChallenge extends BaseRecord {
 }
 export interface AgentProfile extends BaseRecord {
   merchantId: string; tier: string; collectionModes: CollectionMode[]; customRedemptionEnabled?: boolean;
-  /** 2–8 chars; public CDK codes use `{prefix}-XXXXX-…` */
+  /** 2–8 chars; injected into the controlled public CDK template. */
   cdkCodePrefix?: string;
+  /** Controlled template containing one `{PREFIX}` and at least 20 random hexadecimal chars. */
+  cdkCodeTemplate?: string;
   orderVisibility?: OrderVisibilityField[]; version: number; updatedAt: Date;
 }
 export interface TierLevel {

@@ -148,7 +148,7 @@ paths:
                   required: [mode, code, credential, customer_confirmed_email]
                   properties:
                     mode: {type: string, const: cdk}
-                    code: {type: string, pattern: '^QF-[A-Z0-9-]{10,40}$', writeOnly: true}
+                    code: {type: string, pattern: '^[A-Z0-9][A-Z0-9_-]{7,63}$', writeOnly: true}
                     credential: {$ref: '#/components/schemas/RechargeCredential'}
                     customer_confirmed_email: {type: boolean, const: true}
       responses:
@@ -674,7 +674,7 @@ paths:
               additionalProperties: false
               required: [code, credential, customer_confirmed_email]
               properties:
-                code: {type: string, pattern: '^QF-[A-Z0-9-]{10,40}$'}
+                code: {type: string, pattern: '^[A-Z0-9][A-Z0-9_-]{7,63}$'}
                 credential: {$ref: '#/components/schemas/RechargeCredential'}
                 customer_confirmed_email: {type: boolean, const: true}
       responses:
@@ -834,7 +834,7 @@ components:
         fulfillment_mode: {type: string, enum: [direct, cdk]}
         delivery_mode: {type: string, enum: [auto_recharge, cdk]}
         fulfillment_url: {type: string, format: uri, description: 平台兼容入口；正式代理商网站应使用自身订单页和 /v1/redemptions 接口，不把客户跳转到平台品牌页面}
-        voucher_code: {type: [string, 'null'], pattern: '^[A-Z0-9]{2,8}-[A-Z0-9]{5}(?:-[A-Z0-9]{5}){0,3}$', description: 仅 delivery_mode=cdk 时返回；品牌前缀可配置，自动直充不返回明文 CDK}
+        voucher_code: {type: [string, 'null'], pattern: '^[A-Z0-9][A-Z0-9_-]{7,63}$', description: 仅 delivery_mode=cdk 时返回；代理可配置受控品牌格式，接入方必须当作不透明字符串处理，自动直充不返回明文 CDK}
         fallback_recharge_available: {type: boolean, description: 仅上游明确失败且允许重提后为 true；在自有订单页重新开放入口}
         retry_allowed: {type: boolean, description: 最新尝试明确失败并允许安全重提；未知结果为 false}
         fulfillment_status: {type: [string, 'null'], enum: [queued, running, succeeded, failed, cancelled, null], description: 最近一次履约状态}

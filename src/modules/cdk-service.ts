@@ -7,7 +7,7 @@ import {UpstreamRequestError} from "../upstream/recharge-provider.js";
 import {WebhookService} from "./webhook-service.js";
 import {AppError} from "../domain/errors.js";
 import {LiveTestPolicy} from "./live-test-policy.js";
-import {createPublicCdkCode, normalizeCdkPrefix} from "./cdk-code.js";
+import {createPublicCdkCode, normalizeCdkPrefix, normalizeCdkTemplate} from "./cdk-code.js";
 import {isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
 
 export class CdkService {
@@ -82,7 +82,7 @@ export class CdkService {
       id,
       merchantId: order.merchantId,
       orderId: order.id,
-      publicCode: createPublicCdkCode(this.cdkPrefix(order.merchantId)),
+      publicCode: this.createUniquePublicCode(order.merchantId),
       plan: order.upstreamPlan,
       status: "issuing" as const,
       upstreamProvider: this.upstream.name,
@@ -180,6 +180,20 @@ export class CdkService {
   cdkPrefix(merchantId: string): string {
     const profile = this.repository.getOperations("agent_profile", merchantId);
     return normalizeCdkPrefix(profile?.cdkCodePrefix);
+  }
+
+  cdkTemplate(merchantId: string): string {
+    const profile = this.repository.getOperations("agent_profile", merchantId);
+    return normalizeCdkTemplate(profile?.cdkCodeTemplate);
+  }
+
+  private createUniquePublicCode(merchantId: string): string {
+    const prefix = this.cdkPrefix(merchantId), template = this.cdkTemplate(merchantId);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = createPublicCdkCode(prefix, template);
+      if (!this.repository.findCdkVoucherByPublicCode(candidate)) return candidate;
+    }
+    throw new AppError(503, "cdk_code_generation_failed", "兑换码生成冲突，请稍后重试", true);
   }
 
   consume(voucherId: string): void {

@@ -10,7 +10,7 @@ import {globalProductGrantsForMerchant, seedGlobalProductCatalog} from "./global
 import {defaultTierLevels, mergedCollectionModes, resolveTierBenefits, seedDefaultTierRules, tierCatalogProducts} from "./tier-benefits.js";
 import {evaluateTierUpgradeEligibility, listCompletedTierOrders} from "./tier-upgrade.js";
 import type {AccountService, AccountSession} from "./accounts.js";
-import {assertCdkPrefix, normalizeCdkPrefix} from "../modules/cdk-code.js";
+import {assertCdkPrefix, assertCdkTemplate, normalizeCdkPrefix, normalizeCdkTemplate} from "../modules/cdk-code.js";
 
 export function procurementBalanceMinor(repository: Repository, merchantId: string): bigint {
   return repository.listOperations("wallet_entry", merchantId).reduce((sum, entry) => sum + entry.procurementDelta, 0n);
@@ -98,15 +98,18 @@ export class AgentService {
       return rules;
     });
   }
-  saveCdkSettings(actor: Actor, merchantId: string, input: {cdkCodePrefix: string; version: number}): AgentProfile {
+  saveCdkSettings(actor: Actor, merchantId: string, input: {cdkCodePrefix: string; cdkCodeTemplate?: string | undefined; version: number}): AgentProfile {
     requireTenantScope(actor, merchantId);
     if (!isPlatform(actor) && actor.role !== "agent_owner") throw new AppError(403, "permission_denied", "仅代理主账号可修改 CDK 格式");
     if (isPlatform(actor)) requirePermission(actor, "agents.manage");
     const cdkCodePrefix = assertCdkPrefix(input.cdkCodePrefix);
+    const cdkCodeTemplate = input.cdkCodeTemplate === undefined ? undefined : assertCdkTemplate(input.cdkCodeTemplate);
     return this.repository.transaction(() => {
       const profile = this.profile(merchantId);
       if (profile.version !== input.version) throw new AppError(409, "profile_changed", "代理配置已更新");
-      const updated = {...profile, cdkCodePrefix, version: profile.version + 1, updatedAt: new Date()};
+      const updated = {...profile, cdkCodePrefix,
+        cdkCodeTemplate: cdkCodeTemplate ?? normalizeCdkTemplate(profile.cdkCodeTemplate),
+        version: profile.version + 1, updatedAt: new Date()};
       this.repository.saveOperations("agent_profile", updated);
       this.log(actor, merchantId, "agent.cdk_settings.update", merchantId);
       return updated;
@@ -131,7 +134,8 @@ export class AgentService {
     });
   }
   saveProfile(actor: Actor, merchantId: string, input: Pick<AgentProfile, "tier" | "collectionModes" | "version"> &
-      {customRedemptionEnabled?: boolean | undefined; cdkCodePrefix?: string | undefined; orderVisibility?: AgentProfile["orderVisibility"]}): AgentProfile {
+      {customRedemptionEnabled?: boolean | undefined; cdkCodePrefix?: string | undefined; cdkCodeTemplate?: string | undefined;
+        orderVisibility?: AgentProfile["orderVisibility"]}): AgentProfile {
     requirePermission(actor, "agents.manage");
     return this.repository.transaction(() => {
       const profile = this.profile(merchantId), rules = this.rules();
@@ -141,6 +145,7 @@ export class AgentService {
       const updated = {...profile, tier: input.tier, collectionModes,
         customRedemptionEnabled: input.customRedemptionEnabled ?? profile.customRedemptionEnabled ?? false, version: profile.version + 1, updatedAt: new Date()};
       if (input.cdkCodePrefix !== undefined) updated.cdkCodePrefix = assertCdkPrefix(input.cdkCodePrefix);
+      if (input.cdkCodeTemplate !== undefined) updated.cdkCodeTemplate = assertCdkTemplate(input.cdkCodeTemplate);
       updated.orderVisibility = input.orderVisibility ?? profile.orderVisibility ?? [...defaultOrderVisibility];
       this.repository.saveOperations("agent_profile", updated);
       if (input.tier !== profile.tier) this.applyTierPrivileges(merchantId, input.tier, rules, actor);

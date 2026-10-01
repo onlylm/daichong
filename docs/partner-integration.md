@@ -98,7 +98,7 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 `GET /v1/products` 返回当前代理商已授权且可售商品、Quefa 供货价、销售上限、币种和单笔数量上限。不得使用其他代理商看到的商品或价格。
 
-当前 GPT 成品的 `fulfillment_mode` 为 `cdk`，并通过 `delivery_modes` 告知代理商可选 `auto_recharge` 或 `cdk`。前者由平台服务端使用订单绑定凭证自动兑换，后者返回 `QF-` 公开号。代理商不需要、也不会获得平台内部账号、域名、履约参考号或原始兑换凭证。
+当前 GPT 成品的 `fulfillment_mode` 为 `cdk`，并通过 `delivery_modes` 告知代理商可选 `auto_recharge` 或 `cdk`。前者由平台服务端使用订单绑定凭证自动兑换，后者返回代理品牌公开号。代理商不需要、也不会获得平台内部账号、域名、履约参考号或原始兑换凭证。
 
 ```json
 {
@@ -186,7 +186,7 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 ### 7.2 CDK 与自动直充
 
-`delivery_mode=cdk` 时，付款确认后平台异步生成 `voucher_code`，格式为 `品牌前缀-XXXXX-XXXXX-XXXXX-XXXXX`（随机部分为 20 位十六进制大写字符）。代理主账号可在「合作设置」修改 2–8 位字母数字前缀；仅影响新签发码，分组、长度和分隔符目前固定，代理商可直接交付客户。
+`delivery_mode=cdk` 时，付款确认后平台异步生成 `voucher_code`。代理主账号可在「合作设置」配置 2–8 位字母数字品牌前缀及受控模板，例如 `{PREFIX}_{RANDOM:10}-{RANDOM:10}`。模板必须包含一个 `{PREFIX}`；每个随机段为 4–12 位且随机位合计至少 20 位。变更只影响新签发码，历史码继续有效。接入方必须把 `voucher_code` 当作不透明字符串完整保存和展示，不得按固定前缀、分组或分隔符解析。
 
 `delivery_mode=auto_recharge` 时不返回 `voucher_code`。代理商后端调用 `/v1/redemptions`，请求 `mode=auto_recharge`、`order_id` 和本次客户授权凭据。仅收到明确上游失败、确认尝试已结束且允许重提时返回 `retry_allowed=true` 和 `fallback_recharge_available=true`，代理商自己的订单页重新开放输入入口；失败后仍不返回 CDK。
 
