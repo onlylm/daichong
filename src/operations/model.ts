@@ -150,9 +150,17 @@ export interface InvoiceApplication extends BaseRecord {
 export interface InvoiceFeePayment extends BaseRecord {
   merchantId: string; applicationId: string; amountMinor: bigint;
   status: "pending" | "paid" | "expired" | "closed"; paymentConfigId: string | null;
+  /** Distinguishes a provider-final close from a local close after another intent paid. */
+  closedReason?: "provider_closed" | "application_paid" | null;
   qrPayload: string | null; providerRef: string | null; expiresAt: Date; nextCheckAt: Date | null;
   precreateLeaseToken?: string | null; precreateLeaseUntil?: Date | null;
   paidAt: Date | null; createdAt: Date; updatedAt: Date;
+}
+export interface InvoicePaymentReconciliation extends BaseRecord {
+  merchantId: string; applicationId: string; canonicalPaymentId: string; duplicatePaymentId: string;
+  canonicalProviderRef: string; duplicateProviderRef: string; amountMinor: bigint;
+  reason: "duplicate_collection"; status: "reviewing" | "resolved";
+  version: number; detectedAt: Date; updatedAt: Date; resolvedAt: Date | null;
 }
 export interface ApiAccess extends BaseRecord {merchantId: string; enabled: boolean; depositId: string; ticketId: string; version: number; updatedAt: Date}
 export type PaymentChannel = "alipay_page" | "dujiaopay";
@@ -182,6 +190,7 @@ export interface OperationsRecords {
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
   refund_reconciliation: RefundReconciliation; refund_reconciliation_event: RefundReconciliationEvent;
   invoice_application: InvoiceApplication; invoice_fee_payment: InvoiceFeePayment;
+  invoice_payment_reconciliation: InvoicePaymentReconciliation;
   daily_settlement: DailySettlementStatement;
   api_access: ApiAccess;
   payment_settings: PaymentSettings; payment_revision: PaymentRevision; payment_check: PaymentCheck;

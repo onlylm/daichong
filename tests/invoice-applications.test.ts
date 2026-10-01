@@ -158,6 +158,31 @@ describe("order invoice applications", () => {
     expect(runtime.invoices.get(owner,application.id)).toMatchObject({status:"submitted",providerRef:"2026100100002881"});
   });
 
+  it("binds the first collected intent and sends a second collection to finance review", () => {
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-duplicate-collection"});
+    const client={pageExecute:()=>"",exec:vi.fn(),checkNotifySignV2:()=>true},identity={appId:"2026000000000000",sellerId:"2088000000000000"};
+    const gateway=new InvoiceAlipayService(runtime.repository,runtime.paymentSettings,runtime.invoices,
+      "https://pay.example.com",runtime.portalTokens,{client,identity});
+    const first=gateway.ensurePayment(owner,application.id).payment;
+    runtime.repository.saveOperations("invoice_fee_payment",{...first,status:"expired",expiresAt:new Date(Date.now()-1_000),updatedAt:new Date()});
+    const second=gateway.ensurePayment(owner,application.id).payment;
+
+    const bound=runtime.invoices.markPaid(first.id,"2026100100002991",first.amountMinor);
+    expect(bound).toMatchObject({status:"submitted",paymentId:first.id,providerRef:"2026100100002991"});
+    expect(runtime.repository.getOperations("invoice_fee_payment",second.id)).toMatchObject({status:"closed",closedReason:"application_paid"});
+
+    const afterDuplicate=runtime.invoices.markPaid(second.id,"2026100100002992",second.amountMinor);
+    expect(afterDuplicate).toMatchObject({paymentId:first.id,providerRef:"2026100100002991"});
+    expect(runtime.repository.getOperations("invoice_fee_payment",second.id)).toMatchObject({status:"paid",providerRef:"2026100100002992"});
+    const reviews=runtime.repository.listOperations("invoice_payment_reconciliation",owner.merchantId!);
+    expect(reviews).toEqual([expect.objectContaining({applicationId:application.id,canonicalPaymentId:first.id,
+      duplicatePaymentId:second.id,canonicalProviderRef:"2026100100002991",duplicateProviderRef:"2026100100002992",
+      amountMinor:5_000n,status:"reviewing",reason:"duplicate_collection"})]);
+    expect(runtime.invoices.markPaid(second.id,"2026100100002992",second.amountMinor).paymentId).toBe(first.id);
+    expect(runtime.repository.listOperations("invoice_payment_reconciliation",owner.merchantId!)).toHaveLength(1);
+  });
+
   it("keeps an Alipay-closed difference payment terminal",()=>{
     const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
       recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-provider-closed"});
@@ -167,6 +192,7 @@ describe("order invoice applications", () => {
     gateway.handleNotification({out_trade_no:payment.id,total_amount:"50.00",trade_status:"TRADE_CLOSED",
       sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId});
     expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("closed");
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.closedReason).toBe("provider_closed");
     expect(()=>gateway.handleNotification({out_trade_no:payment.id,total_amount:"50.00",trade_no:"2026100100002882",
       trade_status:"TRADE_SUCCESS",sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId})).toThrow("明确关闭");
     expect(runtime.invoices.get(owner,application.id).status).toBe("awaiting_payment");

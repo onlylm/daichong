@@ -31,7 +31,7 @@ export class InvoiceAlipayService {
       const configId = this.activeConfigId();
       const id = "invpay_" + randomUUID().replaceAll("-", "");
       const payment: InvoiceFeePayment = {id, merchantId: application.merchantId, applicationId: application.id,
-        amountMinor: application.feeAmountMinor, status: "pending", paymentConfigId: configId,
+        amountMinor: application.feeAmountMinor, status: "pending", closedReason: null, paymentConfigId: configId,
         qrPayload: null, providerRef: null, expiresAt: new Date(Date.now() + 15 * 60_000), nextCheckAt: null,
         paidAt: null, createdAt: now, updatedAt: now};
       this.repository.saveOperations("invoice_fee_payment", payment, true);
@@ -169,7 +169,8 @@ export class InvoiceAlipayService {
     return this.repository.transaction(()=>{
       const current=this.payment(id);
       if(current.status!=="pending")return current;
-      const updated={...current,status,nextCheckAt:null,precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()};
+      const updated={...current,status,closedReason:status==="closed"?"provider_closed":current.closedReason??null,
+        nextCheckAt:null,precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()};
       this.repository.saveOperations("invoice_fee_payment",updated);
       return updated;
     });

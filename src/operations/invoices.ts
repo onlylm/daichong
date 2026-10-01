@@ -179,13 +179,45 @@ export class InvoiceService {
         if (payment.providerRef !== providerRef) throw new AppError(409, "invoice_payment_reference_mismatch", "补差价支付单已绑定其他支付宝流水");
         return current;
       }
-      if(payment.status==="closed")throw new AppError(409,"invoice_payment_closed","支付宝已明确关闭该补差价支付单，不能登记到账");
+      if(payment.status==="closed"&&payment.closedReason!=="application_paid")
+        throw new AppError(409,"invoice_payment_closed","支付宝已明确关闭该补差价支付单，不能登记到账");
       const now = new Date();
       const paid: InvoiceFeePayment = {...payment, status: "paid", providerRef, paidAt: now, updatedAt: now};
+      if (current.paidAt && current.paymentId) {
+        if (current.paymentId === payment.id) {
+          if (current.providerRef !== providerRef) throw new AppError(409,"invoice_payment_reference_mismatch","开票申请已绑定其他支付宝流水");
+          this.repository.saveOperations("invoice_fee_payment", paid);
+          return current;
+        }
+        const canonical = this.repository.getOperations("invoice_fee_payment", current.paymentId);
+        if (!canonical || canonical.status !== "paid" || !current.providerRef) {
+          throw new AppError(409,"invoice_payment_binding_invalid","开票申请首笔付款关联异常，须人工核对");
+        }
+        this.repository.saveOperations("invoice_fee_payment", paid);
+        const reviewId = `invoice-payment-reconciliation:${current.id}:${payment.id}`;
+        const review = this.repository.getOperations("invoice_payment_reconciliation", reviewId);
+        if (!review) {
+          this.repository.saveOperations("invoice_payment_reconciliation", {id: reviewId, merchantId: current.merchantId,
+            applicationId: current.id, canonicalPaymentId: canonical.id, duplicatePaymentId: payment.id,
+            canonicalProviderRef: current.providerRef, duplicateProviderRef: providerRef, amountMinor: payment.amountMinor,
+            reason: "duplicate_collection", status: "reviewing", version: 1, detectedAt: now, updatedAt: now,
+            resolvedAt: null}, true);
+          this.audit.record({merchantId: current.merchantId, actorId: "payment:alipay", actorType: "system",
+            action: "invoice.fee.duplicate_collected", targetType: "invoice_payment_reconciliation", targetId: reviewId,
+            requestId: providerRef});
+        }
+        return current;
+      }
       const submitted: InvoiceApplication = {...current, status: current.status === "awaiting_payment" ? "submitted" : current.status,
         paymentId: payment.id, providerRef, paidAt: now, submittedAt: current.submittedAt ?? now,
         version: current.version + (current.status === "awaiting_payment" ? 1 : 0), updatedAt: now};
       this.repository.saveOperations("invoice_fee_payment", paid);
+      for (const sibling of queryRecords(this.repository,"invoice_fee_payment",{merchantId:current.merchantId,
+        filters:[{field:"applicationId",value:current.id},{field:"status",value:"pending"},{field:"id",op:"ne",value:payment.id}],
+        limit:500,count:false}).data) {
+        this.repository.saveOperations("invoice_fee_payment", {...sibling, status:"closed", closedReason:"application_paid",
+          nextCheckAt:null, precreateLeaseToken:null, precreateLeaseUntil:null, updatedAt:now});
+      }
       this.repository.saveOperations("invoice_application", submitted);
       this.audit.record({merchantId: current.merchantId, actorId: "payment:alipay", actorType: "system",
         action: "invoice.fee.paid", targetType: "invoice_application", targetId: current.id, requestId: providerRef});
