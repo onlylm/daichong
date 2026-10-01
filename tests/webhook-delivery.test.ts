@@ -76,7 +76,8 @@ function webhookConfig(): AppConfig {
     zovocardApiBase: "https://sandbox.zovocard.com/openapi/v1", zovocardCdkBase: "https://sandbox.zovocard.com/api/v1/cdk",
     zovocardApiKey: null, zovocardCardId: null, zovocardWebhookSecret: null,
     supplierAllowedHosts: ["sandbox.zovocard.com", "zovocard.com"],
-    storageDriver: "memory", sqlitePath: ":memory:", demoWebhookUrl: "https://agent.example.test/webhooks/quefa",
+    storageDriver: "memory", sqlitePath: ":memory:", backupHealthReportPath: null, backupRestoreMaxAgeMs: 192 * 60 * 60 * 1000,
+    demoWebhookUrl: "https://agent.example.test/webhooks/quefa",
     demoWebhookSecret: "test-webhook-secret-123456",
   };
 }

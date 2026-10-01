@@ -23,4 +23,13 @@ describe("production health monitoring",()=>{
     expect(alert).toContain("quefa_unit_failed");
     expect(alert).not.toContain("/health/worker");
   });
+
+  it("publishes the isolated SQLite restore result atomically for the admin overview",()=>{
+    const script=read("deploy/production/verify-backup-restore.sh");
+    expect(script).toContain('health="$base/state/sqlite-restore-health.json"');
+    expect(script).toContain('"failureCode":"restore_verification_failed"');
+    expect(script).toContain('cp "$report" "$health_tmp"');
+    expect(script).toContain('mv "$health_tmp" "$health"');
+    expect(script).toContain("chmod 600 \"$health_tmp\"");
+  });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {dirname, join} from "node:path";
 
 const booleanText = z.enum(["true", "false"]).transform((value) => value === "true");
 const optionalUrl = z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional());
@@ -43,6 +44,8 @@ const schema = z.object({
   SUPPLIER_ALLOWED_HOSTS: z.string().default("sandbox.zovocard.com,zovocard.com"),
   STORAGE_DRIVER: z.enum(["memory", "sqlite"]).default("sqlite"),
   SQLITE_PATH: z.string().default("./data/quefa-sandbox.sqlite"),
+  BACKUP_HEALTH_REPORT_PATH: z.string().default(""),
+  BACKUP_RESTORE_MAX_AGE_HOURS: z.coerce.number().int().min(1).max(720).default(192),
   DEMO_WEBHOOK_URL: optionalUrl,
   DEMO_WEBHOOK_SECRET: z.string().min(16).default("replace-demo-webhook-secret"),
   REGISTRATION_ENABLED: booleanText.default(true),
@@ -80,6 +83,8 @@ export type AppConfig = {
   supplierAllowedHosts: string[];
   storageDriver: "memory" | "sqlite";
   sqlitePath: string;
+  backupHealthReportPath: string | null;
+  backupRestoreMaxAgeMs: number;
   demoWebhookUrl: string | null;
   demoWebhookSecret: string;
   registrationEnabled: boolean;
@@ -144,6 +149,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     supplierAllowedHosts,
     storageDriver: parsed.STORAGE_DRIVER,
     sqlitePath: parsed.SQLITE_PATH,
+    backupHealthReportPath: parsed.BACKUP_HEALTH_REPORT_PATH || (parsed.STORAGE_DRIVER === "sqlite" && parsed.SQLITE_PATH !== ":memory:"
+      ? join(dirname(parsed.SQLITE_PATH), "sqlite-restore-health.json") : null),
+    backupRestoreMaxAgeMs: parsed.BACKUP_RESTORE_MAX_AGE_HOURS * 60 * 60 * 1000,
     demoWebhookUrl: parsed.DEMO_WEBHOOK_URL ?? null,
     demoWebhookSecret: parsed.DEMO_WEBHOOK_SECRET,
     registrationEnabled: parsed.REGISTRATION_ENABLED,

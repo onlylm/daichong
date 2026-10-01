@@ -50,6 +50,8 @@ sudo sh /opt/recharge-platform/current/deploy/production/verify-backup-restore.s
 
 每日备份和每周恢复演练的 systemd 单元均通过 `OnFailure` 接入受保护的运维通知器。失败通知只含单元名、主机和 UTC 时间，不发送备份文件名、报告内容或业务数据；未配置 HTTPS 通知入口时仍写入 journald 错误事件。
 
+恢复演练还会原子更新 `/opt/recharge-platform/state/sqlite-restore-health.json`，该文件通过现有只读数据卷映射为 API 容器中的 `/app/data/sqlite-restore-health.json`。成功时复制经过校验的恢复报告，失败时只写入无业务内容的失败标记。文件权限为 `0600`；管理员首页只返回状态、中文标签和检测时间，不返回文件名、摘要、记录数量或任何备份内容。默认超过 192 小时没有新的成功演练即显示“恢复演练已过期”，并且缺失、损坏、伪造成功结构或未来时间均不得显示健康。
+
 ## 真实恢复边界
 
 自动演练不会把恢复副本切换成生产数据库。真正灾难恢复必须经过人工确认：停止产生外部副作用的 Worker 和写入口，保留损坏文件及日志证据，在隔离目录恢复并核对财务总额与抽样时间线，使用 mock/断网环境验证后，再制定切流或向前补账方案。不得直接拿旧备份覆盖仍在变化的生产账本。

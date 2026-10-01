@@ -4,6 +4,9 @@ import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {loginPlatform} from "./fixtures/mfa.js";
 import {WorkerHealthReporter} from "../src/worker/worker-health.js";
+import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 
 describe("platform action center", () => {
   const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: ":memory:", LOG_LEVEL: "silent",
@@ -38,7 +41,7 @@ describe("platform action center", () => {
       checks: {
         payment: {status: "missing", label: "支付宝未启用", scope: "configuration"},
         upstream: {status: "missing", label: "供应连接未启用", scope: "configuration"},
-        backup: {status: "undetected", label: "未检测", scope: "configuration"},
+        backup: {status: "undetected", label: "未检测", scope: "restore_rehearsal"},
       },
     });
 
@@ -64,8 +67,30 @@ describe("platform action center", () => {
     expect(response.json().data.checks).toMatchObject({
       payment: {status: "healthy", label: "支付宝已启用", scope: "configuration"},
       upstream: {status: "healthy", label: "供应连接已验证", checkedAt: now, scope: "configuration"},
-      backup: {status: "undetected", label: "未检测", scope: "configuration"},
+      backup: {status: "undetected", label: "未检测", scope: "restore_rehearsal"},
     });
+  });
+
+  it("reports a fresh isolated backup restore rehearsal without exposing report details", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "quefa-action-backup-")), report = join(folder, "health.json");
+    const previous = config.backupHealthReportPath, verifiedAt = new Date().toISOString(), hash = "c".repeat(64);
+    writeFileSync(report, JSON.stringify({status: "ok", verifiedAt, transferredPages: 3, backupFile: "must-not-leak.sqlite",
+      inspection: {integrity: "ok", recordCount: 80, schemaSha256: hash, logicalSha256: hash}}));
+    config.backupHealthReportPath = report;
+    try {
+      const login = await loginPlatform(app, "action-admin", "test-action-center-password", "https://admin.tibo.ink");
+      const response = await app.inject({method: "GET", url: "/workspace/api/action-center", headers: {
+        origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
+      }});
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().data.checks.backup).toEqual({status: "healthy", label: "备份恢复已验证", checkedAt: verifiedAt,
+        scope: "restore_rehearsal"});
+      expect(response.body).not.toContain("must-not-leak.sqlite");
+      expect(response.body).not.toContain(hash);
+    } finally {
+      config.backupHealthReportPath = previous;
+      rmSync(folder, {recursive: true, force: true});
+    }
   });
 
   it("queries only bounded pending queues and excludes system cases from agent tickets", async () => {

@@ -21,6 +21,7 @@ import {financeDrilldown, financeMetrics} from "./finance-drilldown.js";
 import {listGlobalWorkspaceProducts, saveGlobalWorkspaceProduct, seedGlobalProductCatalog} from "./global-product-catalog.js";
 import {queryRecords} from "../infra/record-query.js";
 import {readWorkerHealth} from "../worker/worker-health.js";
+import {readBackupRestoreCheck} from "./backup-health.js";
 
 const text = z.string().trim().min(1).max(5000);
 const identifier = z.string().min(1).max(160);
@@ -172,6 +173,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       const label=!connection.enabled?"供应连接未启用":connection.last_test_status==="failed"?"最近连通测试失败":!tested?"供应连接待验证":!synced?"上游套餐待同步":"供应连接已验证";
       return {status,label,checkedAt:connection.last_test_at??connection.updated_at,scope:"configuration"};
     },undetectedCheck);
+    const backupCheck=read("backup",()=>readBackupRestoreCheck(config.backupHealthReportPath,config.backupRestoreMaxAgeMs,now),
+      {status:"undetected" as const,label:"未检测",checkedAt:null,scope:"restore_rehearsal" as const});
     const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
     const rank=(status:string,urgent:string[])=>urgent.includes(status)?0:1;
     const oldest=(value:{createdAt?:Date|string;firstDetectedAt?:Date|string;updatedAt?:Date|string})=>{
@@ -199,7 +202,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       tickets,
       invoices,
       worker: readWorkerHealth(runtime.repository),
-      checks:{payment:paymentCheck,upstream:upstreamCheck,backup:undetectedCheck},
+      checks:{payment:paymentCheck,upstream:upstreamCheck,backup:backupCheck},
     }});
   });
   app.get("/workspace/api/refund-reconciliations", async request => {
