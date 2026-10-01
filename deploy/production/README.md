@@ -24,7 +24,7 @@ sudo sh deploy/production/deploy-production-candidate.sh /opt/recharge-platform/
 1. 备份当前环境文件与运行数据库并做完整性检查。
 2. 首次生产切换时，在停止预发布容器后复制一致的生产数据库。
 3. 原子切换 `current`，启动 `compose.production.app.yaml`。
-4. 验证本机健康、开发者中心和 OpenAPI；失败时恢复旧版本、旧镜像、旧环境及旧容器。
+4. 验证 API、本次新 Worker 的持久化心跳、全部关键任务通道、Worker 容器、开发者中心和 OpenAPI；不能用旧 Worker 心跳通过发布。任一项失败时恢复旧版本、旧镜像、旧环境及旧容器。
 
 `production.env` 强制设置生产运行形态，但新库中的支付通道和供应连接仍保持关闭，须在后台完成配置和验证后显式启用。
 
