@@ -126,6 +126,10 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tier_request_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.tierApplication.requestKey'));
       CREATE INDEX IF NOT EXISTS records_wallet_credit_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_daily_settlement_status_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'));
+      CREATE INDEX IF NOT EXISTS records_invoice_payment_review_queue_idx ON sandbox_records(json_extract(payload,'$.status'),json_extract(payload,'$.detectedAt'),id)
+        WHERE kind='ops_invoice_payment_reconciliation';
+      CREATE INDEX IF NOT EXISTS records_invoice_payment_refund_reference_idx ON sandbox_records(json_extract(payload,'$.refundReference'))
+        WHERE kind='ops_invoice_payment_reconciliation';
       CREATE INDEX IF NOT EXISTS records_deposit_status_amount_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),CAST(json_extract(payload,'$.amountMinor.__bigint') AS INTEGER));
     `);
   }

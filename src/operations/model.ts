@@ -161,6 +161,8 @@ export interface InvoicePaymentReconciliation extends BaseRecord {
   canonicalProviderRef: string; duplicateProviderRef: string; amountMinor: bigint;
   reason: "duplicate_collection"; status: "reviewing" | "resolved";
   version: number; detectedAt: Date; updatedAt: Date; resolvedAt: Date | null;
+  /** Manual evidence of a separately completed refund; this record never sends money. */
+  refundReference?: string | null; resolutionNote?: string | null; resolvedBy?: string | null;
 }
 export interface ApiAccess extends BaseRecord {merchantId: string; enabled: boolean; depositId: string; ticketId: string; version: number; updatedAt: Date}
 export type PaymentChannel = "alipay_page" | "dujiaopay";

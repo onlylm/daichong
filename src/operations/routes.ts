@@ -164,6 +164,9 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const ticketPage=read("tickets",()=>runtime.support.pendingAgentPage(actor,4),emptyPage);
     const invoicePage=permissions.has("*")||permissions.has("invoices.manage")
       ?read("invoices",()=>runtime.invoices.pendingPage(actor,4),emptyPage):unavailable("invoices",emptyPage);
+    const invoicePaymentReviewPage=permissions.has("*")||permissions.has("invoices.manage")
+      ?read("invoicePaymentReviews",()=>runtime.invoices.paymentReconciliations(actor,{status:"reviewing",page:1,limit:4}),emptyPage)
+      :unavailable("invoicePaymentReviews",emptyPage);
     const processingPage=read("processing",()=>queryRecords(runtime.repository,"fulfillment",{filters:[
       {field:"status",op:"in",value:["queued","running"]},{field:"createdAt",op:"gt",value:new Date(now.getTime()-600_000)}],
       page:1,limit:4,orderBy:"createdAt",direction:"asc"}),emptyPage);
@@ -183,14 +186,17 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       {status:"undetected" as const,label:"未检测",checkedAt:null,scope:"restore_rehearsal" as const});
     const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
     const tasks=taskPage.data,refunds=refundPage.data,refundReviews=refundReviewPage.data,settlements=settlementPage.data,
-      withdrawals=withdrawalPage.data,tickets=ticketPage.data,invoices=invoicePage.data;
+      withdrawals=withdrawalPage.data,tickets=ticketPage.data,invoices=invoicePage.data,
+      invoicePaymentReviews=invoicePaymentReviewPage.data;
     moduleStatus.worker={available:true,updatedAt:now.toISOString(),error:null};
     return wire({data: {
       generatedAt:now.toISOString(),moduleStatus,
       capabilities:{canReviewRefunds:canReviewWallet,canReviewWithdrawals:canReviewWallet,
-        canManageSettlements:actor.role==="platform_admin",canManageInvoices:permissions.has("*")||permissions.has("invoices.manage")},
+        canManageSettlements:actor.role==="platform_admin",canManageInvoices:permissions.has("*")||permissions.has("invoices.manage"),
+        canResolveInvoicePaymentReviews:actor.role==="platform_admin"},
       counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total, refundReviews: refundReviewPage.meta.total,
-        settlements: settlementPage.meta.total, withdrawals: withdrawalPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
+        settlements: settlementPage.meta.total, withdrawals: withdrawalPage.meta.total, tickets: ticketPage.meta.total,
+        invoices: invoicePage.meta.total, invoicePaymentReviews:invoicePaymentReviewPage.meta.total},
       tasks,
       processing:{total:processingPage.meta.total,items:processingPage.data.slice(0,4).map(item=>({id:item.id,orderId:item.orderId,
         merchantId:item.merchantId,merchantName:merchantMap.get(item.merchantId)?.name??"",status:item.status,createdAt:item.createdAt}))},
@@ -200,6 +206,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       withdrawals,
       tickets,
       invoices,
+      invoicePaymentReviews,
       worker: readWorkerHealth(runtime.repository),
       checks:{payment:paymentCheck,upstream:upstreamCheck,backup:backupCheck},
     }});
@@ -394,6 +401,18 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     return wire(runtime.invoices.page(actor, {...pageQuery, ...(merchantId ? {merchantId} : {})}));
   });
   app.get<{Params: {id: string}}>("/workspace/api/invoices/:id", async request => wire({data: runtime.invoices.get(account(request), request.params.id)}));
+  app.get("/workspace/api/invoice-payment-reconciliations", async request => {
+    const query=z.object({merchantId:z.string().optional(),status:z.enum(["reviewing","resolved","all"]).default("reviewing"),
+      page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    return wire(runtime.invoices.paymentReconciliations(account(request),query));
+  });
+  app.get<{Params:{id:string}}>("/workspace/api/invoice-payment-reconciliations/:id",async request=>
+    wire({data:runtime.invoices.paymentReconciliation(account(request),request.params.id)}));
+  app.post<{Params:{id:string}}>("/workspace/api/invoice-payment-reconciliations/:id/record-refund",async request=>{
+    const input=z.object({version:z.number().int().nonnegative(),refundReference:z.string().trim().min(6).max(120),
+      note:z.string().trim().min(4).max(500)}).strict().parse(request.body);
+    return wire({data:runtime.invoices.recordDuplicateRefund(account(request),request.params.id,input)});
+  });
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/invoices", async request => {
     const actor = account(request);
     const input = invoiceDetailsInput.extend({invoiceAmount: money, requestKey}).strict().parse(request.body);

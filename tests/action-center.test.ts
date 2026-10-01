@@ -53,6 +53,43 @@ describe("platform action center", () => {
     expect(running.json().data.worker).toMatchObject({status: "healthy", failedLanes: [], stuckLanes: []});
   });
 
+  it("exposes duplicate invoice collections as a concrete action and records only an external refund receipt",async()=>{
+    const merchant=runtime.repository.findMerchantByPartner("pt_demo_a")!,now=new Date(),applicationId="inv_action_duplicate";
+    runtime.repository.saveOperations("invoice_application",{id:applicationId,merchantId:merchant.id,orderId:"invoice-order-action",
+      requestKey:"invoice-action-duplicate",titleType:"enterprise",invoiceTitle:"测试企业",taxIdEncrypted:{ciphertext:null,iv:null,authTag:null,keyVersion:"test",clearedAt:now},
+      recipientEmail:"invoice@example.com",contactName:"财务人员",contactPhone:null,remark:null,invoiceAmountMinor:100_000n,
+      feeRateBps:500,feeAmountMinor:5_000n,category:"技术服务费",status:"submitted",paymentId:"invpay_action_first",
+      providerRef:"alipay-action-first",paidAt:now,submittedAt:now,reviewNote:null,invoiceNo:null,issuedAt:null,
+      version:1,createdBy:"owner",createdAt:now,updatedAt:now},true);
+    for(const [paymentId,providerRef] of [["invpay_action_first","alipay-action-first"],["invpay_action_second","alipay-action-second"]]){
+      runtime.repository.saveOperations("invoice_fee_payment",{id:paymentId!,merchantId:merchant.id,applicationId,
+        amountMinor:5_000n,status:"paid",paymentConfigId:null,qrPayload:null,providerRef:providerRef!,expiresAt:now,
+        nextCheckAt:null,paidAt:now,createdAt:now,updatedAt:now},true);
+    }
+    runtime.repository.saveOperations("invoice_payment_reconciliation",{id:"invoice-review-action",merchantId:merchant.id,
+      applicationId,canonicalPaymentId:"invpay_action_first",duplicatePaymentId:"invpay_action_second",
+      canonicalProviderRef:"alipay-action-first",duplicateProviderRef:"alipay-action-second",amountMinor:5_000n,
+      reason:"duplicate_collection",status:"reviewing",version:1,detectedAt:now,updatedAt:now,resolvedAt:null},true);
+    const login=await loginPlatform(app,"action-admin","test-action-center-password","https://admin.tibo.ink"),headers={
+      origin:"https://admin.tibo.ink",cookie:String(login.headers["set-cookie"]).split(";")[0]!};
+    const center=await app.inject({method:"GET",url:"/workspace/api/action-center",headers});
+    expect(center.json().data).toMatchObject({counts:{invoicePaymentReviews:1},
+      invoicePaymentReviews:[{id:"invoice-review-action",applicationId,amount:"50.00",status:"reviewing"}]});
+    const detail=await app.inject({method:"GET",url:"/workspace/api/invoice-payment-reconciliations/invoice-review-action",headers});
+    expect(detail.statusCode,detail.body).toBe(200);
+    expect(detail.json().data).toMatchObject({canonicalProviderRef:"alipay-action-first",duplicateProviderRef:"alipay-action-second"});
+    const csrf=login.json().csrf,body={version:1,refundReference:"alipay-refund-action-1",note:"支付宝重复款退款凭证已核实"};
+    const record=()=>app.inject({method:"POST",url:"/workspace/api/invoice-payment-reconciliations/invoice-review-action/record-refund",
+      headers:{...headers,"x-csrf-token":csrf},payload:body});
+    const first=await record();expect(first.statusCode,first.body).toBe(200);
+    expect(first.json().data).toMatchObject({status:"resolved",refundReference:"alipay-refund-action-1",version:2});
+    expect((await record()).statusCode).toBe(200);
+    expect(runtime.repository.listOperations("invoice_payment_reconciliation",merchant.id)).toHaveLength(1);
+    expect(runtime.repository.listOperations("wallet_entry",merchant.id)).toHaveLength(0);
+    expect(runtime.repository.listRefundsForOrder(merchant.id,"invoice-order-action")).toHaveLength(0);
+    expect((await app.inject({method:"GET",url:"/workspace/api/action-center",headers})).json().data.counts.invoicePaymentReviews).toBe(0);
+  });
+
   it("returns server-derived action capabilities for finance and audit roles", async () => {
     const admin = runtime.repository.listOperations("account").find(value => value.role === "platform_admin")!;
     const actor = {id: admin.id, role: admin.role, merchantId: admin.merchantId};
@@ -70,10 +107,10 @@ describe("platform action center", () => {
     const financeResponse = await read(financeSession.token), auditorResponse = await read(auditorSession.token);
     expect(financeResponse.statusCode, financeResponse.body).toBe(200);
     expect(financeResponse.json().data.capabilities).toEqual({canReviewRefunds: true, canReviewWithdrawals: true,
-      canManageSettlements: false, canManageInvoices: true});
+      canManageSettlements: false, canManageInvoices: true, canResolveInvoicePaymentReviews:false});
     expect(auditorResponse.statusCode, auditorResponse.body).toBe(200);
     expect(auditorResponse.json().data.capabilities).toEqual({canReviewRefunds: false, canReviewWithdrawals: false,
-      canManageSettlements: false, canManageInvoices: false});
+      canManageSettlements: false, canManageInvoices: false, canResolveInvoicePaymentReviews:false});
   });
 
   it("reports saved Alipay and supplier readiness without making external health calls", async () => {
@@ -142,6 +179,10 @@ describe("platform action center", () => {
       feeRateBps: 500, feeAmountMinor: 500n, category: "技术服务费", status: "submitted", paymentId: "invpay_test",
       providerRef: "alipay-test", paidAt: now, submittedAt: now, reviewNote: null, invoiceNo: null, issuedAt: null,
       version: 1, createdBy: "agent-owner", createdAt: now, updatedAt: now}, true);
+    runtime.repository.saveOperations("invoice_payment_reconciliation",{id:"invoice-review-pending",merchantId:merchant.id,
+      applicationId:"inv_pending",canonicalPaymentId:"invpay_first",duplicatePaymentId:"invpay_second",
+      canonicalProviderRef:"alipay-first",duplicateProviderRef:"alipay-second",amountMinor:500n,
+      reason:"duplicate_collection",status:"reviewing",version:1,detectedAt:now,updatedAt:now,resolvedAt:null},true);
     runtime.repository.insertRefund({id: "rf_pending", merchantId: merchant.id, orderId: "missing-order", merchantRefundNo: "test-refund",
       type: "full", amountMinor: 100n, status: "requested", reason: "测试退款", failureCode: null, providerRefundNo: null,
       createdAt: now, refundedAt: null});
@@ -156,11 +197,13 @@ describe("platform action center", () => {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
     expect(response.statusCode).toBe(200);
-    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, withdrawals: 1, tickets: 1, invoices: 1},
+    expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, withdrawals: 1, tickets: 1, invoices: 1,
+      invoicePaymentReviews:1},
       withdrawals:[{id:"withdraw_pending",amount:"8.00",status:"requested",merchantName:merchant.name}],
-      refundReviews:[{orderId:"missing-order",reportedAmount:"5.00",recordedAmount:"1.00",differenceAmount:"4.00",status:"reviewing"}]});
+      refundReviews:[{orderId:"missing-order",reportedAmount:"5.00",recordedAmount:"1.00",differenceAmount:"4.00",status:"reviewing"}],
+      invoicePaymentReviews:[{id:"invoice-review-pending",amount:"5.00",merchantName:merchant.name,status:"reviewing"}]});
     expect(response.json().data.tickets.map((item: {id: string}) => item.id)).toEqual(["tk_agent_pending"]);
-    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["operational_issue","refund","refund_reconciliation", "daily_settlement", "wallet_withdrawal", "ticket", "invoice_application"]));
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["operational_issue","refund","refund_reconciliation", "daily_settlement", "wallet_withdrawal", "ticket", "invoice_application", "invoice_payment_reconciliation"]));
   });
 
   it("uses the full server count when more than fifty abnormal records exist",async()=>{
@@ -210,5 +253,19 @@ describe("platform action center", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().data).toMatchObject({counts:{refunds:null,tasks:0,refundReviews:0},
       moduleStatus:{refunds:{available:false,error:"暂时无法读取"},tasks:{available:true,error:null}}});
+  });
+
+  it("does not report zero duplicate collections when only that finance query fails",async()=>{
+    const repository=runtime.repository as any,original=repository.queryRecords.bind(repository);
+    vi.spyOn(repository,"queryRecords").mockImplementation(((kind:string,query:unknown)=>{
+      if(kind==="invoice_payment_reconciliation")throw new Error("simulated invoice review storage failure");
+      return original(kind,query);
+    }) as any);
+    const login=await loginPlatform(app,"action-admin","test-action-center-password","https://admin.tibo.ink");
+    const response=await app.inject({method:"GET",url:"/workspace/api/action-center",headers:{origin:"https://admin.tibo.ink",
+      cookie:String(login.headers["set-cookie"]).split(";")[0]!}});
+    expect(response.statusCode,response.body).toBe(200);
+    expect(response.json().data).toMatchObject({counts:{invoicePaymentReviews:null,invoices:0},
+      moduleStatus:{invoicePaymentReviews:{available:false,error:"暂时无法读取"},invoices:{available:true,error:null}}});
   });
 });

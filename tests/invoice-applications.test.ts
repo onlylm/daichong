@@ -181,6 +181,30 @@ describe("order invoice applications", () => {
       amountMinor:5_000n,status:"reviewing",reason:"duplicate_collection"})]);
     expect(runtime.invoices.markPaid(second.id,"2026100100002992",second.amountMinor).paymentId).toBe(first.id);
     expect(runtime.repository.listOperations("invoice_payment_reconciliation",owner.merchantId!)).toHaveLength(1);
+    const review=reviews[0]!;
+    expect(runtime.invoices.paymentReconciliations(admin,{status:"reviewing",page:1,limit:10})).toMatchObject({
+      data:[{id:review.id,merchantId:owner.merchantId,applicationId:application.id,amount:"50.00"}],meta:{total:1}});
+    expect(()=>runtime.invoices.paymentReconciliations(owner,{status:"reviewing",page:1,limit:10})).toThrow();
+    expect(()=>runtime.invoices.recordDuplicateRefund({id:"finance",role:"platform_finance",merchantId:null},review.id,
+      {version:1,refundReference:"refund-trade-2992",note:"支付宝退款凭证已核实"})).toThrow("仅平台管理员");
+    expect(()=>runtime.invoices.recordDuplicateRefund(admin,review.id,{version:0,
+      refundReference:"refund-trade-2992",note:"支付宝退款凭证已核实"})).toThrow("已变化");
+    expect(()=>runtime.invoices.recordDuplicateRefund(admin,review.id,{version:1,
+      refundReference:"2026100100002992",note:"误用收款流水"})).toThrow("不能与原收款流水相同");
+    const previousWalletEntries=runtime.repository.listOperations("wallet_entry",owner.merchantId!).length;
+    const resolved=runtime.invoices.recordDuplicateRefund(admin,review.id,{version:1,
+      refundReference:"refund-trade-2992",note:"支付宝退款凭证已核实"});
+    expect(resolved).toMatchObject({status:"resolved",refundReference:"refund-trade-2992",
+      resolutionNote:"支付宝退款凭证已核实",resolvedBy:admin.id,version:2});
+    expect(runtime.invoices.recordDuplicateRefund(admin,review.id,{version:1,
+      refundReference:"refund-trade-2992",note:"支付宝退款凭证已核实"}).status).toBe("resolved");
+    expect(()=>runtime.invoices.recordDuplicateRefund(admin,review.id,{version:2,
+      refundReference:"different-refund-2992",note:"不同凭证"})).toThrow("登记内容不一致");
+    expect(runtime.invoices.paymentReconciliations(admin,{status:"reviewing",page:1,limit:10}).meta.total).toBe(0);
+    expect(runtime.repository.listOperations("wallet_entry",owner.merchantId!)).toHaveLength(previousWalletEntries);
+    expect(runtime.repository.listRefundsForOrder(owner.merchantId!,orderId)).toHaveLength(0);
+    expect(runtime.repository.listAudit(owner.merchantId!).some(item=>item.action==="invoice.fee.duplicate_refund_recorded"
+      && item.targetId===review.id)).toBe(true);
   });
 
   it("keeps an Alipay-closed difference payment terminal",()=>{

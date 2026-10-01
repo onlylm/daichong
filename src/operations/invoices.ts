@@ -5,7 +5,7 @@ import {SensitivePayloadCipher} from "../infra/crypto.js";
 import type {Repository} from "../infra/repository.js";
 import {AuditService} from "../modules/audit-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
-import type {Actor, InvoiceApplication, InvoiceFeePayment} from "./model.js";
+import type {Actor, InvoiceApplication, InvoiceFeePayment, InvoicePaymentReconciliation} from "./model.js";
 import {queryRecords} from "../infra/record-query.js";
 
 export interface InvoiceDetailsInput {
@@ -104,6 +104,63 @@ export class InvoiceService {
     const page = queryRecords(this.repository, "invoice_application", {filters: [{field: "status", op: "in", value: ["submitted", "processing"]}],
       page: 1, limit, orderBy: "updatedAt", direction: "asc"});
     return {...page, data: page.data.map(item => this.view(actor, item))};
+  }
+
+  paymentReconciliations(actor: Actor, input: {merchantId?: string | undefined; status: "reviewing" | "resolved" | "all"; page: number; limit: number}) {
+    requirePermission(actor, "invoices.manage");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可核对开票补差重复到账");
+    const result=queryRecords(this.repository,"invoice_payment_reconciliation",{
+      ...(input.merchantId ? {merchantId:input.merchantId} : {}),
+      filters:input.status==="all"?[]:[{field:"status",value:input.status}],
+      page:input.page,limit:input.limit,orderBy:"detectedAt",direction:input.status==="reviewing"?"asc":"desc",
+    });
+    return {...result,data:result.data.map(item=>this.paymentReconciliationView(item))};
+  }
+
+  paymentReconciliation(actor: Actor, id: string) {
+    requirePermission(actor, "invoices.manage");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可核对开票补差重复到账");
+    const item=this.repository.getOperations("invoice_payment_reconciliation",id);
+    if(!item)throw new AppError(404,"invoice_payment_reconciliation_not_found","补差重复到账记录不存在");
+    return this.paymentReconciliationView(item);
+  }
+
+  recordDuplicateRefund(actor: Actor, id: string, input: {version: number; refundReference: string; note: string}) {
+    if(actor.role!=="platform_admin"||actor.merchantId!==null)
+      throw new AppError(403,"permission_denied","仅平台管理员可登记重复到账退款结果");
+    const refundReference=input.refundReference.trim(),note=input.note.trim();
+    if(refundReference.length<6||refundReference.length>120)
+      throw new AppError(422,"invoice_refund_reference_required","请填写 6–120 位实际退款流水号");
+    if(note.length<4||note.length>500)
+      throw new AppError(422,"invoice_refund_evidence_required","请填写 4–500 字退款核对说明或凭证位置");
+    return this.repository.transaction(()=>{
+      const current=this.repository.getOperations("invoice_payment_reconciliation",id);
+      if(!current)throw new AppError(404,"invoice_payment_reconciliation_not_found","补差重复到账记录不存在");
+      if(current.status==="resolved"){
+        if(current.refundReference===refundReference&&current.resolutionNote===note)return this.paymentReconciliationView(current);
+        throw new AppError(409,"invoice_payment_reconciliation_final","该重复到账记录已核对，登记内容不一致");
+      }
+      if(current.version!==input.version)throw new AppError(409,"invoice_payment_reconciliation_changed","核对记录已变化，请刷新后重试");
+      if(refundReference===current.canonicalProviderRef||refundReference===current.duplicateProviderRef)
+        throw new AppError(422,"invoice_refund_reference_invalid","退款流水不能与原收款流水相同");
+      const used=queryRecords(this.repository,"invoice_payment_reconciliation",{
+        filters:[{field:"refundReference",value:refundReference},{field:"id",op:"ne",value:id}],limit:1,count:false}).data[0];
+      if(used)throw new AppError(409,"invoice_refund_reference_used","该退款流水号已用于其他重复到账核对");
+      const application=this.application(current.applicationId),canonical=this.repository.getOperations("invoice_fee_payment",current.canonicalPaymentId),
+        duplicate=this.repository.getOperations("invoice_fee_payment",current.duplicatePaymentId);
+      if(application.merchantId!==current.merchantId||application.paymentId!==canonical?.id||application.providerRef!==current.canonicalProviderRef
+        ||canonical.status!=="paid"||canonical.providerRef!==current.canonicalProviderRef||canonical.applicationId!==application.id
+        ||canonical.amountMinor!==current.amountMinor
+        ||duplicate?.status!=="paid"||duplicate.providerRef!==current.duplicateProviderRef||duplicate.applicationId!==application.id
+        ||duplicate.amountMinor!==current.amountMinor)
+        throw new AppError(409,"invoice_payment_reconciliation_changed","原始付款关联已变化，请先核实资金流水");
+      const now=new Date(),updated:InvoicePaymentReconciliation={...current,status:"resolved",refundReference,
+        resolutionNote:note,resolvedBy:actor.id,resolvedAt:now,updatedAt:now,version:current.version+1};
+      this.repository.saveOperations("invoice_payment_reconciliation",updated);
+      this.audit.record({merchantId:current.merchantId,actorId:actor.id,actorType:"platform_user",
+        action:"invoice.fee.duplicate_refund_recorded",targetType:"invoice_payment_reconciliation",targetId:id,requestId:randomUUID()});
+      return this.paymentReconciliationView(updated);
+    });
   }
 
   get(actor: Actor, id: string) {
@@ -251,6 +308,11 @@ export class InvoiceService {
     }
     return {...item, taxIdEncrypted: undefined, taxId, merchantName: merchant?.name ?? "",
       invoiceAmount: minorToMoney(item.invoiceAmountMinor), feeAmount: minorToMoney(item.feeAmountMinor)};
+  }
+
+  private paymentReconciliationView(item: InvoicePaymentReconciliation) {
+    const merchant=this.repository.findMerchantById(item.merchantId);
+    return {...item,merchantName:merchant?.name??"历史代理商",amount:minorToMoney(item.amountMinor)};
   }
 
   private normalizeDetails(input: InvoiceDetailsInput) {
