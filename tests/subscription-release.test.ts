@@ -1,4 +1,4 @@
-import {describe, expect, it, vi} from "vitest";
+import {describe, expect, it} from "vitest";
 import {createRuntime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import type {Actor, OrderCost} from "../src/operations/model.js";
@@ -67,11 +67,11 @@ it("never treats a refund benchmark as actual CNY cost, even when the USD values
   expect(calculateCost(c,11000n)).toMatchObject({actualCny:null,grossProfit:null,due:0n});
   expect(calculateCost({...c,actualUsdMinor:1400n,fxRate:"7"},11000n)).toMatchObject({actualCny:9800n,due:161n,grossProfit:73n});
 });
-it("removes SMTP configuration and verification without sending or decrypting credentials",async()=>{
+it("keeps notifications limited to in-product tasks with no email transport surface",async()=>{
   const r=createRuntime(config("sqlite"));try{
-    const sender=vi.fn(),service=new NotificationService(r.repository,null,"","",sender);
-    expect(()=>service.settings(admin)).toThrow("邮件功能已移除");expect(()=>service.saveSettings(admin,{})).toThrow("邮件功能已移除");
-    await expect(service.verify(admin)).rejects.toThrow("邮件功能已移除");await service.tick();expect(sender).not.toHaveBeenCalled();
+    const service=new NotificationService(r.repository),surface=service as unknown as Record<string,unknown>;
+    expect(surface.settings).toBeUndefined();expect(surface.verify).toBeUndefined();expect(surface.jobs).toBeUndefined();
+    await service.tick();expect(service.tasks(admin)).toEqual([]);
   }finally{r.close();}
 });
 it("provides finance metric dialog pagination and order detail navigation",()=>{

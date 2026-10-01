@@ -172,27 +172,10 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       method:z.string().trim().min(2).max(50),reference:z.string().trim().min(6).max(160),evidence:z.string().trim().min(6).max(1000),requestKey:z.string().min(8).max(80),confirmActualPayout:z.literal(true)}).strict().parse(request.body);
     return wire({data:runtime.costs.recordPayment(account(request),request.params.id,input)});
   });
-  app.get("/workspace/api/notifications/settings", async request => wire({data:runtime.notifications.settings(account(request))}));
   app.post<{Params:{id:string}}>("/workspace/api/orders/:id/cost/customer-receipt", async request => {
     const input=z.object({version:z.number().int().nonnegative(),evidence:z.string().trim().min(6).max(1000),confirmCustomerReceived:z.literal(true)}).strict().parse(request.body);
     return wire({data:runtime.costs.confirmReceipt(account(request),request.params.id,input)});
   });
-  app.put("/workspace/api/notifications/settings", async request => {
-    const input=z.object({enabled:z.boolean(),host:z.enum(["smtp.qiye.aliyun.com","smtphk.qiye.aliyun.com"]),username:z.string().email().max(254),
-      adminEmail:z.string().email().max(254),password:z.string().min(1).max(1024).optional(),version:z.number().int().nonnegative()}).strict().parse(request.body);
-    return wire({data:runtime.notifications.saveSettings(account(request),input)});
-  });
-  app.post("/workspace/api/notifications/verify", async request => wire({data:await runtime.notifications.verify(account(request))}));
-  app.get("/workspace/api/notifications/preferences", async request => wire({data:runtime.notifications.preference(account(request))}));
-  app.put("/workspace/api/notifications/preferences", async request => {
-    const input=z.object({email:z.string().email().max(254),enabled:z.boolean(),version:z.number().int().nonnegative()}).strict().parse(request.body);
-    return wire({data:runtime.notifications.savePreference(account(request),input)});
-  });
-  app.get("/workspace/api/notifications/jobs", async request => wire({data:runtime.notifications.jobs(account(request))}));
-  app.post<{Params:{id:string}}>("/workspace/api/notifications/jobs/:id/retry", async request => {
-    runtime.notifications.retry(account(request),request.params.id);return {ok:true};
-  });
-
   app.post("/workspace/api/auth/login", async (request, reply) => {
     const host = resolveWorkspaceHost(request, config);
     const input = z.object({username: z.string().min(1).max(80), password: z.string().min(1).max(1024)}).strict().parse(request.body);

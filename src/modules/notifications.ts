@@ -1,27 +1,16 @@
 import {createHash} from "node:crypto";
 import type {Repository} from "../infra/repository.js";
-import type {Actor, MailSettings, MailJob, Ticket} from "../operations/model.js";
-import {AppError} from "../domain/errors.js";
+import type {Actor, Ticket} from "../operations/model.js";
 import {isPlatform, requirePermission} from "../operations/accounts.js";
 import {canResubmitFulfillment} from "../domain/recharge-policy.js";
 import {latestFulfillmentOf} from "../domain/order-sync-mark.js";
 import {queryRecords, type QueryRecords, type RecordFilter} from "../infra/record-query.js";
 
-/** Kept as a compile-time compatibility type only. No SMTP transport exists. */
-export type MailSender = (settings: MailSettings, password: string, job: Pick<MailJob,"id"|"recipient"|"subject"|"text">) => Promise<void>;
 type Issue = {key: string; entityId: string; merchantId: string; orderId: string; kind: "recharge"|"cdk"|"refund"; message: string; retryAllowed: boolean};
 
 export class NotificationService {
   private lastTick = 0;
-  constructor(private readonly repo: Repository, ..._legacyArguments: unknown[]) {}
-  private removed(): never { throw new AppError(410, "email_notifications_removed", "邮件功能已移除，请使用站内待办或代理 Webhook"); }
-  settings(_actor: Actor): never {return this.removed();}
-  saveSettings(_actor: Actor, _input: unknown): never {return this.removed();}
-  async verify(_actor: Actor): Promise<never> {return this.removed();}
-  preference(_actor: Actor): never {return this.removed();}
-  savePreference(_actor: Actor, _input: unknown): never {return this.removed();}
-  jobs(_actor: Actor): never {return this.removed();}
-  retry(_actor: Actor, _id: string): never {return this.removed();}
+  constructor(private readonly repo: Repository) {}
 
   tasks(actor: Actor) {return this.tasksPage(actor).data;}
   tasksPage(actor: Actor, page = 1, limit = 30) {

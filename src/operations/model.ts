@@ -144,7 +144,7 @@ export interface PaymentEvent extends BaseRecord {revisionId: string; eventId: s
 export interface CryptoTransaction extends BaseRecord {orderId: string; chain: string; txHash: string; createdAt: Date}
 export interface OperationsRecords {
   order_cost: OrderCost; cost_saving_payment: CostSavingPayment;
-  mail_settings: MailSettings; mail_preference: MailPreference; mail_job: MailJob; service_checkpoint: ServiceCheckpoint;
+  service_checkpoint: ServiceCheckpoint;
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
@@ -177,14 +177,4 @@ export interface CostSavingPayment extends BaseRecord {
   method: string; reference: string; evidence: string; requestKey: string; actorId: string; createdAt: Date;
 }
 
-export interface MailSettings extends BaseRecord {
-  enabled: boolean; host: "smtp.qiye.aliyun.com" | "smtphk.qiye.aliyun.com"; username: string; adminEmail: string;
-  encrypted: import("../domain/model.js").EncryptedPayload; version: number; verifiedAt: Date | null; activatedAt: Date | null; updatedAt: Date;
-}
-export interface MailPreference extends BaseRecord {merchantId: string; email: string; enabled: boolean; version: number; updatedAt: Date}
-export interface MailJob extends BaseRecord {
-  recipient: string; subject: string; text: string; status: "queued" | "sending" | "sent" | "failed" | "skipped";
-  attempts: number; nextAttemptAt: Date; leaseUntil: Date | null; leaseToken: string | null;
-  failureCode: string | null; createdAt: Date; sentAt: Date | null; audience: "admin" | "agent";
-}
 export interface ServiceCheckpoint extends BaseRecord {createdAt: Date; afterId?: string | null}
