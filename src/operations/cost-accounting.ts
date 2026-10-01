@@ -104,7 +104,7 @@ export class CostAccountingService {
       if(frozen!=null&&standard!==frozen)throw new AppError(409,"frozen_cost_changed","不得修改订单创建时冻结的退差基准");
       const actual=moneyToMinor(input.actualUsd);if(actual===0n&&!input.confirmZeroCost)throw new AppError(422,"zero_cost_requires_evidence","零成本必须显式确认真实凭证，不接受上游缺失值");
       const ref=input.sourceReference.trim();if(ref.length<6)throw new AppError(422,"source_reference_required","请填写清算流水唯一标识");
-      if(this.repo.listOperations("order_cost").some(v=>v.orderId!==id&&v.sourceReference===ref))throw new AppError(409,"cost_evidence_reused","该上游清算凭证已关联其他订单");
+      if(queryRecords(this.repo,"order_cost",{filters:[{field:"sourceReference",value:ref},{field:"orderId",op:"ne",value:id}],limit:1,count:false}).data.length)throw new AppError(409,"cost_evidence_reused","该上游清算凭证已关联其他订单");
       if(input.fxRate)convertUsd(1n,input.fxRate);
       if(o.costTerms&&moneyToMinor(input.retainedUsd)!==o.costTerms.retainedUsdMinor)throw new AppError(409,"frozen_cost_changed","不得修改已冻结保留费用");
       if(o.priceAdjustmentRefundedMinor>0n||this.repo.listRefundsForOrder(o.merchantId,id).some(r=>r.type==="price_adjustment"&&!["rejected","cancelled"].includes(r.status)))throw new AppError(409,"legacy_adjustment_exists","已有客户差价退款记录，禁止再生成另一条补差路径；请人工核对原退款");
@@ -119,7 +119,7 @@ export class CostAccountingService {
   recordPayment(actor:Actor,id:string,input:{version:number;usd:string;currency:"USD"|"CNY";amount:string;fxRate?:string|undefined;method:string;reference:string;evidence:string;requestKey:string;confirmActualPayout:true}) {
     this.admin(actor);return this.repo.transaction(()=>{
       const o=this.order(id),c=this.repo.getOperations("order_cost",id),n=c&&calculateCost(c,o.supplyAmountMinor);
-      const replay=this.repo.listOperations("cost_saving_payment",o.merchantId).find(p=>p.requestKey===input.requestKey);
+      const replay=queryRecords(this.repo,"cost_saving_payment",{merchantId:o.merchantId,filters:[{field:"requestKey",value:input.requestKey}],limit:1,count:false}).data[0];
       if(replay){if(replay.orderId!==id||replay.usdMinor!==moneyToMinor(input.usd)||replay.paymentMinor!==moneyToMinor(input.amount)||replay.paymentCurrency!==input.currency||replay.method!==input.method.trim()||replay.reference!==input.reference.trim()||replay.fxRate!==(input.fxRate??null)||replay.evidence!==input.evidence.trim())throw new AppError(409,"cost_payment_conflict","付款请求号已用于不同内容");return this.view(actor,id);}
       if(!c||c.status!=="confirmed"||!c.destination||!n?.remaining||c.version!==input.version)throw new AppError(409,"cost_payment_not_ready","请先确认成本、补差去向及当前版本");
       if(!["paid","partially_refunded"].includes(o.paymentStatus)||o.ordinaryRefundedMinor>0n||o.priceAdjustmentRefundedMinor>0n||this.repo.listRefundsForOrder(o.merchantId,id).some(r=>!["rejected","cancelled"].includes(r.status)))throw new AppError(409,"refund_blocks_cost_payment","存在订单退款，禁止重复补差支付");
@@ -139,7 +139,8 @@ export class CostAccountingService {
     const facts=await this.supplier.costFacts(f.upstreamOrderId,f.mode);
     return this.repo.transaction(()=>{const c=this.repo.getOperations("order_cost",id)??this.initial(o,actor.id);
       const candidate=facts.candidates.length===1?facts.candidates[0]!:null;
-      const reused=candidate&&this.repo.listOperations("order_cost").some(v=>v.orderId!==id&&(v.sourceReference===candidate.reference||v.tradeCandidate?.reference===candidate.reference));
+      const reused=candidate&&(queryRecords(this.repo,"order_cost",{filters:[{field:"orderId",op:"ne",value:id},{field:"sourceReference",value:candidate.reference}],limit:1,count:false}).data.length>0
+        ||queryRecords(this.repo,"order_cost",{filters:[{field:"orderId",op:"ne",value:id},{field:"tradeCandidate.reference",value:candidate.reference}],limit:1,count:false}).data.length>0);
       this.repo.saveOperations("order_cost",{...c,upstreamOrderId:f.upstreamOrderId,nativeAmountMinor:facts.amountMinor,nativeCurrency:facts.currency,
         tradeCandidate:reused?null:candidate,tradeMatchIssue:reused?"trade_already_bound":facts.matchIssue,upstreamCheckedAt:new Date(),version:c.version+1,updatedAt:new Date()});
       this.log(actor,o,"cost.upstream.read");return this.view(actor,id);});

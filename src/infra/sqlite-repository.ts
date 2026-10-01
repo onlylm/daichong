@@ -85,6 +85,14 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_wallet_entry_time_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_outbox_cursor_idx ON sandbox_records(kind,id);
+      CREATE INDEX IF NOT EXISTS records_upstream_client_request_idx ON sandbox_records(kind,json_extract(payload,'$.upstreamClientRequestId'));
+      CREATE INDEX IF NOT EXISTS records_username_idx ON sandbox_records(kind,json_extract(payload,'$.username'));
+      CREATE INDEX IF NOT EXISTS records_request_key_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.requestKey'));
+      CREATE INDEX IF NOT EXISTS records_provider_ref_idx ON sandbox_records(kind,json_extract(payload,'$.providerRef'));
+      CREATE INDEX IF NOT EXISTS records_verified_reference_idx ON sandbox_records(kind,json_extract(payload,'$.verifiedReference'));
+      CREATE INDEX IF NOT EXISTS records_payout_reference_idx ON sandbox_records(kind,json_extract(payload,'$.payoutReference'));
+      CREATE INDEX IF NOT EXISTS records_source_reference_idx ON sandbox_records(kind,json_extract(payload,'$.sourceReference'));
+      CREATE INDEX IF NOT EXISTS records_trade_reference_idx ON sandbox_records(kind,json_extract(payload,'$.tradeCandidate.reference'));
     `);
   }
 
@@ -98,9 +106,10 @@ export class SqliteRepository implements Repository {
     for(const f of q.filters??[]){
       const expr=path(f.field),op=f.op??'eq';
       if(op==='is_null'){conditions.push(expr+' IS NULL');continue;}
+      if(op==='not_null'){conditions.push(expr+' IS NOT NULL');continue;}
       if(op==='in'){const values=f.value as Array<string|number>;if(!values.length){conditions.push('0');continue;}conditions.push(expr+` IN (${values.map(()=>'?').join(',')})`);args.push(...values);continue;}
       if(op==='lte_or_null'){conditions.push(`(${expr} IS NULL OR ${expr}<=?)`);const value=f.value;args.push(value instanceof Date?value.toISOString():value as string|number|null);continue;}
-      const operators={eq:'=',lte:'<=',gte:'>=',gt:'>'};
+      const operators={eq:'=',ne:'!=',lte:'<=',gte:'>=',gt:'>'};
       conditions.push(expr+(operators[op]??'=')+'?');
       const value=f.value;args.push(value instanceof Date?value.toISOString():typeof value==='boolean'?Number(value):value as string|number|null);
     }
@@ -480,7 +489,8 @@ export class SqliteRepository implements Repository {
       ORDER BY COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt')),f.id LIMIT ?`).all(now.toISOString(),limit).map(r=>decode<Fulfillment>(String(r.payload)));
   }
   findFulfillmentByUpstreamClientRequestId(clientRequestId: string): Fulfillment | null {
-    return this.listAll<Fulfillment>("fulfillment").find((item) => item.upstreamClientRequestId === clientRequestId) ?? null;
+    const row=this.db.prepare("SELECT payload FROM sandbox_records WHERE kind='fulfillment' AND json_extract(payload,'$.upstreamClientRequestId')=? LIMIT 1").get(clientRequestId);
+    return row?decode<Fulfillment>(String(row.payload)):null;
   }
 
   insertCdkVoucher(value: CdkVoucher): void { this.insert("cdk_voucher", value.id, value.merchantId, value.orderId, value); }

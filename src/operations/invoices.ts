@@ -41,8 +41,8 @@ export class InvoiceService {
     if (amountMinor <= 0n || amountMinor > 100_000_000n) throw new AppError(422, "invoice_amount_invalid", "开票金额须在 0.01 至 100 万元之间");
     const feeAmountMinor = (amountMinor * FEE_RATE_BPS + 9_999n) / 10_000n;
     return this.repository.transaction(() => {
-      const idempotent = this.repository.listOperations("invoice_application", actor.merchantId!)
-        .find(item => item.requestKey === input.requestKey);
+      const idempotent = queryRecords(this.repository,"invoice_application",{merchantId:actor.merchantId!,
+        filters:[{field:"requestKey",value:input.requestKey}],limit:1,count:false}).data[0];
       if (idempotent) {
         let existingTaxId = "";
         try { existingTaxId = String(this.cipher.decrypt(idempotent.taxIdEncrypted, "invoice-tax:" + idempotent.id)); } catch { /* conflict below */ }
@@ -54,8 +54,8 @@ export class InvoiceService {
         }
         return idempotent;
       }
-      const existing = this.repository.listOperations("invoice_application", actor.merchantId!)
-        .find(item => item.orderId === orderId);
+      const existing = queryRecords(this.repository,"invoice_application",{merchantId:actor.merchantId!,
+        filters:[{field:"orderId",value:orderId}],limit:1,count:false}).data[0];
       if (existing) return existing;
       const id = "inv_" + randomUUID().replaceAll("-", "");
       const now = new Date();
@@ -117,7 +117,8 @@ export class InvoiceService {
       : actor.merchantId ? this.repository.findOrder(actor.merchantId, orderId) : null;
     if (!order) throw new AppError(404, "order_not_found", "订单不存在");
     requireTenantScope(actor, order.merchantId);
-    const item = this.repository.listOperations("invoice_application", order.merchantId).find(x => x.orderId === orderId);
+    const item = queryRecords(this.repository,"invoice_application",{merchantId:order.merchantId,
+      filters:[{field:"orderId",value:orderId}],limit:1,count:false}).data[0];
     return item ? this.view(actor, item) : null;
   }
 
@@ -170,7 +171,8 @@ export class InvoiceService {
       const payment = this.repository.getOperations("invoice_fee_payment", paymentId);
       if (!payment) throw new AppError(404, "invoice_payment_not_found", "补差价支付单不存在");
       if (receivedMinor !== payment.amountMinor) throw new AppError(409, "invoice_payment_mismatch", "补差价支付金额不匹配");
-      const duplicate = this.repository.listOperations("invoice_fee_payment").find(item => item.providerRef === providerRef && item.id !== payment.id);
+      const duplicate = queryRecords(this.repository,"invoice_fee_payment",{filters:[{field:"providerRef",value:providerRef},
+        {field:"id",op:"ne",value:payment.id}],limit:1,count:false}).data[0];
       if (duplicate) throw new AppError(409, "invoice_payment_reference_reused", "支付宝流水已绑定其他补差价支付单");
       const current = this.application(payment.applicationId);
       if (payment.status === "paid") {

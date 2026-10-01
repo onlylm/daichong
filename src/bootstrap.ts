@@ -33,6 +33,7 @@ import {WalletAlipayService} from "./modules/wallet-alipay.js";
 import {CostAccountingService} from "./operations/cost-accounting.js";
 import {DailySettlementService} from "./operations/daily-settlements.js";
 import {InvoiceService} from "./operations/invoices.js";
+import {queryRecords} from "./infra/record-query.js";
 import {InvoiceAlipayService} from "./modules/invoice-alipay.js";
 
 export function createRuntime(config: AppConfig) {
@@ -101,10 +102,8 @@ export function createRuntime(config: AppConfig) {
   const apiAccess = new ApiAccessService(repository, audit, config.executionMode === "production" && !config.enableSandboxRoutes);
   const livePolicy = new LiveTestPolicy(config, repository);
   const alipayProvider = new AlipayPagePaymentProvider(config.publicBaseUrl, portalTokens);
-  const hasLegacyAlipay = repository.listOrdersInternal().some(o => {
-    const attempt = repository.findPaymentAttemptByOrder(o.merchantId, o.id);
-    return attempt?.provider === "alipay_page" && !attempt.paymentConfigId;
-  });
+  const hasLegacyAlipay = queryRecords(repository,"payment_attempt",{filters:[{field:"provider",value:"alipay_page"},
+    {field:"paymentConfigId",op:"is_null"}],limit:1,count:false}).data.length>0;
   const legacyAlipay = config.paymentProvider === "alipay_page" || (config.paymentProvider === "managed" && hasLegacyAlipay)
     ? new AlipayPaymentService(repository, payment, createAlipayClient(config.alipay!), config.alipay!, config.publicBaseUrl, alipayProvider) : null;
   const alipay = config.paymentProvider === "managed"

@@ -5,6 +5,7 @@ import {AuditService} from "../modules/audit-service.js";
 import type {Account, AccountRole, Actor} from "./model.js";
 import {SensitivePayloadCipher} from "../infra/crypto.js";
 import {resolveTierBenefits} from "./tier-benefits.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const permissions: Record<Actor["role"], string[]> = {
   platform_admin: ["*"],
@@ -42,7 +43,7 @@ export class AccountService {
   async bootstrap(username: string, password: string): Promise<Account> {
     const passwordHash = await this.hash(password);
     return this.repository.transaction(() => {
-      if (this.repository.listOperations("account").some(a => a.role === "platform_admin")) throw new AppError(409, "admin_exists", "管理员已存在，不能重复初始化");
+      if (queryRecords(this.repository,"account",{filters:[{field:"role",value:"platform_admin"}],limit:1,count:false}).data.length) throw new AppError(409, "admin_exists", "管理员已存在，不能重复初始化");
       return this.insert({id: "local-bootstrap", role: "platform_admin", merchantId: null}, {username, displayName: "平台管理员", role: "platform_admin", merchantId: null}, passwordHash, false);
     });
   }
@@ -132,7 +133,7 @@ export class AccountService {
       if (current.count >= 30) throw new AppError(429, "login_throttled", "尝试过于频繁，请稍后再试");
       this.repository.saveOperations("login_throttle", {...current, count: current.count + 1});
     });
-    const found = this.repository.listOperations("account").find(x => x.username === normalized);
+    const found = queryRecords(this.repository,"account",{filters:[{field:"username",value:normalized}],limit:1,count:false}).data[0];
     const valid = await this.verify(password, found?.passwordHash ?? "");
     const result = this.repository.transaction(() => {
       const current = found ? this.repository.getOperations("account", found.id) : null;
@@ -238,7 +239,7 @@ export class AccountService {
   private insert(actor: Actor, input: {username: string; displayName: string; role: AccountRole; merchantId: string | null}, passwordHash: string, mustChangePassword: boolean): Account {
     const username = input.username.toLowerCase().trim();
     if (!/^[a-z0-9][a-z0-9_.@-]{2,79}$/.test(username)) throw new AppError(422, "invalid_username", "账号名使用 3–80 位字母、数字或 ._@-");
-    if (this.repository.listOperations("account").some(x => x.username === username)) throw new AppError(409, "username_exists", "账号名已存在");
+    if (queryRecords(this.repository,"account",{filters:[{field:"username",value:username}],limit:1,count:false}).data.length) throw new AppError(409, "username_exists", "账号名已存在");
     const account: Account = {id: randomUUID(), merchantId: input.merchantId, username, displayName: input.displayName,
       role: input.role, status: "active", passwordHash, mustChangePassword, authVersion: 1, failedLogins: 0, lockedUntil: null,
       mfaEnabled: false, mfaSecret: null, mfaRecoveryCodeHashes: [], mfaLastUsedStep: null, createdAt: new Date(), updatedAt: new Date()};

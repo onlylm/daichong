@@ -7,6 +7,7 @@ import {procurementBalanceMinor} from "../src/operations/agents.js";
 import {completedTierOrderMetrics} from "../src/operations/tier-upgrade.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 import {fundAndApproveApi} from "./fixtures/funded-api.js";
+import {queryRecords} from "../src/infra/record-query.js";
 
 describe("SQLite workspace batch reads",()=>{
   it("uses bounded scoped count and page queries without per-order scans",async()=>{
@@ -84,6 +85,35 @@ describe("SQLite workspace batch reads",()=>{
       expect(prepare).toHaveBeenCalledTimes(1);
       prepare.mockClear();
       expect(procurementBalanceMinor(r.repository,paid.merchantId)).toBe(22_000n-paid.supplyAmountMinor);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    }finally{vi.restoreAllMocks();r.close();}
+  });
+
+  it("uses exact indexed lookups for upstream callbacks and operation references",async()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      publishTestRechargeProduct(r);
+      const b=r.repository.findCredential(cfg.demoPartnerId,cfg.demoKeyId)!,tenant={merchantId:b.merchant.id,appId:b.app.id,keyId:b.key.keyId,partnerId:b.merchant.partnerId};
+      const order=await r.orders.create(tenant,{merchantOrderNo:"EXACT-LOOKUP-001",productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      r.payment.markPaid(order.merchantId,order.id,{providerRef:"exact-lookup-payment",receivedMinor:order.saleAmountMinor});
+      const voucher=(await r.cdk.issueOne())!,task=r.fulfillments.createCdkPublic(r.repository.findOrderInternal(order.id)!,voucher,
+        r.cdk.readUpstreamCode(voucher),{mode:"session",session:"exact-lookup-session"});
+      const db=(r.repository as unknown as {db:DatabaseSync}).db,prepare=vi.spyOn(db,"prepare");
+      expect(r.repository.findFulfillmentByUpstreamClientRequestId(task.upstreamClientRequestId)?.id).toBe(task.id);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(String(prepare.mock.calls[0]?.[0])).toContain("upstreamClientRequestId");
+
+      const now=new Date();
+      r.repository.saveOperations("wallet_deposit",{id:"lookup-deposit-a",merchantId:order.merchantId,amountMinor:100n,status:"credited",
+        requestKey:"lookup-request-a",payerReference:"支付宝在线充值",verifiedReference:"lookup-provider-reference",reviewerId:"payment:alipay",
+        paymentProvider:"alipay_page",paymentConfigId:null,providerRef:"lookup-provider-a",expiresAt:null,paidAt:now,nextCheckAt:null,createdAt:now,updatedAt:now},true);
+      r.repository.saveOperations("wallet_deposit",{id:"lookup-deposit-b",merchantId:order.merchantId,amountMinor:100n,status:"credited",
+        requestKey:"lookup-request-b",payerReference:"支付宝在线充值",verifiedReference:"lookup-provider-reference-b",reviewerId:"payment:alipay",
+        paymentProvider:"alipay_page",paymentConfigId:null,providerRef:"lookup-provider-b",expiresAt:null,paidAt:now,nextCheckAt:null,createdAt:now,updatedAt:now},true);
+      prepare.mockClear();
+      const match=queryRecords(r.repository,"wallet_deposit",{filters:[{field:"verifiedReference",value:"lookup-provider-reference"},
+        {field:"id",op:"ne",value:"lookup-deposit-b"},{field:"paidAt",op:"not_null"}],limit:1,count:false}).data;
+      expect(match.map(item=>item.id)).toEqual(["lookup-deposit-a"]);
       expect(prepare).toHaveBeenCalledTimes(1);
     }finally{vi.restoreAllMocks();r.close();}
   });

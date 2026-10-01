@@ -231,7 +231,7 @@ export class WalletService {
     if (isPlatform(actor)) throw new AppError(403, "agent_wallet_required", "平台账号不能代代理商发起在线充值");
     const amountMinor = requirePositive(amount);
     return this.repository.transaction(() => {
-      const existing = this.repository.listOperations("wallet_deposit", merchantId).find(item => item.requestKey === requestKey);
+      const existing = queryRecords(this.repository,"wallet_deposit",{merchantId,filters:[{field:"requestKey",value:requestKey}],limit:1,count:false}).data[0];
       if (existing) {
         if (existing.amountMinor !== amountMinor || existing.paymentProvider !== "alipay_page") throw new AppError(409, "deposit_conflict", "充值单号已用于不同请求");
         return existing;
@@ -257,7 +257,8 @@ export class WalletService {
         return current;
       }
       if (current.status !== "requested") throw new AppError(409, "deposit_already_reviewed", "余额充值订单已终结");
-      if (this.repository.listOperations("wallet_deposit").some(item => item.id !== current.id && item.verifiedReference === providerReference && item.status === "credited")) {
+      if (queryRecords(this.repository,"wallet_deposit",{filters:[{field:"verifiedReference",value:providerReference},{field:"status",value:"credited"},
+        {field:"id",op:"ne",value:current.id}],limit:1,count:false}).data.length) {
         throw new AppError(409, "receipt_used", "该支付宝交易已入账");
       }
       this.entry(current.merchantId, "deposit:" + id, "deposit", current.amountMinor, 0n, 0n, providerReference, "payment:alipay");
@@ -282,7 +283,7 @@ export class WalletService {
       if (current.status !== "requested") throw new AppError(409, "deposit_already_reviewed", "充值申请已处理");
       if (approve) {
         if (verifiedReference.trim().length < 6) throw new AppError(422, "receipt_required", "必须填写核实到账的唯一渠道流水");
-        if (this.repository.listOperations("wallet_deposit").some(x => x.verifiedReference === verifiedReference && x.status === "credited")) throw new AppError(409, "receipt_used", "该渠道流水已入账，不能重复记账");
+        if (queryRecords(this.repository,"wallet_deposit",{filters:[{field:"verifiedReference",value:verifiedReference},{field:"status",value:"credited"}],limit:1,count:false}).data.length) throw new AppError(409, "receipt_used", "该渠道流水已入账，不能重复记账");
         this.entry(current.merchantId, "deposit:" + id, "deposit", current.amountMinor, 0n, 0n, verifiedReference, actor.id);
       }
       const reviewedAt = new Date();
@@ -424,7 +425,8 @@ export class WalletService {
         if (!["requested", "approved"].includes(current.status)) {
           throw new AppError(409, "withdrawal_final", "提现申请已终结");
         }
-        if (reference.trim().length < 6 || this.repository.listOperations("wallet_withdrawal").some(w => w.payoutReference === reference && w.id !== id)) {
+        if (reference.trim().length < 6 || queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference},
+          {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length) {
           throw new AppError(409, "invalid_payout_reference", "打款流水无效或已使用");
         }
         if (current.status === "requested") {

@@ -122,8 +122,9 @@ export class DailySettlementService {
       if (!current) throw new AppError(404, "daily_settlement_not_found", "每日核算单不存在");
       if (current.status === "paid" && current.payoutReference === reference) return current;
       if (current.status !== "pending_payment" || current.payableMinor <= 0n) throw new AppError(409, "daily_settlement_final", "该核算单不可确认打款");
-      const duplicateStatement = this.repository.listOperations("daily_settlement").some(item => item.id !== id && item.payoutReference === reference);
-      const duplicateWithdrawal = this.repository.listOperations("wallet_withdrawal").some(item => item.payoutReference === reference);
+      const duplicateStatement = queryRecords(this.repository,"daily_settlement",{filters:[{field:"payoutReference",value:reference},
+        {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length>0;
+      const duplicateWithdrawal = queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference}],limit:1,count:false}).data.length>0;
       if (duplicateStatement || duplicateWithdrawal) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
       const earnings = this.repository.listOperations("wallet_entry", current.merchantId).reduce((sum, entry) => sum + entry.earningsDelta, 0n);
       if (earnings < current.payableMinor) throw new AppError(409, "settlement_balance_changed", "代理收益余额已变化，当前不足以确认该核算单；请取消本单并按新余额处理");
