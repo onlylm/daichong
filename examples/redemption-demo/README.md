@@ -4,7 +4,7 @@ Node 24，无额外依赖。仅监听 127.0.0.1，不可原样部署公网。
 
 1. 启动 Quefa API 和 Worker。使用模拟环境，切勿填真实账号资料。
 2. 测试代理在隔离模拟库完成测试采购充值记账、API 申请/审批，再开启“自建兑换页接口”。真实资金必须核实到账，不得以模拟记账替代。
-3. 网页/API 创建并模拟支付 direct 或 cdk 商品；CDK 等待 Worker 签发。
+3. 网页/API 创建并模拟支付 `delivery_mode=auto_recharge` 或 `delivery_mode=cdk` 的订单；CDK 等待 Worker 签发。
 4. 在当前终端注入 QUEFA_BASE_URL、QUEFA_PARTNER_ID、QUEFA_KEY_ID、QUEFA_CLIENT_SECRET（只用测试密钥，不放前端）。
 5. 运行 `node examples/redemption-demo/server.mjs`，访问 `http://127.0.0.1:3400`。
 6. 填测试订单 ID / QF 码、模拟 Session，主动确认并提交，再点击查询结果。

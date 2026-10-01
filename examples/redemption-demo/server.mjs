@@ -42,7 +42,7 @@ export function createDemoServer(config) {
         if(!String(req.headers["content-type"]??"").startsWith("application/json"))return json(res,400,{error:"需要 JSON"});
         const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>64*1024)return json(res,413,{error:"请求过大"});chunks.push(chunk);}
         const input=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if(!/^[a-zA-Z0-9_-]{8,80}$/.test(input.request_key??"")||!["direct","cdk"].includes(input.mode)||input.customer_confirmed_email!==true)return json(res,400,{error:"请核对输入与授权"});
+        if(!/^[a-zA-Z0-9_-]{8,80}$/.test(input.request_key??"")||!["auto_recharge","cdk"].includes(input.mode)||input.customer_confirmed_email!==true)return json(res,400,{error:"请核对输入与授权"});
         const payload={mode:input.mode,...(input.mode==="cdk"?{code:input.code}:{order_id:input.order_id}),credential:input.credential,customer_confirmed_email:true};
         const result=await call("POST","/v1/redemptions",payload,input.request_key);
         if(result.status!==202)return json(res,result.status,{error:result.body.error?.message??"兑换暂不可用",code:result.body.error?.code??"request_failed"});

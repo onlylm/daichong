@@ -14,6 +14,25 @@ describe("sandbox delivery package", () => {
     expect(compose.services.worker.volumes).toContain("quefa_sandbox:/app/data");
     expect(compose.services.worker.depends_on.api.condition).toBe("service_healthy");
     expect(compose.volumes.quefa_sandbox).toBeDefined();
-    expect(readFileSync(join(here, "../examples/partner-demo/server.mjs"), "utf8")).toContain("/webhooks/quefa");
+    const demo = readFileSync(join(here, "../examples/partner-demo/server.mjs"), "utf8");
+    expect(demo).toContain("/webhooks/quefa");
+    expect(demo).toContain("/payment-code");
+    expect(demo).toContain('mode: "auto_recharge"');
+    expect(demo).toContain("qr_image_data_url");
+    expect(demo).not.toContain("current.qr_payload");
+    expect(demo).not.toContain("current.fulfillment_url");
+    expect(demo).not.toContain("打开 Quefa");
+  });
+
+  it("keeps the partner storefront on the agent domain and free of internal commercial fields", async () => {
+    const module = await import(new URL("../examples/partner-demo/server.mjs", import.meta.url).href);
+    const page = module.storefrontHtml() as string;
+    expect(page).not.toMatch(/Quefa|tibo\.ink|qr_payload|fulfillment_url|supply_amount|merchant_margin|client_secret/i);
+    expect(page).toContain("qr_image_data_url");
+    expect(page).toContain("auto_recharge");
+    const script = page.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeDefined();
+    if (!script) throw new Error("partner demo script missing");
+    expect(() => new Function(script)).not.toThrow();
   });
 });

@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="demo-token" content="BROWSER_TOKEN_PLACEHOLDER"><title>充值兑换 · 本地联调示例</title>
 <style>body{background:#ecf2f8;color:#192c42;font:16px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;margin:0}main{max-width:650px;margin:50px auto;padding:30px;background:white;border:1px solid #dbe5ef;border-radius:8px}h1{font-size:28px;margin:0 0 10px}p{color:#5b6e82}label{display:block;margin:18px 0}input,textarea,select,button{font:inherit;box-sizing:border-box;width:100%;padding:10px;border:1px solid #a4b5c7;border-radius:4px}textarea{min-height:110px}input[type=checkbox]{width:auto}button{background:#114ca4;color:white;cursor:pointer;margin-top:10px}button:disabled{opacity:.5}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}*:focus-visible{outline:3px solid #719fd9;outline-offset:3px}@media(max-width:700px){main{margin:16px;padding:22px}}</style><script src="/client.js" defer></script></head>
 <body><main><h1>充值兑换</h1><p>本地联调示例，只使用测试订单、测试兑换码和模拟充值资料。不得直接公网发布。</p><form id="redeem">
-<label>充值方式<select name="mode"><option value="cdk">CDK 兑换</option><option value="direct">已付订单直接充值</option></select></label>
+<label>充值方式<select name="mode"><option value="cdk">CDK 兑换</option><option value="auto_recharge">已付订单自动直充</option></select></label>
 <label>QF 兑换码 / 已付测试订单 ID<input name="reference" required autocomplete="off"></label>
 <label>资料类型<select name="credentialMode"><option value="session">Session</option><option value="access_token">Access Token</option></select></label>
 <label>模拟充值资料<textarea name="credentialValue" required autocomplete="off"></textarea></label>
