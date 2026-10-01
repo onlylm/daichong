@@ -79,6 +79,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tenant_status_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_status_order_relation_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_payment_created_idx ON sandbox_records(kind,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt'));
+      CREATE INDEX IF NOT EXISTS records_payment_provider_due_idx ON sandbox_records(kind,json_extract(payload,'$.provider'),json_extract(payload,'$.status'),json_extract(payload,'$.nextCheckAt'));
       CREATE INDEX IF NOT EXISTS records_paid_at_idx ON sandbox_records(kind,json_extract(payload,'$.paidAt'));
       CREATE INDEX IF NOT EXISTS records_task_attempt_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.orderId'),CAST(json_extract(payload,'$.attemptNo') AS INTEGER) DESC);
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
@@ -98,6 +99,7 @@ export class SqliteRepository implements Repository {
       const expr=path(f.field),op=f.op??'eq';
       if(op==='is_null'){conditions.push(expr+' IS NULL');continue;}
       if(op==='in'){const values=f.value as Array<string|number>;if(!values.length){conditions.push('0');continue;}conditions.push(expr+` IN (${values.map(()=>'?').join(',')})`);args.push(...values);continue;}
+      if(op==='lte_or_null'){conditions.push(`(${expr} IS NULL OR ${expr}<=?)`);const value=f.value;args.push(value instanceof Date?value.toISOString():value as string|number|null);continue;}
       const operators={eq:'=',lte:'<=',gte:'>=',gt:'>'};
       conditions.push(expr+(operators[op]??'=')+'?');
       const value=f.value;args.push(value instanceof Date?value.toISOString():typeof value==='boolean'?Number(value):value as string|number|null);
@@ -293,6 +295,29 @@ export class SqliteRepository implements Repository {
       if(row.merchant_payload){const merchant=decode<Merchant>(String(row.merchant_payload));merchantNames.set(merchant.id,merchant.name);}return order;});
     return {orders,merchantNames:[...merchantNames].map(([merchantId,name])=>({merchantId,name})),meta:{total,page,limit,pages}};
   }
+
+  findDuePaymentOrder(provider:string,now:Date):Order|null {
+    const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records p
+      JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=p.merchant_id AND o.id=json_extract(p.payload,'$.orderId')
+      WHERE p.kind='payment_attempt' AND json_extract(p.payload,'$.provider')=? AND json_extract(p.payload,'$.status')='pending'
+      AND json_extract(o.payload,'$.paymentStatus')='pending'
+      AND (json_extract(p.payload,'$.nextCheckAt') IS NULL OR json_extract(p.payload,'$.nextCheckAt')<=?)
+      ORDER BY COALESCE(json_extract(p.payload,'$.nextCheckAt'),json_extract(p.payload,'$.createdAt')) ASC,p.id ASC LIMIT 1`).get(provider,now.toISOString());
+    return row?decode<Order>(String(row.order_payload)):null;
+  }
+
+  findDueRefund(provider:string,now:Date):Refund|null {
+    const row=this.db.prepare(`SELECT r.payload AS refund_payload FROM sandbox_records r
+      JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=r.merchant_id AND o.id=json_extract(r.payload,'$.orderId')
+      JOIN sandbox_records p ON p.kind='payment_attempt' AND p.merchant_id=o.merchant_id AND json_extract(p.payload,'$.orderId')=o.id
+      WHERE r.kind='refund' AND json_extract(r.payload,'$.status')='processing'
+      AND (json_extract(r.payload,'$.nextCheckAt') IS NULL OR json_extract(r.payload,'$.nextCheckAt')<=?)
+      AND json_extract(p.payload,'$.provider')=?
+      ORDER BY COALESCE(json_extract(r.payload,'$.nextCheckAt'),json_extract(r.payload,'$.createdAt')) ASC,r.id ASC LIMIT 1`).get(now.toISOString(),provider);
+    return row?decode<Refund>(String(row.refund_payload)):null;
+  }
+
+  findRefundInternal(refundId:string):Refund|null {return this.get<Refund>('refund',refundId);}
 
   consumeNonce(key: string, expiresAt: number, now: number): boolean {
     return this.transaction(() => {

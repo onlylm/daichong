@@ -7,6 +7,7 @@ import type {InvoiceService} from "../operations/invoices.js";
 import {createAlipayClientFromKeys, type AlipayClient} from "./alipay-payment.js";
 import type {PaymentSettingsService} from "./payment-settings.js";
 import type {PortalTokenService} from "./portal-token.js";
+import {queryRecords} from "../infra/record-query.js";
 
 type LegacyAlipay = {client: AlipayClient; identity: {appId: string; sellerId: string}} | null;
 
@@ -21,9 +22,8 @@ export class InvoiceAlipayService {
     if (actor.merchantId !== application.merchantId) throw new AppError(404, "invoice_not_found", "开票申请不存在");
     if (application.status !== "awaiting_payment") throw new AppError(409, "invoice_already_submitted", "补差价已支付，开票申请已提交");
     const now = new Date();
-    const pending = this.repository.listOperations("invoice_fee_payment", application.merchantId)
-      .filter(item => item.applicationId === application.id && item.status === "pending")
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+    const pending = queryRecords(this.repository,"invoice_fee_payment",{merchantId:application.merchantId,
+      filters:[{field:"applicationId",value:application.id},{field:"status",value:"pending"}],orderBy:"createdAt",direction:"desc",limit:1,count:false}).data[0];
     if (pending && pending.expiresAt > now) return {payment: pending, payUrl: this.portalUrl(pending.id)};
     if (pending) this.repository.saveOperations("invoice_fee_payment", {...pending, status: "expired", updatedAt: now});
     const configId = this.activeConfigId();
@@ -90,8 +90,8 @@ export class InvoiceAlipayService {
   }
 
   async reconcileOne(): Promise<void> {
-    const candidate = this.repository.listOperations("invoice_fee_payment").find(item => item.status === "pending"
-      && (!item.nextCheckAt || item.nextCheckAt <= new Date()));
+    const candidate = queryRecords(this.repository,"invoice_fee_payment",{filters:[{field:"status",value:"pending"},
+      {field:"nextCheckAt",op:"lte_or_null",value:new Date()}],orderBy:"nextCheckAt",direction:"asc",limit:1,count:false}).data[0];
     if (candidate) await this.reconcile(candidate.id);
   }
 

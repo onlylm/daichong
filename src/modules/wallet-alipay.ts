@@ -6,6 +6,7 @@ import type {WalletService} from "../operations/wallet.js";
 import {createAlipayClientFromKeys, type AlipayClient} from "./alipay-payment.js";
 import type {PaymentSettingsService} from "./payment-settings.js";
 import type {PortalTokenService} from "./portal-token.js";
+import {queryRecords} from "../infra/record-query.js";
 
 /** Platform-owned Alipay checkout for an agent's procurement wallet. */
 export class WalletAlipayService {
@@ -82,8 +83,8 @@ export class WalletAlipayService {
   }
 
   async reconcileOne(): Promise<void> {
-    const candidate = this.repository.listOperations("wallet_deposit").find(item => item.paymentProvider === "alipay_page"
-      && item.status === "requested" && (!item.nextCheckAt || item.nextCheckAt <= new Date()));
+    const candidate = queryRecords(this.repository,"wallet_deposit",{filters:[{field:"paymentProvider",value:"alipay_page"},{field:"status",value:"requested"},
+      {field:"nextCheckAt",op:"lte_or_null",value:new Date()}],orderBy:"nextCheckAt",direction:"asc",limit:1,count:false}).data[0];
     if (candidate) await this.reconcile(candidate.id);
   }
 

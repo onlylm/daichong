@@ -132,9 +132,8 @@ export class AlipayPaymentService {
   }
 
   async reconcileOne(): Promise<void> {
-    const candidate = this.repository.listOrdersInternal().filter(x => x.paymentStatus === "pending").find(order => {
-      const attempt = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id);
-      return attempt?.provider === "alipay_page" && (!attempt.nextCheckAt || attempt.nextCheckAt <= new Date());
+    const now=new Date(),candidate=this.repository.findDuePaymentOrder?.("alipay_page",now)??this.repository.listOrdersInternal().filter(x=>x.paymentStatus==="pending").find(order=>{
+      const attempt=this.repository.findPaymentAttemptByOrder(order.merchantId,order.id);return attempt?.provider==="alipay_page"&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
     });
     if (candidate) await this.reconcile(candidate.id);
   }

@@ -46,9 +46,8 @@ export class ManagedAlipayService {
     return this.service(orderId).queryRefund(orderId, refundId, amountMinor);
   }
   async reconcileOne(): Promise<void> {
-    const o = this.repo.listOrdersInternal().find(o => {
-      const a = this.repo.findPaymentAttemptByOrder(o.merchantId, o.id);
-      return o.paymentStatus === "pending" && a?.provider === "alipay_page" && (!a.nextCheckAt || a.nextCheckAt <= new Date());
+    const now=new Date(),o=this.repo.findDuePaymentOrder?.("alipay_page",now)??this.repo.listOrdersInternal().find(order=>{
+      const attempt=this.repo.findPaymentAttemptByOrder(order.merchantId,order.id);return order.paymentStatus==="pending"&&attempt?.provider==="alipay_page"&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
     });
     if (o) await this.reconcile(o.id);
   }

@@ -8,6 +8,7 @@ import {minorToMoney} from "../domain/money.js";
 import {PaymentSettingsService} from "./payment-settings.js";
 import {PaymentService} from "./payment-service.js";
 import {USDT_NETWORKS, verifyDujiaoWebhook, type UsdtNetwork} from "./dujiaopay-client.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const idText = z.string().regex(/^[a-zA-Z0-9_-]{1,160}$/);
 const decimal = z.string().regex(/^(0|[1-9]\d{0,18})(\.\d{1,18})?$/);
@@ -171,9 +172,10 @@ export class DujiaoPaymentService {
     });
   }
   async reconcileOne(): Promise<void> {
-    const p = this.repo.listOperations("crypto_payment").filter(p => p.state !== "paid" && p.nextCheckAt <= new Date()
-      && (!p.leaseUntil || p.leaseUntil <= new Date()) && this.repo.findOrderInternal(p.orderId)?.paymentStatus === "pending")
-      .sort((a, b) => a.nextCheckAt.getTime() - b.nextCheckAt.getTime())[0];
-    if (p) await this.reconcile(p.orderId);
+    const candidates=queryRecords(this.repo,"crypto_payment",{filters:[{field:"state",op:"in",value:["creating","pending","review","expired","canceled"]},
+      {field:"nextCheckAt",op:"lte",value:new Date()},{field:"leaseUntil",op:"lte_or_null",value:new Date()}],orderBy:"nextCheckAt",direction:"asc",limit:20,count:false}).data;
+    const orders=this.repo.findOrdersInternal?.(candidates.map(payment=>payment.orderId))??candidates.map(payment=>this.repo.findOrderInternal(payment.orderId)).filter((order):order is Order=>!!order);
+    const pending=new Set(orders.filter(order=>order.paymentStatus==="pending").map(order=>order.id)),due=candidates.find(payment=>pending.has(payment.orderId));
+    if (due) await this.reconcile(due.orderId);
   }
 }
