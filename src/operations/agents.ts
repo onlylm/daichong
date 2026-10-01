@@ -11,6 +11,7 @@ import {defaultTierLevels, mergedCollectionModes, resolveTierBenefits, seedDefau
 import {completedTierOrderMetrics, evaluateTierUpgradeEligibility} from "./tier-upgrade.js";
 import type {AccountService, AccountSession} from "./accounts.js";
 import {assertCdkPrefix, assertCdkTemplate, normalizeCdkPrefix, normalizeCdkTemplate} from "../modules/cdk-code.js";
+import {queryRecords} from "../infra/record-query.js";
 
 export function procurementBalanceMinor(repository: Repository, merchantId: string): bigint {
   if (repository.walletTotals) return repository.walletTotals(merchantId).procurement;
@@ -157,13 +158,14 @@ export class AgentService {
   applyTier(actor: Actor, merchantId: string, targetTier: string, reason: string, requestKey: string) {
     requirePermission(actor, "tiers.apply"); requireTenantScope(actor, merchantId); safeText(reason);
     return this.repository.transaction(() => {
-      const existing = this.repository.listOperations("ticket", merchantId).find(t => t.tierApplication?.requestKey === requestKey);
+      const existing = queryRecords(this.repository,"ticket",{merchantId,filters:[{field:"tierApplication.requestKey",value:requestKey}],limit:1,count:false}).data[0];
       if (existing) {
-        const firstMessage = this.repository.listOperations("ticket_message", merchantId).find(m => m.ticketId === existing.id);
+        const firstMessage = queryRecords(this.repository,"ticket_message",{merchantId,filters:[{field:"ticketId",value:existing.id}],
+          orderBy:"createdAt",direction:"asc",limit:1,count:false}).data[0];
         if (existing.tierApplication!.targetTier !== targetTier || firstMessage?.body !== reason) throw new AppError(409, "tier_application_conflict", "同一申请号的内容不能变化");
         return existing;
       }
-      if (this.repository.listOperations("ticket", merchantId).some(t => t.tierApplication?.status === "pending")) throw new AppError(409, "tier_application_pending", "已有待审核的等级申请，请在原工单补充说明");
+      if (queryRecords(this.repository,"ticket",{merchantId,filters:[{field:"tierApplication.status",value:"pending"}],limit:1,count:false}).data.length) throw new AppError(409, "tier_application_pending", "已有待审核的等级申请，请在原工单补充说明");
       const profile = this.profile(merchantId), rules = this.rules();
       const target = rules.levels.findIndex(l => l.code === targetTier), current = rules.levels.findIndex(l => l.code === profile.tier);
       if (target <= current) throw new AppError(422, "tier_target_invalid", "请选择高于当前等级的有效目标等级");

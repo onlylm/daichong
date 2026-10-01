@@ -80,6 +80,25 @@ describe("workspace history pagination", () => {
     expect(query.mock.calls.every(call => (call[1] as {limit: number}).limit === 3)).toBe(true);
   });
 
+  it("loads only the selected ticket conversation and preserves internal-note visibility", () => {
+    const merchant=runtime.repository.listMerchants()[0]!,base=Date.parse("2026-10-01T09:00:00.000Z");
+    for(const [offset,ticketId] of [[0,"tk_detail_target"],[1,"tk_detail_other"]] as const){
+      const at=new Date(base+offset*60_000);
+      runtime.repository.saveOperations("ticket",{id:ticketId,merchantId:merchant.id,orderId:null,title:"详情查询",category:"other",status:"open",
+        assigneeId:null,version:3,publicVersion:2,createdBy:"agent-owner",createdAt:at,updatedAt:at},true);
+      for(let index=0;index<4;index++)runtime.repository.saveOperations("ticket_message",{id:`${ticketId}_message_${index}`,merchantId:merchant.id,
+        ticketId,actorId:index===2?"history-admin":"agent-owner",author:index===2?"platform":"agent",internal:index===2,
+        body:`${ticketId}-${index}`,createdAt:new Date(at.getTime()+index*1_000)},true);
+    }
+    const allOperations=vi.spyOn(runtime.repository,"listOperations"),exact=vi.spyOn(runtime.repository as unknown as {listTicketMessages:(...args:unknown[])=>unknown},"listTicketMessages");
+    const platform=runtime.support.get({id:"history-admin",role:"platform_admin",merchantId:null},"tk_detail_target");
+    const agent=runtime.support.get({id:"agent-owner",role:"agent_owner",merchantId:merchant.id},"tk_detail_target");
+    expect(platform.messages.map(item=>item.body)).toEqual(["tk_detail_target-0","tk_detail_target-1","tk_detail_target-2","tk_detail_target-3"]);
+    expect(agent.messages.map(item=>item.body)).toEqual(["tk_detail_target-0","tk_detail_target-1","tk_detail_target-3"]);
+    expect(exact).toHaveBeenCalledTimes(2);
+    expect(allOperations).not.toHaveBeenCalled();
+  });
+
   it("loads only the selected wallet history tab and keeps the balance endpoint compact", async () => {
     const merchant = runtime.repository.listMerchants()[0]!, base = Date.parse("2026-10-01T08:00:00.000Z");
     for (let index = 0; index < 7; index++) {

@@ -94,6 +94,9 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_source_reference_idx ON sandbox_records(kind,json_extract(payload,'$.sourceReference'));
       CREATE INDEX IF NOT EXISTS records_trade_reference_idx ON sandbox_records(kind,json_extract(payload,'$.tradeCandidate.reference'));
       CREATE INDEX IF NOT EXISTS records_webhook_lease_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.leaseUntil'));
+      CREATE INDEX IF NOT EXISTS records_ticket_message_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.ticketId'),json_extract(payload,'$.createdAt'));
+      CREATE INDEX IF NOT EXISTS records_withdrawal_application_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.withdrawalApplication.withdrawalId'));
+      CREATE INDEX IF NOT EXISTS records_tier_request_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.tierApplication.requestKey'));
     `);
   }
 
@@ -141,6 +144,13 @@ export class SqliteRepository implements Repository {
       orders:rows.flatMap(row=>row.order_payload?[decode<Order>(String(row.order_payload))]:[]),
       fulfillments:rows.flatMap(row=>row.fulfillment_payload?[decode<Fulfillment>(String(row.fulfillment_payload))]:[]),
       meta:{total,page,limit,pages}};
+  }
+
+  listTicketMessages(merchantId:string,ticketId:string,includeInternal:boolean):OperationsRecords['ticket_message'][] {
+    const internal=includeInternal?'':' AND COALESCE(json_extract(payload,\'$.internal\'),0)=0';
+    return this.db.prepare(`SELECT payload FROM sandbox_records WHERE kind='ops_ticket_message' AND merchant_id=?
+      AND json_extract(payload,'$.ticketId')=?${internal} ORDER BY json_extract(payload,'$.createdAt') ASC,id ASC`).all(merchantId,ticketId)
+      .map(row=>decode<OperationsRecords['ticket_message']>(String(row.payload)));
   }
 
   walletTotals(merchantId:string) {

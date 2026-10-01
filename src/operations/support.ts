@@ -41,8 +41,8 @@ export class SupportService {
   /** Auto-open a platform-visible ticket when an agent requests earnings withdrawal. */
   createWithdrawalTicket(actor: Actor, withdrawal: WalletWithdrawal): Ticket {
     return this.repository.transaction(() => {
-      const existing = this.repository.listOperations("ticket", withdrawal.merchantId)
-        .find((ticket) => ticket.withdrawalApplication?.withdrawalId === withdrawal.id);
+      const existing = queryRecords(this.repository,"ticket",{merchantId:withdrawal.merchantId,
+        filters:[{field:"withdrawalApplication.withdrawalId",value:withdrawal.id}],limit:1,count:false}).data[0];
       if (existing) return existing;
       const method = withdrawal.payoutMethod === "bank" ? "银行卡" : "支付宝";
       const amount = minorToMoney(withdrawal.amountMinor);
@@ -92,8 +92,8 @@ export class SupportService {
 
   syncWithdrawalTicket(withdrawal: WalletWithdrawal, reviewReason: string | null = null): void {
     this.repository.transaction(() => {
-      const ticket = this.repository.listOperations("ticket", withdrawal.merchantId)
-        .find((item) => item.withdrawalApplication?.withdrawalId === withdrawal.id);
+      const ticket = queryRecords(this.repository,"ticket",{merchantId:withdrawal.merchantId,
+        filters:[{field:"withdrawalApplication.withdrawalId",value:withdrawal.id}],limit:1,count:false}).data[0];
       if (!ticket?.withdrawalApplication) return;
       const now = new Date();
       const status = withdrawal.status === "paid" || withdrawal.status === "rejected" ? "resolved" as const
@@ -156,8 +156,9 @@ export class SupportService {
     return this.repository.transaction(() => {
       const ticket = this.require(actor, id);
       this.markRead(actor, ticket);
-      const messages = this.repository.listOperations("ticket_message", ticket.merchantId)
-        .filter(m => m.ticketId === id && (isPlatform(actor) || !m.internal)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      const messages = (this.repository.listTicketMessages?.(ticket.merchantId,id,isPlatform(actor))
+        ??this.repository.listOperations("ticket_message", ticket.merchantId).filter(m => m.ticketId === id && (isPlatform(actor) || !m.internal))
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()))
         .map(m => ({id: m.id, author: m.author, body: m.body, internal: m.internal, createdAt: m.createdAt}));
       return {...this.view(actor, ticket), messages};
     });

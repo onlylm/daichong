@@ -54,6 +54,7 @@ export interface Repository {
     orders:Order[];fulfillments:Fulfillment[];vouchers:CdkVoucher[];meta:{total:number;page:number;limit:number;pages:number;paidCount:number;paidSaleMinor:bigint;todayPaidCount:number;todayPaidSaleMinor:bigint}};
   queryCostAccountingOrders?(query:{status:"all"|"pending_review"|"confirmed"|"disputed";search?:string;page:number;limit:number}):{
     orders:Order[];merchantNames:Array<{merchantId:string;name:string}>;meta:{total:number;page:number;limit:number;pages:number}};
+  listTicketMessages?(merchantId:string,ticketId:string,includeInternal:boolean):import("../operations/model.js").TicketMessage[];
   findDuePaymentOrder?(provider:string,now:Date):Order|null;
   findDueRefund?(provider:string,now:Date):Refund|null;
   findRefundInternal?(refundId:string):Refund|null;
