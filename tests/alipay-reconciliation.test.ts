@@ -30,6 +30,7 @@ describe("Alipay payment reconciliation", () => {
   afterEach(async () => {
     await app.close();
     runtime.close();
+    vi.restoreAllMocks();
   });
 
   async function orderWithAlipayAttempt(): Promise<Order> {
@@ -52,6 +53,14 @@ describe("Alipay payment reconciliation", () => {
       {appId: "test-app", sellerId: "2088000000000000"}, config.publicBaseUrl, paymentProvider);
     value.setExternalRefundHandler((orderId, amount, reference) => runtime.refunds.syncProviderRefund(orderId, amount, reference));
     return value;
+  }
+
+  async function enableAlipayCheckoutRoutes(code: string): Promise<void> {
+    await app.close();
+    vi.spyOn(runtime.paymentSettings,"available").mockReturnValue(["alipay_page"]);
+    (runtime as unknown as {alipay: unknown}).alipay={precreate:async()=>code,reconcile:async()=>undefined,
+      handleNotification:()=>undefined};
+    app=await buildApp(config,runtime);
   }
 
   it("reuses one provider precreate call for concurrent payment-code requests", async () => {
@@ -146,12 +155,29 @@ describe("Alipay payment reconciliation", () => {
 
   it("closes an unpaid order when Alipay reports TRADE_CLOSED without requiring a trade number", async () => {
     const order = await orderWithAlipayAttempt();
+    const code="https://qr.alipay.com/closed-order-code",attempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...attempt,qrPayload:code,updatedAt:new Date()});
+    await enableAlipayCheckoutRoutes(code);
+    const statusUrl=`/payments/${order.id}/status?token=${encodeURIComponent(runtime.portalTokens.paymentToken(order.id))}`;
+    expect((await app.inject({url:statusUrl})).json()).toMatchObject({can_start:true,qr_code:code});
     const alipay = service({code: "10000", out_trade_no: order.id, total_amount: "135.00",
       trade_status: "TRADE_CLOSED", seller_id: "2088000000000000", app_id: "test-app"});
 
     await alipay.reconcile(order.id);
     expect(runtime.repository.findOrderInternal(order.id)?.paymentStatus).toBe("closed");
     expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)?.status).toBe("closed");
+    expect((await app.inject({url:statusUrl})).json()).toMatchObject({status:"closed",can_start:false,qr_code:null,qr_image_data_url:null});
+  });
+
+  it("never returns a historical payment code after the local payment window expires", async()=>{
+    const order=await orderWithAlipayAttempt(),code="https://qr.alipay.com/expired-order-code";
+    const attempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!,expiredAt=new Date(Date.now()-1_000);
+    runtime.repository.updateOrder({...order,expiresAt:expiredAt,updatedAt:new Date()});
+    runtime.repository.updatePaymentAttempt({...attempt,qrPayload:code,expiresAt:expiredAt,updatedAt:new Date()});
+    await enableAlipayCheckoutRoutes(code);
+    const response=await app.inject({url:`/payments/${order.id}/status?token=${encodeURIComponent(runtime.portalTokens.paymentToken(order.id))}`});
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({status:"pending",expired:true,can_start:false,qr_code:null,qr_image_data_url:null});
   });
 
   it("migrates legacy refund system cases without deleting their messages", async()=>{

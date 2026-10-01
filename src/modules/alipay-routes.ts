@@ -67,10 +67,11 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
   };
   const orderCheckoutStatus = async (order: Order) => {
     const attempt = runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id);
-    const qr = attempt?.qrPayload && isAlipayPrecreateQr(attempt.qrPayload) ? attempt.qrPayload : null;
-    return {status: order.paymentStatus, expired: order.expiresAt <= new Date(), amount: minorToMoney(order.saleAmountMinor),
-      expires_at: order.expiresAt.toISOString(), can_start: order.paymentStatus === "pending" && order.expiresAt > new Date()
-        && runtime.paymentSettings.available().includes("alipay_page"), qr_code: qr,
+    const expired=order.expiresAt<=new Date(),canStart=order.paymentStatus==="pending"&&!expired&&attempt?.status==="pending"
+      &&runtime.paymentSettings.available().includes("alipay_page");
+    const qr=canStart&&attempt?.qrPayload&&isAlipayPrecreateQr(attempt.qrPayload)?attempt.qrPayload:null;
+    return {status: order.paymentStatus, expired, amount: minorToMoney(order.saleAmountMinor),
+      expires_at: order.expiresAt.toISOString(), can_start: canStart, qr_code: qr,
       qr_image_data_url: qr ? await paymentQrDataUrl(qr) : null,
       channel_enabled: runtime.paymentSettings.available().includes("alipay_page"),
       delivery_mode: orderDeliveryMode(order),
@@ -120,10 +121,12 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
     return deposit;
   };
   const walletCheckoutStatus = async (deposit: import("../operations/model.js").WalletDeposit) => {
-    const qr = deposit.providerRef && isAlipayPrecreateQr(deposit.providerRef) ? deposit.providerRef : null;
-    return {status: deposit.status, expired: Boolean(deposit.expiresAt && deposit.expiresAt <= new Date()),
+    const expired=Boolean(deposit.expiresAt&&deposit.expiresAt<=new Date()),canStart=deposit.status==="requested"&&Boolean(deposit.expiresAt&&!expired)
+      &&runtime.paymentSettings.available().includes("alipay_page");
+    const qr=canStart&&deposit.providerRef&&isAlipayPrecreateQr(deposit.providerRef)?deposit.providerRef:null;
+    return {status: deposit.status, expired,
       amount: minorToMoney(deposit.amountMinor), expires_at: deposit.expiresAt?.toISOString() ?? null,
-      can_start: deposit.status === "requested" && Boolean(deposit.expiresAt && deposit.expiresAt > new Date()),
+      can_start: canStart,
       qr_code: qr, qr_image_data_url: qr ? await paymentQrDataUrl(qr) : null,
       wallet_home: "/workspace/app?view=wallet"};
   };
@@ -169,11 +172,12 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
     return invoiceAlipay.payment(id);
   };
   const invoiceCheckoutStatus = async (payment: import("../operations/model.js").InvoiceFeePayment) => {
-    const qr = payment.qrPayload && isAlipayPrecreateQr(payment.qrPayload) ? payment.qrPayload : null;
-    return {status: payment.status, expired: payment.status === "expired" || payment.expiresAt <= new Date(),
+    const expired=payment.status==="expired"||payment.expiresAt<=new Date(),canStart=payment.status==="pending"&&!expired
+      &&(!payment.paymentConfigId||runtime.paymentSettings.available().includes("alipay_page"));
+    const qr=canStart&&payment.qrPayload&&isAlipayPrecreateQr(payment.qrPayload)?payment.qrPayload:null;
+    return {status: payment.status, expired,
       amount: minorToMoney(payment.amountMinor), expires_at: payment.expiresAt.toISOString(),
-      can_start: payment.status === "pending" && payment.expiresAt > new Date()
-        && (!payment.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page")),
+      can_start: canStart,
       qr_code: qr, qr_image_data_url: qr ? await paymentQrDataUrl(qr) : null,
       invoice_home: "/workspace/app?view=invoices",
       channel_enabled: !payment.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page")};

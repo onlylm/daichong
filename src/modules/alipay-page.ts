@@ -6,14 +6,14 @@ async function request(action,method="GET"){const r=await fetch(base+"/"+action+
 function formatCountdown(ms){if(ms<=0)return "00:00";const total=Math.floor(ms/1000),m=String(Math.floor(total/60)).padStart(2,"0"),s=String(total%60).padStart(2,"0");return m+":"+s;}
 function startCountdown(iso){if(!iso){$("countdown").textContent="—";return;}expiresAt=new Date(iso).getTime();clearInterval(countdownTimer);const tick=()=>{$("countdown").textContent=formatCountdown(expiresAt-Date.now());};tick();countdownTimer=setInterval(tick,1000);}
 function showSuccess(d){const overlay=$("success-overlay");overlay.hidden=false;let left=3;const label=$("success-countdown");label.textContent=String(left);const jump=()=>{if(d.recharge_url)location.replace(d.recharge_url);else if(d.wallet_home)location.replace(d.wallet_home);};const t=setInterval(()=>{left--;label.textContent=String(left);if(left<=0){clearInterval(t);jump();}},1000);}
-function draw(d){const paid=["paid","partially_refunded","credited"].includes(d.status),expired=!!d.expired;
+function draw(d){const paid=["paid","partially_refunded","credited"].includes(d.status),expired=!!d.expired,payable=!paid&&!expired&&d.can_start;
   $("cny").textContent="¥ "+d.amount;$("order-id").textContent=orderId;startCountdown(d.expires_at);
   $("start").hidden=!!d.qr_code||paid||expired||!d.can_start;$("start").disabled=busy;
   const qr=$("qr"),skeleton=$("qr-skeleton"),openLink=$("open");
-  if(d.qr_code){
+  if(d.qr_code&&payable){
     skeleton.hidden=true;qr.hidden=false;qr.classList.remove("loaded");const image=new Image();image.alt="支付宝付款二维码";image.width=280;image.height=280;image.onload=()=>{qr.classList.add("loaded");};qr.replaceChildren(image);image.src=d.qr_image_data_url;openLink.href=d.qr_code;openLink.hidden=false;
     if(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent))$("mobile-pay").hidden=false;
-  }else{qr.hidden=true;qr.classList.remove("loaded");qr.replaceChildren();skeleton.hidden=false;openLink.hidden=true;}
+  }else{qr.hidden=true;qr.classList.remove("loaded");qr.replaceChildren();skeleton.hidden=paid||expired||!d.can_start;openLink.hidden=true;openLink.removeAttribute("href");$("mobile-pay").hidden=true;}
   if(paid&&d.recharge_url){$("poll-text").textContent="付款已确认，正在进入下一步…";clearInterval(timer);showSuccess(d);return;}
   if(paid&&d.wallet_home){$("poll-text").textContent="付款已确认，采购余额已入账。";$("next").href=d.wallet_home;$("next").textContent="返回资金钱包";$("next").hidden=false;clearInterval(timer);showSuccess(d);return;}
   if(paid&&d.invoice_home){$("poll-text").textContent="补差价已支付，开票申请已提交，请等待平台处理。";$("next").href=d.invoice_home;$("next").textContent="查看开票申请";$("next").hidden=false;clearInterval(timer);showSuccess({...d,wallet_home:d.invoice_home});return;}
