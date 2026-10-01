@@ -17,14 +17,14 @@ describe("default-open API and dual-mode spending", () => {
   afterEach(async () => {await app.close(); r.close();});
 
   async function request(method: "GET" | "POST", path: string, payload?: unknown, key = "funding-test-001",
-    secret = config.demoClientSecret, keyId = config.demoKeyId) {
+    secret = config.demoClientSecret, keyId = config.demoKeyId, remoteAddress?: string) {
     const rawBody = Buffer.from(payload === undefined ? "" : JSON.stringify(payload));
     const timestamp = String(Math.floor(Date.now() / 1000)), nonce = randomUUID();
     return app.inject({method, url: path, headers: {"x-partner-id": config.demoPartnerId, "x-key-id": keyId,
       "x-timestamp": timestamp, "x-nonce": nonce, "idempotency-key": key,
       "x-signature": signRequest({method, path, rawQuery: "", timestamp, nonce, keyId, idempotencyKey: key, rawBody}, secret),
       ...(payload === undefined ? {} : {"content-type": "application/json"})},
-      ...(payload === undefined ? {} : {payload: rawBody})});
+      ...(payload === undefined ? {} : {payload: rawBody}), ...(remoteAddress ? {remoteAddress} : {})});
   }
   const orderBody = (number: string, mode: string) => ({merchant_order_no: number,
     product_code: "chatgpt_plus_cdk_1m", quantity: 1, sale_amount: mode === "agent_collect" ? "110.00" : "135.00", collection_mode: mode});
@@ -85,6 +85,43 @@ describe("default-open API and dual-mode spending", () => {
     const appId = r.apiAccess.summary(owner, owner.merchantId!).apps.find(item => item.appId === issued.app_id)!.id;
     r.apiAccess.disableApp(owner, owner.merchantId!, appId);
     expect((await request("GET", "/v1/products", undefined, "read-test", issued.client_secret, issued.key_id)).statusCode).toBe(401);
+  });
+
+  it("keeps legacy API access open until an app allowlist is enabled, then enforces and audits it", async () => {
+    const before = r.apiAccess.summary(owner, owner.merchantId!);
+    const demo = before.apps.find(item => item.appId === "app_demo_a")!;
+    expect(demo).toMatchObject({ipAllowlistEnabled: false, allowedIps: [], configVersion: 1});
+    expect((await request("GET", "/v1/products", undefined, "open-source", config.demoClientSecret,
+      config.demoKeyId, "198.51.100.90")).statusCode).toBe(200);
+
+    const protectedApp = r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, demo.id, true,
+      ["198.51.100.10", "2001:db8::/48", "198.51.100.10"], demo.configVersion);
+    expect(protectedApp).toMatchObject({ipAllowlistEnabled: true,
+      allowedIps: ["198.51.100.10", "2001:db8::/48"], configVersion: 2});
+    const blocked = await request("GET", "/v1/products", undefined, "blocked-source", config.demoClientSecret,
+      config.demoKeyId, "198.51.100.90");
+    expect(blocked.statusCode).toBe(403); expect(blocked.json().error.code).toBe("ip_not_allowed");
+    expect((await request("GET", "/v1/products", undefined, "allowed-source", config.demoClientSecret,
+      config.demoKeyId, "198.51.100.10")).statusCode).toBe(200);
+    expect(r.repository.listAudit(owner.merchantId!).some(item => item.action === "api.app.ip_allowlist.enable"
+      && item.targetId === demo.id)).toBe(true);
+
+    r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, demo.id, false, ["198.51.100.10"], 2);
+    expect((await request("GET", "/v1/products", undefined, "reopened-source", config.demoClientSecret,
+      config.demoKeyId, "198.51.100.90")).statusCode).toBe(200);
+  });
+
+  it("rejects empty, invalid, stale and cross-tenant allowlist changes", () => {
+    const app = r.apiAccess.summary(owner, owner.merchantId!).apps.find(item => item.appId === "app_demo_a")!;
+    expect(() => r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, app.id, true, [], app.configVersion))
+      .toThrow("至少配置一条");
+    expect(() => r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, app.id, true, ["not-an-ip"], app.configVersion))
+      .toThrow("IPv4、IPv6 或 CIDR");
+    r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, app.id, false, ["203.0.113.8"], app.configVersion);
+    expect(() => r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, app.id, true, ["203.0.113.8"], app.configVersion))
+      .toThrow("已变化");
+    const foreign = {...owner, merchantId: r.repository.findMerchantByPartner("pt_demo_b")!.id};
+    expect(() => r.apiAccess.configureIpAllowlist(foreign, owner.merchantId!, app.id, false, [], 2)).toThrow();
   });
 
   it("preserves an explicit administrative suspension until a manual grant", async () => {

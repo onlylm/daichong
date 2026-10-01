@@ -13,10 +13,10 @@ export class MerchantService {
     return merchant;
   }
 
-  createApp(merchantId: string, input: {appId: string; name: string; allowedIps?: string[]}): PartnerApp {
+  createApp(merchantId: string, input: {appId: string; name: string; allowedIps?: string[]; ipAllowlistEnabled?: boolean}): PartnerApp {
     const app: PartnerApp = {
       id: randomUUID(), merchantId, appId: input.appId, name: input.name,
-      status: "active", allowedIps: input.allowedIps ?? [],
+      status: "active", allowedIps: input.allowedIps ?? [], ipAllowlistEnabled: input.ipAllowlistEnabled ?? false, configVersion: 1,
     };
     this.repository.saveApp(app);
     return app;
@@ -45,4 +45,3 @@ export class MerchantService {
     return revoked;
   }
 }
-

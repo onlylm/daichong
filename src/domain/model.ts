@@ -31,6 +31,9 @@ export interface PartnerApp {
   name: string;
   status: AppStatus;
   allowedIps: string[];
+  /** Missing on legacy rows. Legacy non-empty lists remain enforced. */
+  ipAllowlistEnabled?: boolean;
+  configVersion?: number;
 }
 
 export interface MerchantRole {

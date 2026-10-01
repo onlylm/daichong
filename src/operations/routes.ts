@@ -776,6 +776,13 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const actor = account(request), input = z.object({merchantId: identifier.optional(), appId: identifier}).strict().parse(request.body);
     runtime.apiAccess.disableApp(actor, scope(actor, input.merchantId), input.appId); return {ok: true};
   });
+  app.put("/workspace/api/api-access/ip-allowlist", async request => {
+    const actor = account(request), input = z.object({merchantId: identifier.optional(), appId: identifier,
+      enabled: z.boolean(), rules: z.array(z.string().trim().min(1).max(80)).max(50),
+      expectedVersion: z.number().int().positive()}).strict().parse(request.body);
+    return {data: runtime.apiAccess.configureIpAllowlist(actor, scope(actor, input.merchantId), input.appId,
+      input.enabled, input.rules, input.expectedVersion)};
+  });
   app.post("/workspace/api/api-access/webhooks", async (request, reply) => {
     const actor = account(request), input = z.object({merchantId: identifier.optional(), url: z.string().url().max(500), requestKey}).strict().parse(request.body);
     reply.header("cache-control", "no-store");

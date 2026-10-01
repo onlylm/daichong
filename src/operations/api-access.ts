@@ -8,6 +8,7 @@ import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import {SupportService, safeText} from "./support.js";
 import type {Actor, Ticket} from "./model.js";
 import {queryRecords} from "../infra/record-query.js";
+import {normalizeIpRules} from "../auth/ip.js";
 const apiDepositMinor = 11_000n;
 export const defaultApiAccessPolicyRevision = "default-api-access-20261001-v1";
 
@@ -46,7 +47,10 @@ export class ApiAccessService {
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
       })),
-      apps: this.repository.listApps(merchantId).filter(a => a.appId !== "quefa_web_portal").map(a => ({id: a.id, appId: a.appId, name: a.name, status: a.status})),
+      apps: this.repository.listApps(merchantId).filter(a => a.appId !== "quefa_web_portal").map(a => ({
+        id: a.id, appId: a.appId, name: a.name, status: a.status, allowedIps: a.allowedIps,
+        ipAllowlistEnabled: a.ipAllowlistEnabled ?? a.allowedIps.length > 0, configVersion: a.configVersion ?? 1,
+      })),
       webhooks: this.repository.listWebhookEndpoints(merchantId).map(e => ({id: e.id, url: e.url, status: e.status}))};
   }
   adminOverview(actor: Actor) {
@@ -134,6 +138,29 @@ export class ApiAccessService {
       const app = this.repository.listApps(merchantId).find(a => a.id === appId && a.appId !== "quefa_web_portal");
       if (!app) throw new AppError(404, "api_app_not_found", "API 应用不存在");
       this.repository.saveApp({...app, status: "disabled"}); this.log(actor, merchantId, "api.app.disable", appId);
+    });
+  }
+  configureIpAllowlist(actor: Actor, merchantId: string, appId: string, enabled: boolean,
+    rules: readonly string[], expectedVersion: number) {
+    requirePermission(actor, "api.keys"); requireTenantScope(actor, merchantId);
+    let allowedIps: string[];
+    try {
+      allowedIps = normalizeIpRules(rules);
+    } catch {
+      throw new AppError(422, "ip_allowlist_invalid", "白名单只允许单个 IPv4、IPv6 或 CIDR，每行一条");
+    }
+    if (allowedIps.length > 50) throw new AppError(422, "ip_allowlist_too_large", "每个应用最多配置 50 条 IP 或网段");
+    if (enabled && allowedIps.length === 0) throw new AppError(422, "ip_allowlist_required", "启用白名单前至少配置一条 IP 或网段");
+    return this.repository.transaction(() => {
+      const app = this.repository.listApps(merchantId).find(a => a.id === appId && a.appId !== "quefa_web_portal");
+      if (!app) throw new AppError(404, "api_app_not_found", "API 应用不存在");
+      const currentVersion = app.configVersion ?? 1;
+      if (currentVersion !== expectedVersion) throw new AppError(409, "api_app_changed", "应用安全配置已变化，请刷新后重试");
+      const updated = {...app, allowedIps, ipAllowlistEnabled: enabled, configVersion: currentVersion + 1};
+      this.repository.saveApp(updated);
+      this.log(actor, merchantId, enabled ? "api.app.ip_allowlist.enable" : "api.app.ip_allowlist.disable", appId);
+      return {id: updated.id, allowedIps: updated.allowedIps, ipAllowlistEnabled: updated.ipAllowlistEnabled,
+        configVersion: updated.configVersion};
     });
   }
   registerWebhook(actor: Actor, merchantId: string, url: string, requestKey: string) {
