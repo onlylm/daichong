@@ -33,6 +33,14 @@ const money = z.string()
     return `${whole}.${fraction.padEnd(2, "0")}`;
   });
 const requestKey = z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/);
+const invoiceDetailsInput = z.object({
+  invoiceTitle: z.string().trim().min(2).max(120),
+  taxId: z.string().trim().toUpperCase().regex(/^[0-9A-Z]{15,20}$/),
+  recipientEmail: z.string().trim().email().max(254),
+  contactName: z.string().trim().min(2).max(80),
+  contactPhone: z.string().trim().regex(/^[0-9+() -]{6,30}$/).nullable().optional(),
+  remark: z.string().trim().max(500).nullable().optional(),
+});
 const receipt = z.string().trim().regex(/^[a-zA-Z0-9:_.-]{6,120}$/).transform(s => s.toLowerCase());
 const ticketInput = z.object({merchantId: identifier.optional(), orderId: identifier.nullable().default(null), title: z.string().trim().min(1).max(120),
   category: z.enum(["payment", "cdk", "recharge", "refund", "wallet", "other"]), body: text}).strict();
@@ -132,14 +140,17 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const agentTickets = runtime.support.list(actor)
       .filter(item => ["open", "in_progress", "waiting_agent"].includes(item.status))
       .filter(item => !item.id.startsWith("case_"));
+    const invoiceApplications = permissions.has("*") || permissions.has("invoices.manage")
+      ? runtime.invoices.list(actor).filter(item => ["submitted", "processing"].includes(item.status)) : [];
     return wire({data: {
       counts: {tasks: taskPage.meta.total, refunds: customerRefunds.length + priceAdjustments.length,
-        settlements: settlements.length, tickets: agentTickets.length},
+        settlements: settlements.length, tickets: agentTickets.length, invoices: invoiceApplications.length},
       tasks: taskPage.data,
       refunds: workspaceRefunds(runtime,[...customerRefunds, ...priceAdjustments]
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 8)),
       settlements: settlements.slice(0, 8),
       tickets: agentTickets.slice(0, 8),
+      invoices: invoiceApplications.slice(0, 8),
     }});
   });
   app.get("/workspace/api/finance/costs", async request => wire({data:runtime.costs.list(account(request))}));
@@ -254,7 +265,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       merchantId: z.string().optional(),
       productCode: z.string().min(1).max(64).optional(),
       search: z.string().min(1).max(120).optional(),
-      status: z.enum(["all", "pending", "paid", "running", "succeeded", "failed"]).default("all"),
+      status: z.enum(["all", "pending", "paid", "running", "succeeded", "failed", "refunded"]).default("all"),
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(50).default(15),
     }).parse(request.query);
@@ -289,6 +300,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     if (!order) throw new AppError(404, "order_not_found", "订单不存在");
     requireTenantScope(actor, order.merchantId);
     const merchant = runtime.repository.findMerchantById(order.merchantId);
+    const permissions = new Set(permissionList(actor));
     return wire({
       data: {...workspaceOrderDetail(
         runtime.repository,
@@ -296,8 +308,42 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         order.id,
         runtime.agents.profile(order.merchantId).orderVisibility ?? [],
         merchant?.name ?? null,
-      ), costAccounting: runtime.costs.view(actor, order.id)},
+      ), costAccounting: runtime.costs.view(actor, order.id),
+        invoiceApplication: permissions.has("*") || permissions.has("invoices.read") ? runtime.invoices.forOrder(actor, order.id) : null,
+        canApplyInvoice: !isPlatform(actor) && (permissions.has("*") || permissions.has("invoices.write"))
+          && ["paid", "partially_refunded"].includes(order.paymentStatus)},
     });
+  });
+  app.get<{Querystring: {merchantId?: string; status?: string}}>("/workspace/api/invoices", async request => {
+    const actor = account(request); requirePermission(actor, "invoices.read");
+    const query = z.object({merchantId: z.string().optional(), status: z.enum(["all", "awaiting_payment", "submitted", "processing", "needs_correction", "issued"]).default("all")}).parse(request.query);
+    const data = runtime.invoices.list(actor, query.merchantId).filter(item => query.status === "all" || item.status === query.status);
+    return wire({data});
+  });
+  app.get<{Params: {id: string}}>("/workspace/api/invoices/:id", async request => wire({data: runtime.invoices.get(account(request), request.params.id)}));
+  app.post<{Params: {id: string}}>("/workspace/api/orders/:id/invoices", async request => {
+    const actor = account(request);
+    const input = invoiceDetailsInput.extend({invoiceAmount: money, requestKey}).strict().parse(request.body);
+    const application = runtime.invoices.create(actor, request.params.id, input);
+    if (application.status !== "awaiting_payment") return wire({data: runtime.invoices.get(actor, application.id), payUrl: null});
+    if (!runtime.invoiceAlipay) throw new AppError(503, "invoice_payment_unavailable", "支付宝补差价收款尚未启用");
+    const payment = runtime.invoiceAlipay.ensurePayment(actor, application.id);
+    return wire({data: runtime.invoices.get(actor, application.id), payUrl: payment.payUrl});
+  });
+  app.post<{Params: {id: string}}>("/workspace/api/invoices/:id/payments", async request => {
+    const actor = account(request); requirePermission(actor, "invoices.write");
+    if (!runtime.invoiceAlipay) throw new AppError(503, "invoice_payment_unavailable", "支付宝补差价收款尚未启用");
+    const payment = runtime.invoiceAlipay.ensurePayment(actor, request.params.id);
+    return wire({data: runtime.invoices.get(actor, request.params.id), payUrl: payment.payUrl});
+  });
+  app.patch<{Params: {id: string}}>("/workspace/api/invoices/:id", async request => {
+    const input = invoiceDetailsInput.extend({version: z.number().int().nonnegative()}).strict().parse(request.body);
+    return wire({data: runtime.invoices.revise(account(request), request.params.id, input)});
+  });
+  app.post<{Params: {id: string}}>("/workspace/api/invoices/:id/review", async request => {
+    const input = z.object({action: z.enum(["processing", "needs_correction", "issued"]), version: z.number().int().nonnegative(),
+      note: z.string().trim().max(500).optional(), invoiceNo: z.string().trim().max(120).optional()}).strict().parse(request.body);
+    return wire({data: runtime.invoices.review(account(request), request.params.id, input)});
   });
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/customer-refunds", async request => {
     const actor = account(request);

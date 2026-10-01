@@ -32,6 +32,8 @@ import {DujiaoPaymentService} from "./modules/dujiaopay-payment.js";
 import {WalletAlipayService} from "./modules/wallet-alipay.js";
 import {CostAccountingService} from "./operations/cost-accounting.js";
 import {DailySettlementService} from "./operations/daily-settlements.js";
+import {InvoiceService} from "./operations/invoices.js";
+import {InvoiceAlipayService} from "./modules/invoice-alipay.js";
 
 export function createRuntime(config: AppConfig) {
   LiveTestPolicy.validate(config);
@@ -92,6 +94,7 @@ export function createRuntime(config: AppConfig) {
   const walletAlipay = config.paymentProvider === "managed"
     ? new WalletAlipayService(repository, paymentSettings, wallets, config.publicBaseUrl, portalTokens) : null;
   const accounts = new AccountService(repository, audit, config.portalTokenSecret, cipher);
+  const invoices = new InvoiceService(repository, cipher, audit);
   const support = new SupportService(repository, audit);
   const announcements = new AnnouncementService(repository, audit);
   const agents = new AgentService(repository, audit, config.registrationEnabled);
@@ -107,6 +110,10 @@ export function createRuntime(config: AppConfig) {
   const alipay = config.paymentProvider === "managed"
     ? new ManagedAlipayService(repository, paymentSettings, payment, config.publicBaseUrl, alipayProvider, legacyAlipay)
     : legacyAlipay;
+  const invoiceAlipay = ["managed", "alipay_page"].includes(config.paymentProvider ?? "mock")
+    ? new InvoiceAlipayService(repository, paymentSettings, invoices, config.publicBaseUrl, portalTokens,
+      config.paymentProvider === "alipay_page" ? {client: createAlipayClient(config.alipay!), identity: config.alipay!} : null)
+    : null;
   const dujiaopay = config.paymentProvider === "managed" ? new DujiaoPaymentService(repository, paymentSettings, payment) : null;
   const orders = new OrderService(repository, catalog, paymentProvider, config.publicBaseUrl, portalTokens, livePolicy, wallets);
   const fulfillments = new FulfillmentService(repository, cipher, webhooks, upstream, livePolicy, orderId => wallets.reconcileOrderEarnings(orderId));
@@ -132,6 +139,7 @@ export function createRuntime(config: AppConfig) {
   return {
     repository, notifications, merchantService, accessControl, catalog, payment, alipay, livePolicy, orders, fulfillments, cdk, portalTokens, upstream, supplierManagement, refunds, settlements, webhooks, ledger, audit, authenticator,
     wallets, walletAlipay, accounts, support, announcements, agents, apiAccess, paymentSettings, dujiaopay, costs, dailySettlements,
+    invoices, invoiceAlipay,
     close: () => repository.close?.(),
   };
   });

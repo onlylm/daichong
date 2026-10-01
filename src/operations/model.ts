@@ -105,6 +105,24 @@ export interface WalletWithdrawal extends BaseRecord {
   createdAt: Date; updatedAt: Date;
 }
 export interface WalletCredit extends BaseRecord {merchantId: string; orderId: string; recognizedMinor: bigint; createdAt: Date}
+export interface InvoiceApplication extends BaseRecord {
+  merchantId: string; orderId: string; requestKey: string;
+  titleType: "enterprise"; invoiceTitle: string;
+  taxIdEncrypted: import("../domain/model.js").EncryptedPayload;
+  recipientEmail: string; contactName: string; contactPhone: string | null; remark: string | null;
+  /** The face value requested by the agent for its customer. It is not the Quefa order settlement amount. */
+  invoiceAmountMinor: bigint; feeRateBps: 500; feeAmountMinor: bigint; category: "技术服务费";
+  status: "awaiting_payment" | "submitted" | "processing" | "needs_correction" | "issued";
+  paymentId: string | null; providerRef: string | null; paidAt: Date | null; submittedAt: Date | null;
+  reviewNote: string | null; invoiceNo: string | null; issuedAt: Date | null;
+  version: number; createdBy: string; createdAt: Date; updatedAt: Date;
+}
+export interface InvoiceFeePayment extends BaseRecord {
+  merchantId: string; applicationId: string; amountMinor: bigint;
+  status: "pending" | "paid" | "expired"; paymentConfigId: string | null;
+  qrPayload: string | null; providerRef: string | null; expiresAt: Date; nextCheckAt: Date | null;
+  paidAt: Date | null; createdAt: Date; updatedAt: Date;
+}
 export interface ApiAccess extends BaseRecord {merchantId: string; enabled: boolean; depositId: string; ticketId: string; version: number; updatedAt: Date}
 export type PaymentChannel = "alipay_page" | "dujiaopay";
 export interface PaymentSettings extends BaseRecord {
@@ -130,6 +148,7 @@ export interface OperationsRecords {
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
+  invoice_application: InvoiceApplication; invoice_fee_payment: InvoiceFeePayment;
   daily_settlement: DailySettlementStatement;
   api_access: ApiAccess;
   payment_settings: PaymentSettings; payment_revision: PaymentRevision; payment_check: PaymentCheck;

@@ -18,7 +18,8 @@ function orderDeliveryMode(order: Order): "auto_recharge" | "cdk" {
 export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, workspaceBaseUrl: string): void {
   const alipay = runtime.alipay;
   const walletAlipay = runtime.walletAlipay;
-  if (!alipay && !walletAlipay) return;
+  const invoiceAlipay = runtime.invoiceAlipay;
+  if (!alipay && !walletAlipay && !invoiceAlipay) return;
   // Both Alipay notifications and legacy browser payment forms use this media
   // type. Register it on the parent instance so every Alipay route inherits it.
   app.addContentTypeParser("application/x-www-form-urlencoded", {parseAs: "string"}, (_request, body, done) => {
@@ -34,7 +35,10 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
       if (!request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) return reply.code(400).type("text/plain").send("failure");
       try {
         const fields = request.body as Record<string, string>;
-        if (fields.out_trade_no?.startsWith("wdep_")) {
+        if (fields.out_trade_no?.startsWith("invpay_")) {
+          if (!invoiceAlipay) throw new Error("invoice_alipay_disabled");
+          invoiceAlipay.handleNotification(fields);
+        } else if (fields.out_trade_no?.startsWith("wdep_")) {
           if (!walletAlipay) throw new Error("wallet_alipay_disabled");
           walletAlipay.handleNotification(fields);
         } else {
@@ -153,6 +157,43 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
   if (walletAlipay) app.post<WalletParams>("/wallet-payments/:depositId/refresh", async (request, reply) => {
     depositFor(request.params.depositId, request.query.token);
     await walletAlipay.reconcile(request.params.depositId);
+    return reply.code(204).send();
+  });
+
+  type InvoiceParams = {Params: {paymentId: string}; Querystring: {token?: string}};
+  const invoicePaymentFor = (id: string, token?: string) => {
+    if (!invoiceAlipay || !runtime.portalTokens.verifyPayment(id, token ?? "")) throw new AppError(404, "payment_not_found", "支付入口不存在");
+    return invoiceAlipay.payment(id);
+  };
+  const invoiceCheckoutStatus = (payment: import("../operations/model.js").InvoiceFeePayment) => ({
+    status: payment.status, expired: payment.status === "expired" || payment.expiresAt <= new Date(),
+    amount: minorToMoney(payment.amountMinor), expires_at: payment.expiresAt.toISOString(),
+    can_start: payment.status === "pending" && payment.expiresAt > new Date()
+      && (!payment.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page")),
+    qr_code: payment.qrPayload && isAlipayPrecreateQr(payment.qrPayload) ? payment.qrPayload : null,
+    invoice_home: "/workspace/app?view=invoices",
+    channel_enabled: !payment.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page"),
+  });
+  if (invoiceAlipay) app.get<InvoiceParams>("/invoice-payments/:paymentId", async (request, reply) => {
+    invoicePaymentFor(request.params.paymentId, request.query.token);
+    const nonce = randomBytes(18).toString("base64");
+    checkoutHeaders(reply, nonce);
+    return reply.type("text/html; charset=utf-8").send(alipayCheckoutPage(nonce, "订单补差价 · 支付宝"));
+  });
+  if (invoiceAlipay) app.post<InvoiceParams>("/invoice-payments/:paymentId/start", async (request, reply) => {
+    const payment = invoicePaymentFor(request.params.paymentId, request.query.token);
+    reply.header("cache-control", "no-store");
+    await invoiceAlipay.precreate(payment.id);
+    return invoiceCheckoutStatus(invoiceAlipay.payment(payment.id));
+  });
+  if (invoiceAlipay) app.get<InvoiceParams>("/invoice-payments/:paymentId/status", async (request, reply) => {
+    const payment = invoicePaymentFor(request.params.paymentId, request.query.token);
+    reply.header("cache-control", "no-store");
+    return invoiceCheckoutStatus(payment);
+  });
+  if (invoiceAlipay) app.post<InvoiceParams>("/invoice-payments/:paymentId/refresh", async (request, reply) => {
+    invoicePaymentFor(request.params.paymentId, request.query.token);
+    await invoiceAlipay.reconcile(request.params.paymentId);
     return reply.code(204).send();
   });
 }

@@ -1,0 +1,100 @@
+import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {createRuntime, type Runtime} from "../src/bootstrap.js";
+import {loadConfig} from "../src/config.js";
+import type {Actor, InvoiceFeePayment} from "../src/operations/model.js";
+import {InvoiceAlipayService} from "../src/modules/invoice-alipay.js";
+
+const admin: Actor = {id: "admin", role: "platform_admin", merchantId: null};
+
+describe("order invoice applications", () => {
+  let runtime: Runtime;
+  let owner: Actor;
+  let orderId: string;
+
+  beforeEach(async () => {
+    runtime = createRuntime(loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "memory", LOG_LEVEL: "silent"}));
+    const credential = runtime.repository.findCredential("pt_demo_a", "key_demo_a_01")!;
+    owner = {id: "owner", role: "agent_owner", merchantId: credential.merchant.id};
+    const order = await runtime.orders.create({merchantId: credential.merchant.id, partnerId: credential.merchant.partnerId,
+      appId: credential.app.appId, keyId: credential.key.keyId}, {merchantOrderNo: "invoice-order", productCode: "chatgpt_plus_cdk_1m",
+      quantity: 1, saleAmount: "135.00", collectionMode: "platform_collect"});
+    runtime.repository.updateOrder({...order, paymentStatus: "paid", paidAt: new Date(), paymentReceivedMinor: order.saleAmountMinor,
+      paymentProviderRef: "ali-order-paid", updatedAt: new Date()});
+    orderId = order.id;
+  });
+
+  afterEach(() => runtime.close());
+
+  it("requires company name and tax id, then calculates a separate five-percent difference", () => {
+    expect(() => runtime.invoices.create(owner, orderId, {
+      invoiceTitle: "测试科技有限公司", taxId: "", recipientEmail: "finance@example.com", contactName: "财务人员",
+      invoiceAmount: "1000.00", requestKey: "invoice-invalid-tax",
+    })).toThrow("税号");
+
+    const application = runtime.invoices.create(owner, orderId, {
+      invoiceTitle: "测试科技有限公司", taxId: "91310000MA12345678", recipientEmail: "finance@example.com",
+      contactName: "财务人员", contactPhone: "13800138000", invoiceAmount: "1000.00", requestKey: "invoice-request-001",
+    });
+    expect(application).toMatchObject({status: "awaiting_payment", category: "技术服务费", invoiceAmountMinor: 100_000n, feeAmountMinor: 5_000n});
+    expect(runtime.invoices.get(owner, application.id)).toMatchObject({invoiceAmount: "1000.00", feeAmount: "50.00", taxId: "91310000MA12345678"});
+  });
+
+  it("submits only after verified payment and supports manual processing without a second review", () => {
+    const application = runtime.invoices.create(owner, orderId, {
+      invoiceTitle: "测试科技有限公司", taxId: "91310000MA12345678", recipientEmail: "finance@example.com",
+      contactName: "财务人员", invoiceAmount: "1000.00", requestKey: "invoice-request-002",
+    });
+    const now = new Date(), payment: InvoiceFeePayment = {id: "invpay_test", merchantId: owner.merchantId!,
+      applicationId: application.id, amountMinor: application.feeAmountMinor, status: "pending", paymentConfigId: null,
+      qrPayload: null, providerRef: null, expiresAt: new Date(Date.now() + 60_000), nextCheckAt: null, paidAt: null,
+      createdAt: now, updatedAt: now};
+    runtime.repository.saveOperations("invoice_fee_payment", payment, true);
+    runtime.invoices.attachPayment(application.id, payment.id);
+    expect(runtime.invoices.markPaid(payment.id, "2026100100000001", 5_000n).status).toBe("submitted");
+
+    const submitted = runtime.invoices.get(admin, application.id);
+    const processing = runtime.invoices.review(admin, application.id, {action: "processing", version: submitted.version, note: "资料已核对"});
+    const issued = runtime.invoices.review(admin, application.id, {action: "issued", version: processing.version, invoiceNo: "INV-2026-0001", note: "电子发票已发送"});
+    expect(issued).toMatchObject({status: "issued", invoiceNo: "INV-2026-0001"});
+  });
+
+  it("allows paid applications to be returned for correction without charging again", () => {
+    const application = runtime.invoices.create(owner, orderId, {
+      invoiceTitle: "旧公司名称", taxId: "91310000MA12345678", recipientEmail: "old@example.com",
+      contactName: "财务人员", invoiceAmount: "1000.00", requestKey: "invoice-request-003",
+    });
+    const now = new Date(), payment: InvoiceFeePayment = {id: "invpay_correction", merchantId: owner.merchantId!,
+      applicationId: application.id, amountMinor: application.feeAmountMinor, status: "pending", paymentConfigId: null,
+      qrPayload: null, providerRef: null, expiresAt: new Date(Date.now() + 60_000), nextCheckAt: null, paidAt: null,
+      createdAt: now, updatedAt: now};
+    runtime.repository.saveOperations("invoice_fee_payment", payment, true);
+    runtime.invoices.attachPayment(application.id, payment.id);
+    const submitted = runtime.invoices.markPaid(payment.id, "2026100100000002", 5_000n);
+    const correction = runtime.invoices.review(admin, application.id, {action: "needs_correction", version: submitted.version, note: "公司名称不完整"});
+    const resubmitted = runtime.invoices.revise(owner, application.id, {version: correction.version,
+      invoiceTitle: "新公司完整名称有限公司", taxId: "91310000MA12345678", recipientEmail: "new@example.com", contactName: "财务人员"});
+    expect(resubmitted).toMatchObject({status: "submitted", invoiceTitle: "新公司完整名称有限公司", feeAmount: "50.00"});
+    expect(runtime.repository.listOperations("invoice_fee_payment", owner.merchantId!).length).toBe(1);
+  });
+
+  it("uses an independent Alipay trade labelled as an order difference", async () => {
+    const application = runtime.invoices.create(owner, orderId, {
+      invoiceTitle: "测试科技有限公司", taxId: "91310000MA12345678", recipientEmail: "finance@example.com",
+      contactName: "财务人员", invoiceAmount: "1000.00", requestKey: "invoice-request-004",
+    });
+    let precreate: Record<string, unknown> | null = null;
+    const client = {
+      pageExecute: () => "",
+      exec: async (_method: string, input: Record<string, unknown>) => {precreate = input; return {code: "10000", msg: "Success", qr_code: "https://qr.alipay.com/test-invoice"};},
+      checkNotifySignV2: () => true,
+    };
+    const gateway = new InvoiceAlipayService(runtime.repository, runtime.paymentSettings, runtime.invoices,
+      "https://pay.example.com", runtime.portalTokens, {client, identity: {appId: "2026000000000000", sellerId: "2088000000000000"}});
+    const {payment} = gateway.ensurePayment(owner, application.id);
+    await gateway.precreate(payment.id);
+    expect(precreate).toMatchObject({bizContent: {out_trade_no: payment.id, total_amount: "50.00", subject: "订单补差价"}});
+    gateway.handleNotification({out_trade_no: payment.id, total_amount: "50.00", trade_no: "2026100100000003",
+      trade_status: "TRADE_SUCCESS", sign_type: "RSA2", app_id: "2026000000000000", seller_id: "2088000000000000"});
+    expect(runtime.invoices.get(owner, application.id).status).toBe("submitted");
+  });
+});
