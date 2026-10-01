@@ -2,6 +2,7 @@
 Description=Quefa SQLite application and future PostgreSQL backups
 After=docker.service
 Requires=docker.service
+OnFailure=quefa-health-alert@%n.service
 
 [Service]
 Type=oneshot

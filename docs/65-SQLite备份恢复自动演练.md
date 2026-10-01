@@ -48,6 +48,8 @@ sudo sh /opt/recharge-platform/current/deploy/production/verify-backup-restore.s
 
 每日备份现在同时保存 `<snapshot>.sha256`；每周 systemd 任务先核验该清单，再执行隔离恢复，报告为 `<snapshot>.restore-report.json`，权限为 `0600`。
 
+每日备份和每周恢复演练的 systemd 单元均通过 `OnFailure` 接入受保护的运维通知器。失败通知只含单元名、主机和 UTC 时间，不发送备份文件名、报告内容或业务数据；未配置 HTTPS 通知入口时仍写入 journald 错误事件。
+
 ## 真实恢复边界
 
 自动演练不会把恢复副本切换成生产数据库。真正灾难恢复必须经过人工确认：停止产生外部副作用的 Worker 和写入口，保留损坏文件及日志证据，在隔离目录恢复并核对财务总额与抽样时间线，使用 mock/断网环境验证后，再制定切流或向前补账方案。不得直接拿旧备份覆盖仍在变化的生产账本。

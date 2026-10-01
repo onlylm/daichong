@@ -13,11 +13,14 @@ describe("production health monitoring",()=>{
     expect(caddy).toMatch(/@private path[^\n]*\/health\*/);
   });
 
-  it("routes failed checks to a sanitized OnFailure notifier",()=>{
-    const unit=read("deploy/production/systemd/quefa-healthcheck.service"),alert=read("deploy/production/health-alert.sh");
-    expect(unit).toContain("OnFailure=quefa-health-alert@%n.service");
+  it("routes failed health, backup and restore checks to a sanitized OnFailure notifier",()=>{
+    const units=["quefa-healthcheck.service","quefa-backup.service","quefa-restore-test.service"]
+      .map(name=>read(`deploy/production/systemd/${name}`));
+    const alert=read("deploy/production/health-alert.sh");
+    for(const unit of units)expect(unit).toContain("OnFailure=quefa-health-alert@%n.service");
     expect(alert).toContain("HEALTH_ALERT_WEBHOOK_URL");
     expect(alert).toContain("must be root-owned mode 0600 or stricter");
+    expect(alert).toContain("quefa_unit_failed");
     expect(alert).not.toContain("/health/worker");
   });
 });

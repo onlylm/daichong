@@ -1,6 +1,7 @@
 [Unit]
 Description=Verify the latest Quefa SQLite backup by isolated restore
 After=quefa-backup.service
+OnFailure=quefa-health-alert@%n.service
 
 [Service]
 Type=oneshot
