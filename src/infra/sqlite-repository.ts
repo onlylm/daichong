@@ -54,6 +54,11 @@ export class SqliteRepository implements Repository {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS request_nonces (nonce_key TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS request_nonces_expiry_idx ON request_nonces(expires_at);
+      CREATE TABLE IF NOT EXISTS request_rate_limits (
+        bucket_key TEXT PRIMARY KEY,
+        window_start INTEGER NOT NULL,
+        request_count INTEGER NOT NULL CHECK(request_count > 0)
+      );
       CREATE TABLE IF NOT EXISTS sandbox_records (
         kind TEXT NOT NULL,
         id TEXT NOT NULL,
@@ -570,6 +575,20 @@ export class SqliteRepository implements Repository {
       this.db.prepare("DELETE FROM request_nonces WHERE expires_at <= ?").run(now);
       const result = this.db.prepare("INSERT OR IGNORE INTO request_nonces(nonce_key, expires_at) VALUES (?, ?)").run(key, expiresAt);
       return Number(result.changes) === 1;
+    });
+  }
+
+  consumeRateLimit(key: string, windowStart: number, limit: number): {allowed: boolean; count: number} {
+    return this.transaction(() => {
+      const row = this.db.prepare(`INSERT INTO request_rate_limits(bucket_key,window_start,request_count)
+        VALUES(?,?,1)
+        ON CONFLICT(bucket_key) DO UPDATE SET
+          request_count=CASE WHEN request_rate_limits.window_start=excluded.window_start
+            THEN request_rate_limits.request_count+1 ELSE 1 END,
+          window_start=excluded.window_start
+        RETURNING request_count`).get(key, windowStart) as {request_count: number};
+      const count = Number(row.request_count);
+      return {allowed: count <= limit, count};
     });
   }
 

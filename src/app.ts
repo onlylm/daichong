@@ -101,6 +101,13 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
+    if (request.apiRateLimit) {
+      const resetSeconds = Math.ceil(request.apiRateLimit.resetAt / 1000);
+      reply.header("x-ratelimit-limit", String(request.apiRateLimit.limit));
+      reply.header("x-ratelimit-remaining", String(request.apiRateLimit.remaining));
+      reply.header("x-ratelimit-reset", String(resetSeconds));
+      if (reply.statusCode === 429) reply.header("retry-after", String(Math.max(1, resetSeconds - Math.floor(Date.now() / 1000))));
+    }
     if (request.routeOptions.url?.startsWith("/workspace/api/")) {
       const elapsed = Math.max(0, reply.elapsedTime);
       reply.header("server-timing", `app;dur=${elapsed.toFixed(1)}`);

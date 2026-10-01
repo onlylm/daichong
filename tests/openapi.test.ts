@@ -21,6 +21,10 @@ describe("OpenAPI document", () => {
       .toMatchObject({additionalProperties: false, maxProperties: 0});
     expect(document.components.schemas.Order.properties.qr_payload.description).toContain("付款页 URL");
     expect(document.components.schemas.PaymentCode.properties.qr_image_data_url.pattern).toBe("^data:image/png;base64,");
+    expect(document.info.version).toBe("1.2.0");
+    expect(document["x-rate-limit"]).toMatchObject({scope: "API Key", buckets: ["read", "write"],
+      exceeded: {status: 429, code: "rate_limited", retry_header: "Retry-After"}});
+    expect(document.components.responses.RateLimited.headers).toHaveProperty("X-RateLimit-Reset");
   });
 
   it("does not expose per-agent Alipay configuration", () => {

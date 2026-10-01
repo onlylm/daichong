@@ -145,7 +145,10 @@ export function createRuntime(config: AppConfig) {
   const settlements = new SettlementService(repository);
   const dailySettlements = new DailySettlementService(repository, audit);
   const accessControl = new AccessControlService(repository);
-  const authenticator = new ApiAuthenticator(repository, new RepositoryNonceStore(repository));
+  const authenticator = new ApiAuthenticator(repository, new RepositoryNonceStore(repository), undefined, {
+    readPerMinute: config.apiRateLimitReadPerMinute ?? 600,
+    writePerMinute: config.apiRateLimitWritePerMinute ?? 120,
+  });
 
   return {
     repository, notifications, merchantService, accessControl, catalog, payment, alipay, livePolicy, orders, fulfillments, cdk, portalTokens, upstream, supplierManagement, refunds, settlements, webhooks, ledger, audit, authenticator,

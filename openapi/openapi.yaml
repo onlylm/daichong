@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: 充值分销开放平台 API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     面向代理商销售渠道服务端的开单、查付、履约、退款申请、账单与结算接口。
     支持平台收款分销，或授权代理自收款后以采购余额支付供货价；后者的 paid 仅代表供货款已扣。
@@ -35,6 +35,12 @@ security:
     Signature: []
 x-signature-algorithm: HMAC-SHA256
 x-signature-canonical-string: "METHOD\\nPATH\\nCANONICAL_QUERY\\nTIMESTAMP\\nNONCE\\nKEY_ID\\nIDEMPOTENCY_KEY\\nLOWERCASE_HEX_SHA256(RAW_BODY)"
+x-rate-limit:
+  scope: API Key
+  window: 60 seconds
+  buckets: [read, write]
+  response_headers: [X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset]
+  exceeded: {status: 429, code: rate_limited, retry_header: Retry-After}
 webhooks:
   fulfillmentProgress:
     post:
@@ -769,6 +775,16 @@ components:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
     NotFound:
       description: 资源不存在或不属于当前代理商租户
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    RateLimited:
+      description: 当前 API Key 的读取或写入额度已用尽；保留原业务幂等键，并按 Retry-After 退避
+      headers:
+        X-RateLimit-Limit: {schema: {type: integer, minimum: 1}}
+        X-RateLimit-Remaining: {schema: {type: integer, minimum: 0}}
+        X-RateLimit-Reset: {description: 当前窗口重置的 Unix 秒, schema: {type: integer}}
+        Retry-After: {description: 建议等待秒数, schema: {type: integer, minimum: 1}}
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}

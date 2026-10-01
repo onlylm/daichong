@@ -4,6 +4,6 @@ declare module "fastify" {
   interface FastifyRequest {
     rawBody?: Buffer;
     tenant?: TenantContext;
+    apiRateLimit?: {limit: number; remaining: number; resetAt: number};
   }
 }
-

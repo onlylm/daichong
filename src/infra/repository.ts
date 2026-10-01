@@ -83,6 +83,8 @@ export interface Repository {
   listOperations<K extends keyof import("../operations/model.js").OperationsRecords>(kind: K, merchantId?: string): import("../operations/model.js").OperationsRecords[K][];
   saveOperations<K extends keyof import("../operations/model.js").OperationsRecords>(kind: K, value: import("../operations/model.js").OperationsRecords[K], insertOnly?: boolean): void;
   consumeNonce(key: string, expiresAt: number, now: number): boolean;
+  /** Atomically consume one request from a fixed-window bucket. */
+  consumeRateLimit(key: string, windowStart: number, limit: number): {allowed: boolean; count: number};
   /** Synchronous unit of work. Never hold a database transaction across network calls. */
   transaction<T>(action: () => T): T;
   saveMerchant(value: Merchant): void;

@@ -49,6 +49,7 @@ export class ApiAuthenticator {
     private readonly repository: Repository,
     private readonly nonceStore: NonceStore,
     private readonly now: () => Date = () => new Date(),
+    private readonly limits: {readPerMinute: number; writePerMinute: number} = {readPerMinute: 600, writePerMinute: 120},
   ) {}
 
   async authenticate(request: FastifyRequest): Promise<TenantContext> {
@@ -105,6 +106,14 @@ export class ApiAuthenticator {
     if (!this.apiAccessGranted(credential.merchant.id)) {
       throw new AppError(403, "api_access_required", "API 接入已被停用，请联系平台管理员");
     }
+
+    const now = this.now().getTime(), read = ["GET", "HEAD", "OPTIONS"].includes(request.method);
+    const limit = read ? this.limits.readPerMinute : this.limits.writePerMinute;
+    const windowStart = Math.floor(now / 60_000) * 60_000;
+    const bucket = createHash("sha256").update(JSON.stringify([partnerId, keyId, read ? "read" : "write"])).digest("hex");
+    const usage = this.repository.consumeRateLimit(bucket, windowStart, limit);
+    request.apiRateLimit = {limit, remaining: Math.max(0, limit - usage.count), resetAt: windowStart + 60_000};
+    if (!usage.allowed) throw new AppError(429, "rate_limited", "请求过于频繁，请在限流窗口重置后重试", true);
 
     const consumed = await this.nonceStore.consume(`${partnerId}:${keyId}`, nonce, 600);
     if (!consumed) throw new AppError(409, "nonce_replayed", "Nonce 已使用");

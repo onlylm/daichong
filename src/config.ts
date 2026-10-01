@@ -46,6 +46,8 @@ const schema = z.object({
   DEMO_WEBHOOK_URL: optionalUrl,
   DEMO_WEBHOOK_SECRET: z.string().min(16).default("replace-demo-webhook-secret"),
   REGISTRATION_ENABLED: booleanText.default(true),
+  API_RATE_LIMIT_READ_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(600),
+  API_RATE_LIMIT_WRITE_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).default(120),
 });
 
 export type AppConfig = {
@@ -81,6 +83,8 @@ export type AppConfig = {
   demoWebhookUrl: string | null;
   demoWebhookSecret: string;
   registrationEnabled: boolean;
+  apiRateLimitReadPerMinute?: number;
+  apiRateLimitWritePerMinute?: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -143,5 +147,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     demoWebhookUrl: parsed.DEMO_WEBHOOK_URL ?? null,
     demoWebhookSecret: parsed.DEMO_WEBHOOK_SECRET,
     registrationEnabled: parsed.REGISTRATION_ENABLED,
+    apiRateLimitReadPerMinute: parsed.API_RATE_LIMIT_READ_PER_MINUTE,
+    apiRateLimitWritePerMinute: parsed.API_RATE_LIMIT_WRITE_PER_MINUTE,
   };
 }

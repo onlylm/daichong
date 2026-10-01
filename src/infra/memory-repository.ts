@@ -28,11 +28,19 @@ import {formatPublicOrderNo} from "../domain/public-order-no.js";
 
 export class MemoryRepository implements Repository {
   private readonly nonces = new Map<string, number>();
+  private readonly rateLimits = new Map<string, {windowStart: number; count: number}>();
   consumeNonce(key: string, expiresAt: number, now: number): boolean {
     for (const [id, expiry] of this.nonces) if (expiry <= now) this.nonces.delete(id);
     if (this.nonces.has(key)) return false;
     this.nonces.set(key, expiresAt);
     return true;
+  }
+  consumeRateLimit(key: string, windowStart: number, limit: number): {allowed: boolean; count: number} {
+    const current = this.rateLimits.get(key);
+    const next = !current || current.windowStart !== windowStart
+      ? {windowStart, count: 1} : {windowStart, count: current.count + 1};
+    this.rateLimits.set(key, next);
+    return {allowed: next.count <= limit, count: next.count};
   }
   private readonly operations = new Map<string, OperationsRecords[keyof OperationsRecords]>();
   findMerchantById(id: string): Merchant | null { return copyOrNull(this.merchants.get(id)); }
