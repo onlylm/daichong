@@ -474,7 +474,7 @@ X-Quefa-Signature: t=<秒>,v1=<hex>
 | `X-API-Key` | HMAC 签名头（`X-Partner-Id` 等） |
 | `POST …/activate` + Session | `POST /v1/redemptions`（自动直充）或履约接口 |
 | `GET …/activation` | `GET /v1/redemptions/{id}` / fulfillments |
-| 邮件通知人工退款 | 平台代收：API 申请 + 平台通道退款 |
+| 站内待办处理退款 | 平台代收：退款申请 + 平台通道原路退款 |
 | 登记上游 base_url 即可被平台调用 | 下游登记 Webhook，并持有 Quefa 发放的密钥来调用我们 |
 
 若你方系统曾按旧 checkout 协议对接「我们当上游」的环境，迁移到本标准时：不要再实现 checkout 供货接口；改为作为 **Partner 客户端** 调用本文第 4–5 节。
