@@ -132,6 +132,41 @@ describe("workspace history pagination", () => {
     expect(allOperations).not.toHaveBeenCalled();
   });
 
+  it("pages customer and price-adjustment refund queues without loading the complete queue", async () => {
+    const merchant=runtime.repository.listMerchants()[0]!,base=Date.parse("2026-10-01T07:00:00.000Z");
+    for(let index=0;index<13;index++){
+      const createdAt=new Date(base+index*60_000);
+      runtime.repository.insertRefund({id:`refund_customer_page_${index}`,merchantId:merchant.id,orderId:`order_customer_page_${index}`,
+        merchantRefundNo:`CUSTOMER-PAGE-${index}`,type:index%2?"partial":"full",amountMinor:100n,status:"requested",
+        reason:"客户退款分页测试",failureCode:null,providerRefundNo:null,nextCheckAt:null,recoveryAttempts:0,createdAt,refundedAt:null});
+      runtime.repository.insertRefund({id:`refund_adjustment_page_${index}`,merchantId:merchant.id,orderId:`order_adjustment_page_${index}`,
+        merchantRefundNo:`ADJUSTMENT-PAGE-${index}`,type:"price_adjustment",amountMinor:50n,status:"failed",
+        reason:"补差退款分页测试",failureCode:"benchmark",providerRefundNo:null,nextCheckAt:null,recoveryAttempts:1,createdAt,refundedAt:null});
+    }
+    runtime.repository.insertRefund({id:"refund_completed_not_pending",merchantId:merchant.id,orderId:"order_completed_not_pending",
+      merchantRefundNo:"COMPLETED-NOT-PENDING",type:"full",amountMinor:100n,status:"succeeded",reason:"不应进入待审队列",
+      failureCode:null,providerRefundNo:"provider-completed",nextCheckAt:null,recoveryAttempts:0,createdAt:new Date(base),refundedAt:new Date(base)});
+
+    const login=await loginPlatform(app,"history-admin","test-history-password","https://admin.tibo.ink");
+    const headers={origin:"https://admin.tibo.ink",cookie:String(login.headers["set-cookie"]).split(";")[0]!};
+    const query=vi.spyOn(runtime.repository as unknown as {queryRecords:(...args:unknown[])=>unknown},"queryRecords");
+    const [customer,adjustments]=await Promise.all([
+      app.inject({method:"GET",url:"/workspace/api/refunds/customer/pending?page=2&limit=5",headers}),
+      app.inject({method:"GET",url:"/workspace/api/refunds/price-adjustments/pending?page=3&limit=5",headers}),
+    ]);
+
+    expect(customer.statusCode).toBe(200);
+    expect(adjustments.statusCode).toBe(200);
+    expect(customer.json()).toMatchObject({meta:{total:13,page:2,limit:5,pages:3}});
+    expect(adjustments.json()).toMatchObject({meta:{total:13,page:3,limit:5,pages:3}});
+    expect(customer.json().data).toHaveLength(5);
+    expect(customer.json().data.every((item:{type:string})=>item.type!=="price_adjustment")).toBe(true);
+    expect(adjustments.json().data).toHaveLength(3);
+    expect(adjustments.json().data.every((item:{type:string})=>item.type==="price_adjustment")).toBe(true);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls.every(call=>call[0]==="refund"&&(call[1] as {limit:number}).limit===5)).toBe(true);
+  });
+
   it("loads only the selected wallet history tab and keeps the balance endpoint compact", async () => {
     const merchant = runtime.repository.listMerchants()[0]!, base = Date.parse("2026-10-01T08:00:00.000Z");
     for (let index = 0; index < 7; index++) {

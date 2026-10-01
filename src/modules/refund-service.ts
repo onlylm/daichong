@@ -198,6 +198,18 @@ export class RefundService {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
+  pendingCategoryPage(actor: Actor, category: "customer" | "price_adjustment", page = 1, limit = 20) {
+    requirePermission(actor, "wallet.review");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看退款队列");
+    const filters = [
+      {field: "status", op: "in" as const, value: ["requested", "processing", "failed"]},
+      category === "price_adjustment"
+        ? {field: "type", op: "eq" as const, value: "price_adjustment"}
+        : {field: "type", op: "in" as const, value: ["full", "partial"]},
+    ];
+    return queryRecords(this.repository, "refund", {filters, page, limit, orderBy: "createdAt", direction: "desc"});
+  }
+
   pendingPage(actor: Actor, limit = 8) {
     requirePermission(actor, "wallet.review");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看退款队列");

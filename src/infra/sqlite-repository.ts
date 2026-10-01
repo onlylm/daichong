@@ -82,6 +82,13 @@ export class SqliteRepository implements Repository {
         ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.attentionKey'),id);
       CREATE INDEX IF NOT EXISTS records_refund_reconciliation_status_idx
         ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.lastCheckedAt') DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS records_refund_reconciliation_pending_idx
+        ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.firstDetectedAt'),id);
+      CREATE INDEX IF NOT EXISTS records_ticket_business_updated_idx
+        ON sandbox_records(json_extract(payload,'$.updatedAt'),id)
+        WHERE kind='ops_ticket' AND json_extract(payload,'$.archivedAt') IS NULL
+          AND json_extract(payload,'$.systemCase') IS NULL AND json_extract(payload,'$.apiApplication') IS NULL
+          AND json_extract(payload,'$.tierApplication') IS NULL AND json_extract(payload,'$.withdrawalApplication') IS NULL;
       CREATE INDEX IF NOT EXISTS records_tenant_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_updated_idx ON sandbox_records(kind,json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.updatedAt') DESC,id DESC);
@@ -89,6 +96,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tenant_archived_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.archivedAt'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_status_due_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.nextCheckAt'));
       CREATE INDEX IF NOT EXISTS records_status_updated_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS records_status_created_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_status_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_status_order_relation_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_payment_created_idx ON sandbox_records(kind,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt'));
@@ -97,6 +105,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_paid_at_idx ON sandbox_records(kind,json_extract(payload,'$.paidAt'));
       CREATE INDEX IF NOT EXISTS records_task_attempt_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.orderId'),CAST(json_extract(payload,'$.attemptNo') AS INTEGER) DESC);
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
+      CREATE INDEX IF NOT EXISTS records_refund_review_checked_idx ON sandbox_records(kind,json_extract(payload,'$.lastCheckedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_wallet_entry_time_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_occurred_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.occurredAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_outbox_cursor_idx ON sandbox_records(kind,id);
@@ -273,8 +282,9 @@ export class SqliteRepository implements Repository {
     const j=(alias:string,field:string)=>`json_extract(${alias}.payload,'$.${field}')`;
     // Financial drill-downs retain historic receipts, even for archived test orders.
     if (!q.financeMetric) conditions.push(`${j('o','archivedAt')} IS NULL`);
-    const join=` FROM sandbox_records o LEFT JOIN sandbox_records f ON f.rowid=(SELECT ff.rowid FROM sandbox_records ff WHERE ff.kind='fulfillment' AND ff.merchant_id=o.merchant_id AND json_extract(ff.payload,'$.orderId')=o.id ORDER BY CAST(json_extract(ff.payload,'$.attemptNo') AS INTEGER) DESC LIMIT 1)
-      LEFT JOIN sandbox_records v ON v.kind='cdk_voucher' AND v.merchant_id=o.merchant_id AND json_extract(v.payload,'$.orderId')=o.id`;
+    const relatedJoin=(alias:string)=>` FROM sandbox_records ${alias} LEFT JOIN sandbox_records f ON f.rowid=(SELECT ff.rowid FROM sandbox_records ff WHERE ff.kind='fulfillment' AND ff.merchant_id=${alias}.merchant_id AND json_extract(ff.payload,'$.orderId')=${alias}.id ORDER BY CAST(json_extract(ff.payload,'$.attemptNo') AS INTEGER) DESC LIMIT 1)
+      LEFT JOIN sandbox_records v ON v.kind='cdk_voucher' AND v.merchant_id=${alias}.merchant_id AND json_extract(v.payload,'$.orderId')=${alias}.id`;
+    const join=relatedJoin('o');
     if(q.productCodes?.length){conditions.push(`${j('o','productCode')} IN (${q.productCodes.map(()=>'?').join(',')})`);args.push(...q.productCodes);}
     const pay=j('o','paymentStatus'),status=j('f','status');
     if(q.createdFrom){conditions.push(`${j('o','createdAt')}>=?`);args.push(q.createdFrom);}
@@ -300,12 +310,18 @@ export class SqliteRepository implements Repository {
       conditions.push('('+search.join(' OR ')+')');
     }
     const where=' WHERE '+conditions.join(' AND '),paid=`${pay} IN ('paid','partially_refunded','refunded')`,today=`strftime('%Y-%m-%d',${j('o','paidAt')},'+8 hours')=?`,sale=`CAST(${j('o','saleAmountMinor.__bigint')} AS INTEGER)`;
+    const needsRelatedFilter=Boolean(q.search?.trim())||['paid','running','succeeded','failed'].includes(q.status??'');
+    const metaFrom=needsRelatedFilter?join:' FROM sandbox_records o';
     const meta=this.db.prepare(`SELECT COUNT(*) AS total,SUM(CASE WHEN ${paid} THEN 1 ELSE 0 END) AS paidCount,
       CAST(COALESCE(SUM(CASE WHEN ${paid} THEN ${sale} ELSE 0 END),0) AS TEXT) AS sale,
       SUM(CASE WHEN ${paid} AND ${today} THEN 1 ELSE 0 END) AS todayCount,
-      CAST(COALESCE(SUM(CASE WHEN ${paid} AND ${today} THEN ${sale} ELSE 0 END),0) AS TEXT) AS todaySale${join}${where}`).get(q.today,q.today,...args)!;
+      CAST(COALESCE(SUM(CASE WHEN ${paid} AND ${today} THEN ${sale} ELSE 0 END),0) AS TEXT) AS todaySale${metaFrom}${where}`).get(q.today,q.today,...args)!;
     const total=Number(meta.total),pages=Math.max(1,Math.ceil(total/q.limit)),page=Math.min(Math.max(1,q.page),pages);
-    const rows=this.db.prepare(`SELECT o.payload AS o,f.payload AS f,v.payload AS v${join}${where} ORDER BY ${j('o','createdAt')} DESC,o.id DESC LIMIT ? OFFSET ?`).all(...args,q.limit,(page-1)*q.limit);
+    const rows=needsRelatedFilter
+      ?this.db.prepare(`SELECT o.payload AS o,f.payload AS f,v.payload AS v${join}${where} ORDER BY ${j('o','createdAt')} DESC,o.id DESC LIMIT ? OFFSET ?`).all(...args,q.limit,(page-1)*q.limit)
+      :this.db.prepare(`SELECT p.payload AS o,f.payload AS f,v.payload AS v${relatedJoin('p').replace(' FROM sandbox_records p',
+        ` FROM (SELECT o.* FROM sandbox_records o${where} ORDER BY ${j('o','createdAt')} DESC,o.id DESC LIMIT ? OFFSET ?) p`)}`)
+        .all(...args,q.limit,(page-1)*q.limit);
     return {orders:rows.map(r=>decode<Order>(String(r.o))),fulfillments:rows.flatMap(r=>r.f?[decode<Fulfillment>(String(r.f))]:[]),vouchers:rows.flatMap(r=>r.v?[decode<CdkVoucher>(String(r.v))]:[]),
       meta:{total,page,limit:q.limit,pages,paidCount:Number(meta.paidCount??0),paidSaleMinor:BigInt(String(meta.sale)),todayPaidCount:Number(meta.todayCount??0),todayPaidSaleMinor:BigInt(String(meta.todaySale))}};
   }

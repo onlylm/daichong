@@ -941,13 +941,17 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.get("/workspace/api/refunds/price-adjustments/pending", async request => {
     const actor = account(request);
-    const refunds = runtime.refunds.listPendingPriceAdjustments(actor);
-    return wire({data: workspaceRefunds(runtime, refunds)});
+    const query = z.object({page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const result = runtime.refunds.pendingCategoryPage(actor, "price_adjustment", query.page, query.limit);
+    return wire({...result, data: workspaceRefunds(runtime, result.data)});
   });
   app.get("/workspace/api/refunds/customer/pending", async request => {
     const actor = account(request);
-    const refunds = runtime.refunds.listPendingCustomerRefunds(actor);
-    return wire({data: workspaceRefunds(runtime, refunds)});
+    const query = z.object({page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const result = runtime.refunds.pendingCategoryPage(actor, "customer", query.page, query.limit);
+    return wire({...result, data: workspaceRefunds(runtime, result.data)});
   });
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/price-adjustment-refunds", async request => {
     const actor = account(request);
