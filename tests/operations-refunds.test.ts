@@ -122,4 +122,33 @@ describe("workspace price adjustment refunds", () => {
     expect(updated.ordinaryRefundedMinor).toBe(order.saleAmountMinor);
     expect(runtime.wallets.summary(owner, owner.merchantId!).earningsAvailable).toBe("0.00");
   });
+
+  it("replays the same external refund after a full refund without posting again", async () => {
+    const order = await paidRetail("retail-ext-replay", "alipay_page");
+    const input = {reason: "支付宝控制台已退", requestKey: "ext-refund-replay",
+      providerRefundNo: "2026100100000111", confirmAlreadyRefundedAtChannel: true as const};
+    const first = runtime.refunds.recordExternalCustomerRefund(finance, order.id, input);
+    const ledgerCount = runtime.repository.listLedger(order.merchantId).length;
+
+    expect(runtime.refunds.recordExternalCustomerRefund(finance, order.id, input)).toEqual(first);
+    expect(runtime.repository.listRefundsForOrder(order.merchantId, order.id)).toHaveLength(1);
+    expect(runtime.repository.listLedger(order.merchantId)).toHaveLength(ledgerCount);
+    expect(runtime.repository.findOrderInternal(order.id)?.ordinaryRefundedMinor).toBe(order.saleAmountMinor);
+    expect(() => runtime.refunds.recordExternalCustomerRefund(finance, order.id,
+      {...input, providerRefundNo: "2026100100000112"})).toThrow("退款号已用于不同请求");
+  });
+
+  it("does not book the same external channel refund reference under another request key", async () => {
+    const order = await paidRetail("retail-ext-duplicate-ref", "alipay_page");
+    const input = {amount: "10.00", reason: "支付宝控制台已退", requestKey: "ext-refund-a",
+      providerRefundNo: "2026100100000222", confirmAlreadyRefundedAtChannel: true as const};
+    runtime.refunds.recordExternalCustomerRefund(finance, order.id, input);
+    const ledgerCount = runtime.repository.listLedger(order.merchantId).length;
+
+    expect(() => runtime.refunds.recordExternalCustomerRefund(finance, order.id,
+      {...input, requestKey: "ext-refund-b"})).toThrow("退款流水号已登记");
+    expect(runtime.repository.listRefundsForOrder(order.merchantId, order.id)).toHaveLength(1);
+    expect(runtime.repository.listLedger(order.merchantId)).toHaveLength(ledgerCount);
+    expect(runtime.repository.findOrderInternal(order.id)?.ordinaryRefundedMinor).toBe(1_000n);
+  });
 });

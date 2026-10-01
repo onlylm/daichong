@@ -244,8 +244,21 @@ export class RefundService {
     return this.repository.transaction(() => {
       const order = this.repository.findOrderInternal(orderId);
       if (!order || order.collectionMode !== "platform_collect") throw new AppError(404, "refund_order_not_found", "仅平台代收订单可登记渠道退款");
+      const merchantRefundNo = "ws:ext-refund:" + input.requestKey;
+      const replay = this.repository.findRefundByMerchantNo(order.merchantId, merchantRefundNo);
+      if (replay) {
+        if (replay.orderId !== orderId || replay.reason !== reason || replay.providerRefundNo !== providerRefundNo
+            || (input.amount && replay.amountMinor !== moneyToMinor(input.amount))) {
+          throw new AppError(409, "refund_idempotency_conflict", "退款号已用于不同请求");
+        }
+        return replay;
+      }
+      const refunds = this.repository.listRefundsForOrder(order.merchantId, order.id);
+      if (refunds.some(item => item.providerRefundNo === providerRefundNo && item.status === "succeeded")) {
+        throw new AppError(409, "provider_refund_reference_used", "退款流水号已登记，请核对原退款记录");
+      }
       if (!["paid", "partially_refunded"].includes(order.paymentStatus)) throw new AppError(409, "order_not_refundable", "当前支付状态不可退款");
-      const reserved = this.repository.listRefundsForOrder(order.merchantId, order.id)
+      const reserved = refunds
         .filter(item => !["rejected", "cancelled"].includes(item.status))
         .reduce((sum, item) => sum + item.amountMinor, 0n);
       const remaining = order.saleAmountMinor - reserved;
@@ -257,7 +270,7 @@ export class RefundService {
       if (!merchant) throw notFound("merchant");
       const tenant: TenantContext = {merchantId: order.merchantId, partnerId: merchant.partnerId, appId: "workspace", keyId: actor.id};
       const pending = this.requestLocked(tenant, orderId, {
-        merchantRefundNo: "ws:ext-refund:" + input.requestKey,
+        merchantRefundNo,
         type,
         amount: minorToMoney(amountMinor),
         reason,

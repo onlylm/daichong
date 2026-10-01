@@ -450,6 +450,41 @@ describe("Alipay payment reconciliation", () => {
     }finally{sqlite.close();}
   });
 
+  it("keeps external refund idempotency and channel reference binding across a SQLite restart", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "external-refund-replay-"));
+    const sqliteConfig = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: join(directory, "refund.sqlite"),
+      LOG_LEVEL: "silent", PUBLIC_BASE_URL: "https://tibo.ink", ADMIN_BASE_URL: "https://admin.tibo.ink"});
+    let sqlite: Runtime | null = createRuntime(sqliteConfig);
+    const actor = {id: "finance", role: "platform_finance" as const, merchantId: null};
+    try {
+      publishTestRechargeProduct(sqlite);
+      const bundle = sqlite.repository.findCredential(sqliteConfig.demoPartnerId, sqliteConfig.demoKeyId)!;
+      const scoped = {merchantId: bundle.merchant.id, partnerId: bundle.merchant.partnerId,
+        appId: bundle.app.id, keyId: bundle.key.keyId};
+      const created = await sqlite.orders.create(scoped, {merchantOrderNo: randomUUID(), productCode: "chatgpt_plus_cdk_1m",
+        quantity: 1, saleAmount: "135.00", deliveryMode: "auto_recharge"});
+      const attempt = sqlite.repository.findPaymentAttemptByOrder(created.merchantId, created.id)!;
+      sqlite.repository.updatePaymentAttempt({...attempt, provider: "alipay_page", updatedAt: new Date()});
+      sqlite.payment.markPaid(created.merchantId, created.id,
+        {channel: "alipay_page", providerRef: "2026100100000600", receivedMinor: created.saleAmountMinor});
+      const input = {amount: "10.00", reason: "渠道已退款", requestKey: "sqlite-refund-replay-1",
+        providerRefundNo: "2026100100000601", confirmAlreadyRefundedAtChannel: true as const};
+      const first = sqlite.refunds.recordExternalCustomerRefund(actor, created.id, input);
+      sqlite.close(); sqlite = createRuntime(sqliteConfig);
+
+      const ledgerCount = sqlite.repository.listLedger(created.merchantId).length;
+      expect(sqlite.refunds.recordExternalCustomerRefund(actor, created.id, input)).toEqual(first);
+      expect(() => sqlite!.refunds.recordExternalCustomerRefund(actor, created.id,
+        {...input, requestKey: "sqlite-refund-replay-2"})).toThrow("退款流水号已登记");
+      expect(sqlite.repository.listRefundsForOrder(created.merchantId, created.id)).toHaveLength(1);
+      expect(sqlite.repository.listLedger(created.merchantId)).toHaveLength(ledgerCount);
+      expect(sqlite.repository.findOrderInternal(created.id)?.ordinaryRefundedMinor).toBe(1_000n);
+    } finally {
+      sqlite?.close();
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
+
   it("does not dispatch a queued recharge while provider refund facts are under review", async () => {
     const created=await orderWithAlipayAttempt(),tradeNo="2026100100000005";
     const paid=runtime.payment.markPaid(created.merchantId,created.id,
