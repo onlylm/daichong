@@ -494,9 +494,10 @@ export class WalletService {
     for (const order of this.pendingEarningOrders(merchantId).filter(item => !onlyOrderId || item.id === onlyOrderId)) {
       this.creditEarningLocked(order.id, "system");
     }
-    for (const credit of this.repository.listOperations("wallet_credit", merchantId).filter(item => !onlyOrderId || item.orderId === onlyOrderId)) {
-      const order = this.repository.findOrder(merchantId, credit.orderId);
-      const target = order && this.eligibleEarning(order) ? positive(merchantMargin(order)) : 0n;
+    const reversals=this.repository.earningReversalCandidates?.(merchantId,onlyOrderId)
+      ??this.repository.listOperations("wallet_credit",merchantId).filter(item=>!onlyOrderId||item.orderId===onlyOrderId).map(credit=>{
+        const order=this.repository.findOrder(merchantId,credit.orderId);return {credit,order,targetMinor:order&&this.eligibleEarning(order)?positive(merchantMargin(order)):0n};});
+    for (const {credit,targetMinor:target} of reversals) {
       if (target >= credit.recognizedMinor) continue;
       this.entry(merchantId, "earning_reversal:" + credit.id + ":" + target, "earning_reversal", 0n, target - credit.recognizedMinor, 0n, credit.orderId, "system");
       this.repository.saveOperations("wallet_credit", {...credit, recognizedMinor: target});
@@ -507,6 +508,10 @@ export class WalletService {
     return this.repository.listOperations("wallet_entry", merchantId).reduce((x, e) => ({procurement: x.procurement + e.procurementDelta, earnings: x.earnings + e.earningsDelta, frozen: x.frozen + e.frozenDelta}), {procurement: 0n, earnings: 0n, frozen: 0n});
   }
   private assertNoPendingRefund(merchantId: string): void {
+    if(this.repository.hasPendingRefundForReleasedEarnings){
+      if(this.repository.hasPendingRefundForReleasedEarnings(merchantId))throw new AppError(409,"earnings_refund_pending","已释放收益的订单有退款待确认，暂不能划转或提现");
+      return;
+    }
     if (this.repository.listOperations("wallet_credit", merchantId).some(c => this.repository.listRefundsForOrder(merchantId, c.orderId)
       .some(r => ["requested", "approved", "processing"].includes(r.status)))) throw new AppError(409, "earnings_refund_pending", "已释放收益的订单有退款待确认，暂不能划转或提现");
   }

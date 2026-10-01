@@ -3,6 +3,7 @@ import {z} from "zod";
 import type {Runtime} from "../bootstrap.js";
 import type {Actor} from "./model.js";
 import {paymentConfigInput, requirePaymentAdmin} from "../modules/payment-settings.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const channel = z.enum(["alipay_page", "dujiaopay"]);
 const action = z.object({channel, version: z.number().int().nonnegative()}).strict();
@@ -29,7 +30,7 @@ export function registerPaymentSettingsRoutes(app: FastifyInstance, runtime: Run
   });
   app.get("/workspace/api/payment-reviews", async request => {
     requirePaymentAdmin(actor(request));
-    return {data: runtime.repository.listOperations("crypto_payment").filter(p => p.failureCode).slice(0, 200)
+    return {data: queryRecords(runtime.repository,"crypto_payment",{filters:[{field:"failureCode",op:"not_null"}],orderBy:"updatedAt",direction:"desc",limit:200,count:false}).data
       .map(p => ({orderId: p.orderId, state: p.state, reason: p.failureCode, updatedAt: p.updatedAt}))};
   });
 }

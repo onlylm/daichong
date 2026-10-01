@@ -414,6 +414,32 @@ export class SqliteRepository implements Repository {
     return result;
   }
 
+  earningReversalCandidates(merchantId:string,onlyOrderId?:string) {
+    const sale=`CAST(COALESCE(json_extract(o.payload,'$.saleAmountMinor.__bigint'),'0') AS INTEGER)`,refund=`CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)`,
+      supply=`CAST(COALESCE(json_extract(o.payload,'$.supplyAmountMinor.__bigint'),'0') AS INTEGER)`,recognized=`CAST(COALESCE(json_extract(c.payload,'$.recognizedMinor.__bigint'),'0') AS INTEGER)`;
+    const eligible=`o.id IS NOT NULL AND COALESCE(json_extract(o.payload,'$.collectionMode'),'platform_collect')!='agent_collect'
+      AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded','refunded')
+      AND EXISTS(SELECT 1 FROM sandbox_records p WHERE p.kind='payment_attempt' AND p.merchant_id=o.merchant_id
+        AND json_extract(p.payload,'$.orderId')=o.id AND json_extract(p.payload,'$.provider') IN ('alipay_page','dujiaopay'))
+      AND EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded'
+        AND json_extract(f.payload,'$.upstreamProvider') IS NOT NULL AND json_extract(f.payload,'$.upstreamProvider')!='mock')`;
+    const args:Array<string>=[merchantId],orderFilter=onlyOrderId?` AND json_extract(c.payload,'$.orderId')=?`:'';if(onlyOrderId)args.push(onlyOrderId);
+    const rows=this.db.prepare(`WITH candidates AS (SELECT c.payload AS credit_payload,o.payload AS order_payload,${recognized} AS recognized,
+      CASE WHEN ${eligible} THEN max(0,${sale}-${refund}-${supply}) ELSE 0 END AS target
+      FROM sandbox_records c LEFT JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=c.merchant_id AND o.id=json_extract(c.payload,'$.orderId')
+      WHERE c.kind='ops_wallet_credit' AND c.merchant_id=?${orderFilter})
+      SELECT credit_payload,order_payload,CAST(target AS TEXT) AS target FROM candidates WHERE target<recognized`).all(...args);
+    return rows.map(row=>({credit:decode<OperationsRecords['wallet_credit']>(String(row.credit_payload)),
+      order:row.order_payload?decode<Order>(String(row.order_payload)):null,targetMinor:BigInt(String(row.target))}));
+  }
+
+  hasPendingRefundForReleasedEarnings(merchantId:string) {
+    return !!this.db.prepare(`SELECT 1 FROM sandbox_records c JOIN sandbox_records r
+      ON r.kind='refund' AND r.merchant_id=c.merchant_id AND json_extract(r.payload,'$.orderId')=json_extract(c.payload,'$.orderId')
+      WHERE c.kind='ops_wallet_credit' AND c.merchant_id=? AND json_extract(r.payload,'$.status') IN ('requested','approved','processing') LIMIT 1`).get(merchantId);
+  }
+
   findDuePaymentOrder(provider:string,now:Date):Order|null {
     const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records p
       JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=p.merchant_id AND o.id=json_extract(p.payload,'$.orderId')

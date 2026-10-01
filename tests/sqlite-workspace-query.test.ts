@@ -8,6 +8,7 @@ import {completedTierOrderMetrics} from "../src/operations/tier-upgrade.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 import {fundAndApproveApi} from "./fixtures/funded-api.js";
 import {queryRecords} from "../src/infra/record-query.js";
+import type {Repository} from "../src/infra/repository.js";
 
 describe("SQLite workspace batch reads",()=>{
   it("uses bounded scoped count and page queries without per-order scans",async()=>{
@@ -115,6 +116,39 @@ describe("SQLite workspace batch reads",()=>{
         {field:"id",op:"ne",value:"lookup-deposit-b"},{field:"paidAt",op:"not_null"}],limit:1,count:false}).data;
       expect(match.map(item=>item.id)).toEqual(["lookup-deposit-a"]);
       expect(prepare).toHaveBeenCalledTimes(1);
+    }finally{vi.restoreAllMocks();r.close();}
+  });
+
+  it("reconciles released earnings and pending-refund guards without historical scans",async()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      publishTestRechargeProduct(r);
+      const b=r.repository.findCredential(cfg.demoPartnerId,cfg.demoKeyId)!,tenant={merchantId:b.merchant.id,appId:b.app.id,keyId:b.key.keyId,partnerId:b.merchant.partnerId};
+      const created=await r.orders.create(tenant,{merchantOrderNo:"EARNING-RECONCILE-SQL",productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      const attempt=r.repository.findPaymentAttemptByOrder(created.merchantId,created.id)!;
+      r.repository.updatePaymentAttempt({...attempt,provider:"alipay_page"});
+      const paid=r.payment.markPaid(created.merchantId,created.id,{channel:"alipay_page",providerRef:"earning-reconcile-payment",receivedMinor:created.saleAmountMinor});
+      const now=new Date();
+      r.repository.insertFulfillment({id:"ful_earning_reconcile",merchantId:paid.merchantId,orderId:paid.id,attemptNo:1,status:"succeeded",failureCode:null,
+        message:null,accountEmailMasked:null,sessionPayload:{ciphertext:null,iv:null,authTag:null,keyVersion:"test",clearedAt:null},mode:"cdk",voucherId:null,
+        upstreamProvider:"zovocard",upstreamOrderId:"up_earning_reconcile",upstreamClientRequestId:"req_earning_reconcile",upstreamLookupToken:null,
+        upstreamStatus:"completed",upstreamStage:"completed",upstreamQuoteMinor:1576,upstreamCurrency:"USD",nextCheckAt:now,createdAt:now,finishedAt:now});
+      r.repository.saveOperations("wallet_credit",{id:paid.id,merchantId:paid.merchantId,orderId:paid.id,recognizedMinor:2_500n,createdAt:now},true);
+      r.repository.saveOperations("wallet_entry",{id:"earning:"+paid.id,merchantId:paid.merchantId,kind:"earning_release",procurementDelta:0n,
+        earningsDelta:2_500n,frozenDelta:0n,reference:paid.id,actorId:"system",createdAt:now},true);
+      r.repository.updateOrder({...paid,paymentStatus:"partially_refunded",ordinaryRefundedMinor:1_000n,updatedAt:now});
+
+      const fullOperations=vi.spyOn(r.repository,"listOperations"),orders=vi.spyOn(r.repository,"findOrder"),
+        payments=vi.spyOn(r.repository,"findPaymentAttemptByOrder"),fulfillments=vi.spyOn(r.repository,"listFulfillments"),refundLists=vi.spyOn(r.repository,"listRefundsForOrder");
+      r.wallets.reconcileMerchantEarnings(paid.merchantId);
+      expect(r.repository.getOperations("wallet_credit",paid.id)?.recognizedMinor).toBe(1_500n);
+      expect((r.repository as Repository).walletTotals?.(paid.merchantId).earnings).toBe(1_500n);
+      r.repository.insertRefund({id:"refund_earning_pending",merchantId:paid.merchantId,orderId:paid.id,merchantRefundNo:"earning-pending",
+        type:"partial",amountMinor:100n,status:"requested",reason:"pending refund",failureCode:null,createdAt:now,refundedAt:null});
+      expect(()=>r.wallets.requestWithdrawal({id:"owner",role:"agent_owner",merchantId:paid.merchantId},paid.merchantId,"1.00","pending-guard",
+        {method:"alipay",account:"test@example.com",name:"测试代理"})).toThrow("有退款待确认");
+      expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();
+      expect(fulfillments).not.toHaveBeenCalled();expect(refundLists).not.toHaveBeenCalled();
     }finally{vi.restoreAllMocks();r.close();}
   });
 });

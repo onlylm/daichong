@@ -62,6 +62,8 @@ export interface Repository {
     settlements:Settlement[];hasMore:boolean;cursorValid:boolean};
   listDailySettlementCandidates?(periodTo:Date):Array<{order:Order;credit:import("../operations/model.js").WalletCredit}>;
   dailySettlementFunds?(merchantIds:readonly string[]):Array<{merchantId:string;earningsBalance:bigint;alreadyScheduled:bigint}>;
+  earningReversalCandidates?(merchantId:string,onlyOrderId?:string):Array<{credit:import("../operations/model.js").WalletCredit;order:Order|null;targetMinor:bigint}>;
+  hasPendingRefundForReleasedEarnings?(merchantId:string):boolean;
   listTicketMessages?(merchantId:string,ticketId:string,includeInternal:boolean):import("../operations/model.js").TicketMessage[];
   findDuePaymentOrder?(provider:string,now:Date):Order|null;
   findDueRefund?(provider:string,now:Date):Refund|null;
