@@ -149,7 +149,11 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       invoices: invoicePage.data,
     }});
   });
-  app.get("/workspace/api/finance/costs", async request => wire({data:runtime.costs.list(account(request))}));
+  app.get("/workspace/api/finance/costs", async request => {
+    const query=z.object({page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(20),
+      status:z.enum(["all","pending_review","confirmed","disputed"]).default("all"),search:z.string().trim().max(160).default("")}).parse(request.query);
+    return wire(runtime.costs.page(account(request),query));
+  });
   app.get("/workspace/api/finance/details", async request => {
     const q=z.object({day:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),metric:z.enum(financeMetrics),
       page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);

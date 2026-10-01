@@ -7,6 +7,7 @@ import {isPlatform, requirePermission, permissionList} from "./accounts.js";
 import type {Actor, OrderCost, CostSavingPayment} from "./model.js";
 import type {AuditService} from "../modules/audit-service.js";
 import type {SupplierManagementService} from "../modules/supplier-management-service.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const positive = (v: bigint) => v > 0n ? v : 0n;
 export function convertUsd(usd: bigint, rate: string): bigint {
@@ -62,14 +63,32 @@ export class CostAccountingService {
     return this.present(o,c,payments,isPlatform(actor));
   }
   list(actor: Actor) {
+    return this.page(actor,{status:"all",page:1,limit:200}).data;
+  }
+  page(actor: Actor,input:{status:"all"|OrderCost["status"];search?:string;page:number;limit:number}) {
     this.admin(actor);
-    const costs=new Map(this.repo.listOperations("order_cost").map(c=>[c.orderId,c]));
-    const merchants=this.repo.listMerchants(),merchantMap=new Map(merchants.map(m=>[m.id,m])),merchantIds=merchants.map(m=>m.id),records=this.repo.listWorkspaceRecords?.(merchantIds);
-    const succeeded=records?new Set(records.fulfillments.filter(f=>f.status==="succeeded").map(f=>f.orderId)):null;
-    const paymentsByOrder=new Map<string,CostSavingPayment[]>();for(const payment of this.repo.listOperations("cost_saving_payment")){const values=paymentsByOrder.get(payment.orderId)??[];values.push(payment);paymentsByOrder.set(payment.orderId,values);}
-    return (records?.orders??this.repo.listOrdersInternal()).filter(o=>["paid","partially_refunded","refunded"].includes(o.paymentStatus))
-      .filter(o=>costs.has(o.id)||(succeeded?succeeded.has(o.id):this.repo.listFulfillments(o.merchantId,o.id).some(f=>f.status==="succeeded")))
-      .sort((a,b)=>b.createdAt.getTime()-a.createdAt.getTime()).slice(0,200).map(o=>({...this.present(o,costs.get(o.id)??this.initial(o),paymentsByOrder.get(o.id)??[],true),merchantName:merchantMap.get(o.merchantId)?.name??"",productCode:o.productCode,collectionMode:o.collectionMode}));
+    const limit=Math.min(100,Math.max(1,input.limit)),requestedPage=Math.max(1,input.page),search=input.search?.trim()??"";
+    const sql=this.repo.queryCostAccountingOrders?.({status:input.status,search,page:requestedPage,limit});
+    let orders:Order[],merchantMap:Map<string,string>,meta:{total:number;page:number;limit:number;pages:number};
+    if(sql){orders=sql.orders;merchantMap=new Map(sql.merchantNames.map(value=>[value.merchantId,value.name]));meta=sql.meta;}
+    else {
+      const costs=new Map(this.repo.listOperations("order_cost").map(c=>[c.orderId,c]));
+      const merchants=this.repo.listMerchants();merchantMap=new Map(merchants.map(value=>[value.id,value.name]));
+      const records=this.repo.listWorkspaceRecords?.(merchants.map(value=>value.id));
+      const succeeded=records?new Set(records.fulfillments.filter(value=>value.status==="succeeded").map(value=>value.orderId)):null;
+      const needle=search.toLowerCase();
+      const eligible=(records?.orders??this.repo.listOrdersInternal()).filter(order=>!order.archivedAt&&!order.liveTest&&["paid","partially_refunded","refunded"].includes(order.paymentStatus))
+        .filter(order=>costs.has(order.id)||(succeeded?succeeded.has(order.id):this.repo.listFulfillments(order.merchantId,order.id).some(value=>value.status==="succeeded")))
+        .filter(order=>input.status==="all"?(true):(costs.get(order.id)?.status??"pending_review")===input.status)
+        .filter(order=>!needle||[order.id,order.merchantOrderNo,merchantMap.get(order.merchantId)??"",this.repo.findMerchantById(order.merchantId)?.partnerId??""].some(value=>value.toLowerCase().includes(needle)))
+        .sort((a,b)=>b.createdAt.getTime()-a.createdAt.getTime()||b.id.localeCompare(a.id));
+      const total=eligible.length,pages=Math.max(1,Math.ceil(total/limit)),page=Math.min(requestedPage,pages);
+      orders=eligible.slice((page-1)*limit,page*limit);meta={total,page,limit,pages};
+    }
+    const orderIds=orders.map(order=>order.id);
+    const costs=new Map(queryRecords(this.repo,"order_cost",{filters:[{field:"orderId",op:"in",value:orderIds}],limit:Math.max(1,orderIds.length),count:false}).data.map(cost=>[cost.orderId,cost]));
+    return {data:orders.map(order=>({...this.present(order,costs.get(order.id)??this.initial(order),[],true),
+      merchantName:merchantMap.get(order.merchantId)??"",productCode:order.productCode,collectionMode:order.collectionMode,createdAt:order.createdAt})),meta};
   }
   verify(actor: Actor,id:string,input:{version:number;standardUsd?:string|null|undefined;standardCny?:string|null|undefined;actualUsd:string;feesUsd:string;retainedUsd:string;fxRate?:string|null|undefined;sourceReference:string;evidence:string;confirmEvidence:true;confirmHistoricalTerms?:boolean|undefined;confirmZeroCost?:boolean|undefined;destination:OrderCost["destination"]}) {
     this.admin(actor);return this.repo.transaction(()=>{

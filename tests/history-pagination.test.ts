@@ -3,6 +3,7 @@ import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {loginPlatform} from "./fixtures/mfa.js";
+import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 
 describe("workspace history pagination", () => {
   const config = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "sqlite", SQLITE_PATH: ":memory:", LOG_LEVEL: "silent",
@@ -116,5 +117,35 @@ describe("workspace history pagination", () => {
     expect(withdrawals.json()).toMatchObject({meta: {total: 7, page: 1, limit: 2, pages: 4}});
     expect(ledger.json().data[0]).toMatchObject({procurementDelta: "7.00", earningsDelta: "0.00", frozenDelta: "0.00"});
     expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["wallet_deposit", "wallet_withdrawal", "wallet_entry"]));
+  });
+
+  it("pages and searches cost accounting records before loading their finance details", async () => {
+    publishTestRechargeProduct(runtime);
+    const credential=runtime.repository.findCredential(config.demoPartnerId,config.demoKeyId)!;
+    const tenant={merchantId:credential.merchant.id,appId:credential.app.id,keyId:credential.key.keyId,partnerId:credential.merchant.partnerId};
+    const admin={id:"history-admin",role:"platform_admin" as const,merchantId:null};
+    for(let index=0;index<7;index++){
+      const order=await runtime.orders.create(tenant,{merchantOrderNo:`COST-PAGE-${index}`,productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      runtime.payment.markPaid(order.merchantId,order.id,{providerRef:`cost-page-payment-${index}`,receivedMinor:order.saleAmountMinor});
+      const voucher=(await runtime.cdk.issueOne())!;
+      const task=runtime.fulfillments.createCdkPublic(runtime.repository.findOrderInternal(order.id)!,voucher,runtime.cdk.readUpstreamCode(voucher),{mode:"session",session:`cost-page-session-${index}`});
+      runtime.repository.updateFulfillment({...runtime.repository.findFulfillment(order.merchantId,task.id)!,status:"succeeded",upstreamProvider:"configured_supplier",upstreamOrderId:`upstream-cost-${index}`,finishedAt:new Date()});
+      if(index%2===1)runtime.costs.verify(admin,order.id,{version:0,actualUsd:"15.00",feesUsd:"0.00",retainedUsd:"0.15",fxRate:"7",
+        sourceReference:`settled-cost-page-${index}`,evidence:"已核实测试清算和订单关联",confirmEvidence:true,destination:"platform_pass_through"});
+    }
+    const login=await loginPlatform(app,"history-admin","test-history-password","https://admin.tibo.ink");
+    const headers={origin:"https://admin.tibo.ink",cookie:String(login.headers["set-cookie"]).split(";")[0]!};
+    const query=vi.spyOn(runtime.repository as unknown as {queryCostAccountingOrders:(...args:unknown[])=>unknown},"queryCostAccountingOrders");
+    const pending=await app.inject({method:"GET",url:"/workspace/api/finance/costs?status=pending_review&page=2&limit=2",headers});
+    const search=await app.inject({method:"GET",url:"/workspace/api/finance/costs?search=COST-PAGE-3&page=1&limit=20",headers});
+
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json()).toMatchObject({meta:{total:4,page:2,limit:2,pages:2}});
+    expect(pending.json().data).toHaveLength(2);
+    expect(pending.json().data.every((item:{status:string})=>item.status==="pending_review")).toBe(true);
+    expect(search.json()).toMatchObject({meta:{total:1,page:1,limit:20,pages:1}});
+    expect(search.json().data[0]).toMatchObject({status:"confirmed",merchantName:credential.merchant.name});
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[0]?.[0]).toMatchObject({status:"pending_review",page:2,limit:2});
   });
 });

@@ -77,6 +77,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_status_due_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.nextCheckAt'));
       CREATE INDEX IF NOT EXISTS records_status_updated_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_status_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.status'),json_extract(payload,'$.updatedAt') DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS records_status_order_relation_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.orderId'));
       CREATE INDEX IF NOT EXISTS records_payment_created_idx ON sandbox_records(kind,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt'));
       CREATE INDEX IF NOT EXISTS records_paid_at_idx ON sandbox_records(kind,json_extract(payload,'$.paidAt'));
       CREATE INDEX IF NOT EXISTS records_task_attempt_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.orderId'),CAST(json_extract(payload,'$.attemptNo') AS INTEGER) DESC);
@@ -261,6 +262,36 @@ export class SqliteRepository implements Repository {
     const rows=this.db.prepare(`SELECT o.payload AS o,f.payload AS f,v.payload AS v${join}${where} ORDER BY ${j('o','createdAt')} DESC,o.id DESC LIMIT ? OFFSET ?`).all(...args,q.limit,(page-1)*q.limit);
     return {orders:rows.map(r=>decode<Order>(String(r.o))),fulfillments:rows.flatMap(r=>r.f?[decode<Fulfillment>(String(r.f))]:[]),vouchers:rows.flatMap(r=>r.v?[decode<CdkVoucher>(String(r.v))]:[]),
       meta:{total,page,limit:q.limit,pages,paidCount:Number(meta.paidCount??0),paidSaleMinor:BigInt(String(meta.sale)),todayPaidCount:Number(meta.todayCount??0),todayPaidSaleMinor:BigInt(String(meta.todaySale))}};
+  }
+
+  queryCostAccountingOrders(q:{status:"all"|"pending_review"|"confirmed"|"disputed";search?:string;page:number;limit:number}) {
+    const j=(alias:string,field:string)=>`json_extract(${alias}.payload,'$.${field}')`;
+    const join=` FROM sandbox_records o
+      LEFT JOIN sandbox_records c ON c.kind='ops_order_cost' AND c.id=o.id
+      LEFT JOIN sandbox_records m ON m.kind='merchant' AND m.id=o.merchant_id`;
+    const conditions=[`o.kind='order'`,`${j('o','archivedAt')} IS NULL`,`COALESCE(${j('o','liveTest')},0)=0`,
+      `${j('o','paymentStatus')} IN ('paid','partially_refunded','refunded')`,
+      `(c.id IS NOT NULL OR EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded'))`];
+    const args:Array<string|number>=[];
+    if(q.status!=="all"){
+      if(q.status==="pending_review")conditions.push(`COALESCE(${j('c','status')},'pending_review')='pending_review'`);
+      else {conditions.push(`${j('c','status')}=?`);args.push(q.status);}
+    }
+    if(q.search?.trim()){
+      const needle=q.search.trim().toLowerCase(),fields=['o.id',j('o','merchantOrderNo'),j('m','name'),j('m','partnerId')];
+      conditions.push(`(${fields.map(field=>`instr(lower(COALESCE(${field},'')),?)>0`).join(' OR ')})`);
+      args.push(...fields.map(()=>needle));
+    }
+    const where=' WHERE '+conditions.join(' AND '),limit=Math.min(100,Math.max(1,q.limit));
+    const total=Number(this.db.prepare(`SELECT COUNT(*) AS total${join}${where}`).get(...args)!.total);
+    const pages=Math.max(1,Math.ceil(total/limit)),page=Math.min(Math.max(1,q.page),pages);
+    const rows=this.db.prepare(`SELECT o.payload AS order_payload,m.payload AS merchant_payload${join}${where}
+      ORDER BY ${j('o','createdAt')} DESC,o.id DESC LIMIT ? OFFSET ?`).all(...args,limit,(page-1)*limit);
+    const merchantNames=new Map<string,string>();
+    const orders=rows.map(row=>{const order=decode<Order>(String(row.order_payload));
+      if(row.merchant_payload){const merchant=decode<Merchant>(String(row.merchant_payload));merchantNames.set(merchant.id,merchant.name);}return order;});
+    return {orders,merchantNames:[...merchantNames].map(([merchantId,name])=>({merchantId,name})),meta:{total,page,limit,pages}};
   }
 
   consumeNonce(key: string, expiresAt: number, now: number): boolean {

@@ -46,7 +46,7 @@ describe("SQLite workspace batch reads",()=>{
       prepare.mockClear();
       const fulfillments=vi.spyOn(r.repository,"listFulfillments"),tasks=r.notifications.tasksPage(admin,1,30);
       expect(tasks.meta.total).toBe(0);expect(prepare).toHaveBeenCalledTimes(2);expect(fulfillments).not.toHaveBeenCalled();
-      prepare.mockClear();r.costs.list(admin);expect(prepare).toHaveBeenCalledTimes(4);expect(fulfillments).not.toHaveBeenCalled();
+      prepare.mockClear();r.costs.list(admin);expect(prepare).toHaveBeenCalledTimes(3);expect(fulfillments).not.toHaveBeenCalled();
     }finally{vi.restoreAllMocks();r.close();}
   });
 
