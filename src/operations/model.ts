@@ -105,6 +105,7 @@ export interface WalletDeposit extends BaseRecord {
   merchantId: string; amountMinor: bigint; status: "requested" | "credited" | "expired" | "closed" | "rejected"; requestKey: string;
   payerReference: string; verifiedReference: string | null; reviewerId: string | null; createdAt: Date; updatedAt: Date;
   paymentProvider?: "manual" | "alipay_page"; paymentConfigId?: string | null; providerRef?: string | null;
+  precreateLeaseToken?: string | null; precreateLeaseUntil?: Date | null;
   expiresAt?: Date | null; paidAt?: Date | null; nextCheckAt?: Date | null;
 }
 export interface WalletWithdrawal extends BaseRecord {
@@ -150,6 +151,7 @@ export interface InvoiceFeePayment extends BaseRecord {
   merchantId: string; applicationId: string; amountMinor: bigint;
   status: "pending" | "paid" | "expired" | "closed"; paymentConfigId: string | null;
   qrPayload: string | null; providerRef: string | null; expiresAt: Date; nextCheckAt: Date | null;
+  precreateLeaseToken?: string | null; precreateLeaseUntil?: Date | null;
   paidAt: Date | null; createdAt: Date; updatedAt: Date;
 }
 export interface ApiAccess extends BaseRecord {merchantId: string; enabled: boolean; depositId: string; ticketId: string; version: number; updatedAt: Date}

@@ -13,6 +13,7 @@ type LegacyAlipay = {client: AlipayClient; identity: {appId: string; sellerId: s
 
 /** Separate platform-owned payment flow for the agent-borne 5% invoice difference. */
 export class InvoiceAlipayService {
+  private readonly precreateInflight=new Map<string,Promise<string>>();
   constructor(private readonly repository: Repository, private readonly settings: PaymentSettingsService,
     private readonly invoices: InvoiceService, private readonly base: string, private readonly tokens: PortalTokenService,
     private readonly legacy: LegacyAlipay = null) {}
@@ -44,20 +45,47 @@ export class InvoiceAlipayService {
   }
 
   async precreate(id: string): Promise<string> {
-    const payment = this.payment(id);
-    if (payment.status !== "pending" || payment.expiresAt <= new Date()) throw new AppError(409, "payment_not_available", "补差价支付单已过期，请返回开票申请重新发起");
-    if (payment.qrPayload && isAlipayPrecreateQr(payment.qrPayload)) return payment.qrPayload;
-    if (payment.paymentConfigId) this.settings.assertOpen("alipay_page");
-    const {client, identity} = this.client(payment);
-    const result = await client.exec("alipay.trade.precreate", {
+    const running=this.precreateInflight.get(id);if(running)return running;
+    const work=this.precreateOnce(id).finally(()=>this.precreateInflight.delete(id));
+    this.precreateInflight.set(id,work);return work;
+  }
+
+  private async precreateOnce(id:string):Promise<string> {
+    const leaseToken=randomUUID(),now=new Date(),claimed=this.repository.transaction(()=>{
+      const payment=this.payment(id);
+      if(payment.status!=="pending"||payment.expiresAt<=now)
+        throw new AppError(409,"payment_not_available","补差价支付单已过期，请返回开票申请重新发起");
+      if(payment.qrPayload&&isAlipayPrecreateQr(payment.qrPayload))return {payment,existing:payment.qrPayload};
+      if(payment.precreateLeaseUntil&&payment.precreateLeaseUntil>now)
+        throw new AppError(409,"payment_code_generating","付款码正在生成，请稍后重试",true);
+      const leased={...payment,precreateLeaseToken:leaseToken,precreateLeaseUntil:new Date(now.getTime()+30_000),updatedAt:now};
+      this.repository.saveOperations("invoice_fee_payment",leased);return {payment:leased,existing:null};
+    });
+    if(claimed.existing)return claimed.existing;
+    try{
+      if (claimed.payment.paymentConfigId) this.settings.assertOpen("alipay_page");
+      const {client, identity} = this.client(claimed.payment);
+      const result = await client.exec("alipay.trade.precreate", {
       notifyUrl: this.base + "/internal/webhooks/alipay",
-      bizContent: {out_trade_no: payment.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: identity.sellerId,
-        total_amount: minorToMoney(payment.amountMinor), subject: "订单补差价", timeout_express: timeoutExpress(payment.expiresAt)},
-    }, {validateSign: true});
-    const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
-    if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝补差价收款暂不可用，请稍后重试");
-    this.repository.saveOperations("invoice_fee_payment", {...payment, qrPayload: qrCode, updatedAt: new Date()});
-    return qrCode;
+      bizContent: {out_trade_no: claimed.payment.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: identity.sellerId,
+        total_amount: minorToMoney(claimed.payment.amountMinor), subject: "订单补差价", timeout_express: timeoutExpress(claimed.payment.expiresAt)},
+      }, {validateSign: true});
+      const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
+      if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝补差价收款暂不可用，请稍后重试");
+      return this.repository.transaction(()=>{
+        const current=this.payment(id);
+        if(current.qrPayload&&isAlipayPrecreateQr(current.qrPayload))return current.qrPayload;
+        if(current.precreateLeaseToken!==leaseToken||current.status!=="pending")
+          throw new AppError(409,"payment_code_generation_changed","付款码生成状态已变化，请重新查询",true);
+        this.repository.saveOperations("invoice_fee_payment",{...current,qrPayload:qrCode,precreateLeaseToken:null,
+          precreateLeaseUntil:null,updatedAt:new Date()});return qrCode;
+      });
+    }catch(error){
+      this.repository.transaction(()=>{const current=this.repository.getOperations("invoice_fee_payment",id);
+        if(current?.precreateLeaseToken===leaseToken)this.repository.saveOperations("invoice_fee_payment",{...current,
+          precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()});});
+      throw error;
+    }
   }
 
   handleNotification(input: Record<string, string>): void {
@@ -141,7 +169,7 @@ export class InvoiceAlipayService {
     return this.repository.transaction(()=>{
       const current=this.payment(id);
       if(current.status!=="pending")return current;
-      const updated={...current,status,nextCheckAt:null,updatedAt:new Date()};
+      const updated={...current,status,nextCheckAt:null,precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()};
       this.repository.saveOperations("invoice_fee_payment",updated);
       return updated;
     });

@@ -62,4 +62,28 @@ describe("wallet Alipay timeout recovery",()=>{
     expect(runtime.repository.getOperations("wallet_deposit",deposit.id)?.status).toBe("credited");
     expect(runtime.repository.listOperations("wallet_entry",merchantId).filter(entry=>entry.reference==="2026100100001883")).toHaveLength(1);
   });
+
+  it("coalesces concurrent payment-code creation and rejects an active cross-process lease",async()=>{
+    const active=save("wdep_precreate_once",{expiresAt:new Date(Date.now()+60_000)});
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),code="https://qr.alipay.com/wallet-once";
+    const exec=vi.fn(async()=>{await gate;return {code:"10000",qr_code:code};}),{service}=gateway(exec);
+    const first=service.precreate(active.id),second=service.precreate(active.id);await Promise.resolve();release();
+    await expect(Promise.all([first,second])).resolves.toEqual([code,code]);expect(exec).toHaveBeenCalledTimes(1);
+    expect(runtime.repository.getOperations("wallet_deposit",active.id)).toMatchObject({providerRef:code,
+      precreateLeaseToken:null,precreateLeaseUntil:null});
+
+    const leased=save("wdep_precreate_leased",{expiresAt:new Date(Date.now()+60_000),precreateLeaseToken:"other-worker",
+      precreateLeaseUntil:new Date(Date.now()+30_000)}),blocked=gateway(vi.fn()).service;
+    await expect(blocked.precreate(leased.id)).rejects.toMatchObject({code:"payment_code_generating",retryable:true});
+  });
+
+  it("releases a failed payment-code lease so the same deposit can retry",async()=>{
+    const deposit=save("wdep_precreate_retry",{expiresAt:new Date(Date.now()+60_000)}),exec=vi.fn()
+      .mockResolvedValueOnce({code:"40004",msg:"failed"}).mockResolvedValueOnce({code:"10000",qr_code:"https://qr.alipay.com/wallet-retry"}),
+      {service}=gateway(exec);
+    await expect(service.precreate(deposit.id)).rejects.toMatchObject({code:"payment_provider_unavailable"});
+    expect(runtime.repository.getOperations("wallet_deposit",deposit.id)).toMatchObject({precreateLeaseToken:null,precreateLeaseUntil:null});
+    await expect(service.precreate(deposit.id)).resolves.toBe("https://qr.alipay.com/wallet-retry");
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
 });

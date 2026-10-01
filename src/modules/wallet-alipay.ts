@@ -1,3 +1,4 @@
+import {randomUUID} from "node:crypto";
 import {AppError} from "../domain/errors.js";
 import {minorToMoney} from "../domain/money.js";
 import type {Repository} from "../infra/repository.js";
@@ -10,6 +11,7 @@ import {queryRecords} from "../infra/record-query.js";
 
 /** Platform-owned Alipay checkout for an agent's procurement wallet. */
 export class WalletAlipayService {
+  private readonly precreateInflight=new Map<string,Promise<string>>();
   constructor(
     private readonly repository: Repository,
     private readonly settings: PaymentSettingsService,
@@ -35,22 +37,47 @@ export class WalletAlipayService {
   }
 
   async precreate(id: string): Promise<string> {
-    this.settings.assertOpen("alipay_page");
-    const deposit = this.deposit(id);
-    if (deposit.status !== "requested" || !deposit.expiresAt || deposit.expiresAt <= new Date()) {
-      throw new AppError(409, "payment_not_available", "余额充值订单不可支付，请返回钱包重新发起");
-    }
-    if (deposit.providerRef && isAlipayPrecreateQr(deposit.providerRef)) return deposit.providerRef;
-    const {client, identity} = this.client(deposit);
-    const result = await client.exec("alipay.trade.precreate", {
+    const running=this.precreateInflight.get(id);if(running)return running;
+    const work=this.precreateOnce(id).finally(()=>this.precreateInflight.delete(id));
+    this.precreateInflight.set(id,work);return work;
+  }
+
+  private async precreateOnce(id:string):Promise<string> {
+    if(!this.clientOverride)this.settings.assertOpen("alipay_page");
+    const leaseToken=randomUUID(),now=new Date(),claimed=this.repository.transaction(()=>{
+      const deposit=this.deposit(id);
+      if(deposit.status!=="requested"||!deposit.expiresAt||deposit.expiresAt<=now)
+        throw new AppError(409,"payment_not_available","余额充值订单不可支付，请返回钱包重新发起");
+      if(deposit.providerRef&&isAlipayPrecreateQr(deposit.providerRef))return {deposit,existing:deposit.providerRef};
+      if(deposit.precreateLeaseUntil&&deposit.precreateLeaseUntil>now)
+        throw new AppError(409,"payment_code_generating","付款码正在生成，请稍后重试",true);
+      const leased={...deposit,precreateLeaseToken:leaseToken,precreateLeaseUntil:new Date(now.getTime()+30_000),updatedAt:now};
+      this.repository.saveOperations("wallet_deposit",leased);return {deposit:leased,existing:null};
+    });
+    if(claimed.existing)return claimed.existing;
+    try{
+      const {client, identity} = this.client(claimed.deposit);
+      const result = await client.exec("alipay.trade.precreate", {
       notifyUrl: this.base + "/internal/webhooks/alipay",
-      bizContent: {out_trade_no: deposit.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: identity.sellerId,
-        total_amount: minorToMoney(deposit.amountMinor), subject: deposit.id, timeout_express: timeoutExpress(deposit.expiresAt)},
-    }, {validateSign: true});
-    const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
-    if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝当面付暂不可用，请稍后重试");
-    this.repository.saveOperations("wallet_deposit", {...deposit, providerRef: qrCode, updatedAt: new Date()});
-    return qrCode;
+      bizContent: {out_trade_no: claimed.deposit.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: identity.sellerId,
+        total_amount: minorToMoney(claimed.deposit.amountMinor), subject: claimed.deposit.id, timeout_express: timeoutExpress(claimed.deposit.expiresAt!)},
+      }, {validateSign: true});
+      const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
+      if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝当面付暂不可用，请稍后重试");
+      return this.repository.transaction(()=>{
+        const current=this.deposit(id);
+        if(current.providerRef&&isAlipayPrecreateQr(current.providerRef))return current.providerRef;
+        if(current.precreateLeaseToken!==leaseToken||current.status!=="requested")
+          throw new AppError(409,"payment_code_generation_changed","付款码生成状态已变化，请重新查询",true);
+        this.repository.saveOperations("wallet_deposit",{...current,providerRef:qrCode,precreateLeaseToken:null,
+          precreateLeaseUntil:null,updatedAt:new Date()});return qrCode;
+      });
+    }catch(error){
+      this.repository.transaction(()=>{const current=this.repository.getOperations("wallet_deposit",id);
+        if(current?.precreateLeaseToken===leaseToken)this.repository.saveOperations("wallet_deposit",{...current,
+          precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()});});
+      throw error;
+    }
   }
 
   handleNotification(input: Record<string, string>): void {
@@ -129,7 +156,7 @@ export class WalletAlipayService {
     return this.repository.transaction(()=>{
       const current=this.deposit(id);
       if(current.status!=="requested")return current;
-      const updated={...current,status,nextCheckAt:null,updatedAt:new Date()};
+      const updated={...current,status,nextCheckAt:null,precreateLeaseToken:null,precreateLeaseUntil:null,updatedAt:new Date()};
       this.repository.saveOperations("wallet_deposit",updated);
       return updated;
     });

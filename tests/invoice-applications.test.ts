@@ -148,4 +148,38 @@ describe("order invoice applications", () => {
     expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("paid");
     expect(runtime.invoices.get(owner,application.id).status).toBe("submitted");
   });
+
+  it("coalesces invoice payment-code creation and rejects an active database lease",async()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-precreate-race"});
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),code="https://qr.alipay.com/invoice-once";
+    const exec=vi.fn(async()=>{await gate;return {code:"10000",msg:"Success",qr_code:code};}),client={pageExecute:()=>"",exec,checkNotifySignV2:()=>true},
+      identity={appId:"2026000000000000",sellerId:"2088000000000000"},gateway=new InvoiceAlipayService(runtime.repository,
+        runtime.paymentSettings,runtime.invoices,"https://pay.example.com",runtime.portalTokens,{client,identity}),{payment}=gateway.ensurePayment(owner,application.id);
+    const first=gateway.precreate(payment.id),second=gateway.precreate(payment.id);await Promise.resolve();release();
+    await expect(Promise.all([first,second])).resolves.toEqual([code,code]);expect(exec).toHaveBeenCalledTimes(1);
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)).toMatchObject({qrPayload:code,
+      precreateLeaseToken:null,precreateLeaseUntil:null});
+
+    const application2={...application,id:"inv_second_precreate",requestKey:"invoice-precreate-race-2",paymentId:null,createdAt:new Date(),updatedAt:new Date()};
+    runtime.repository.saveOperations("invoice_application",application2,true);
+    const secondPayment=gateway.ensurePayment(owner,application2.id).payment;
+    runtime.repository.saveOperations("invoice_fee_payment",{...secondPayment,precreateLeaseToken:"other-worker",
+      precreateLeaseUntil:new Date(Date.now()+30_000),updatedAt:new Date()});
+    await expect(gateway.precreate(secondPayment.id)).rejects.toMatchObject({code:"payment_code_generating",retryable:true});
+  });
+
+  it("releases a failed invoice payment-code lease so it can retry",async()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-precreate-retry"}),
+      exec=vi.fn().mockResolvedValueOnce({code:"40004",msg:"failed"})
+        .mockResolvedValueOnce({code:"10000",msg:"Success",qr_code:"https://qr.alipay.com/invoice-retry"}),
+      client={pageExecute:()=>"",exec,checkNotifySignV2:()=>true},identity={appId:"2026000000000000",sellerId:"2088000000000000"},
+      gateway=new InvoiceAlipayService(runtime.repository,runtime.paymentSettings,runtime.invoices,
+        "https://pay.example.com",runtime.portalTokens,{client,identity}),{payment}=gateway.ensurePayment(owner,application.id);
+    await expect(gateway.precreate(payment.id)).rejects.toMatchObject({code:"payment_provider_unavailable"});
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)).toMatchObject({precreateLeaseToken:null,precreateLeaseUntil:null});
+    await expect(gateway.precreate(payment.id)).resolves.toBe("https://qr.alipay.com/invoice-retry");
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
 });
