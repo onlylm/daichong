@@ -5,6 +5,7 @@ import {InvoiceAlipayService} from "../src/modules/invoice-alipay.js";
 import {WalletAlipayService} from "../src/modules/wallet-alipay.js";
 import {AlipayPagePaymentProvider} from "../src/modules/alipay-payment.js";
 import {ManagedAlipayService} from "../src/modules/managed-payment.js";
+import {RefundService} from "../src/modules/refund-service.js";
 import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 import type {Repository} from "../src/infra/repository.js";
 
@@ -54,5 +55,21 @@ describe("bounded payment worker queues",()=>{
     runtime.repository.updatePaymentAttempt({...paidAttempt,nextCheckAt:past});
     expect(repository.findDuePaymentOrder?.("alipay_page",now)).toMatchObject({id:order.id,paymentStatus:"paid"});
     expect(full).not.toHaveBeenCalled();
+  });
+
+  it("treats an indexed empty due queue as empty without scanning order history",async()=>{
+    const config=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"});
+    runtime=createRuntime(config);
+    const alipay=new ManagedAlipayService(runtime.repository,runtime.paymentSettings,runtime.payment,"https://pay.example.com",
+      new AlipayPagePaymentProvider("https://pay.example.com",runtime.portalTokens));
+    const refunds=new RefundService(runtime.repository,runtime.ledger,runtime.webhooks,{providerFor:()=>"alipay_page",
+      execute:vi.fn(),query:vi.fn().mockResolvedValue({status:"not_confirmed"})});
+    const fullOrders=vi.spyOn(runtime.repository,"listOrdersInternal"),paymentRun=vi.spyOn(alipay,"reconcile").mockResolvedValue();
+
+    await alipay.reconcileOne();
+    await refunds.reconcileOne();
+
+    expect(paymentRun).not.toHaveBeenCalled();
+    expect(fullOrders).not.toHaveBeenCalled();
   });
 });

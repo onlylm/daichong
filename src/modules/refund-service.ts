@@ -352,7 +352,7 @@ export class RefundService {
   async reconcileOne(): Promise<void> {
     if (!this.executor?.query) return;
     const refund = this.repository.transaction(() => {
-      const now=new Date(),candidate=this.repository.findDueRefund?.("alipay_page",now)??this.repository.listOrdersInternal()
+      const now=new Date(),candidate=this.repository.findDueRefund?this.repository.findDueRefund("alipay_page",now):this.repository.listOrdersInternal()
         .flatMap(order => this.repository.listRefundsForOrder(order.merchantId, order.id))
         .find(item => item.status === "processing" && (!item.nextCheckAt || item.nextCheckAt <= now)
           && this.paymentProvider(item.orderId) === "alipay_page");
@@ -406,8 +406,8 @@ export class RefundService {
   }
 
   private findRefundById(refundId: string): Refund | undefined {
-    return this.repository.findRefundInternal?.(refundId)??this.repository.listOrdersInternal()
-      .flatMap(order => this.repository.listRefundsForOrder(order.merchantId, order.id))
+    if (this.repository.findRefundInternal) return this.repository.findRefundInternal(refundId) ?? undefined;
+    return this.repository.listOrdersInternal().flatMap(order => this.repository.listRefundsForOrder(order.merchantId, order.id))
       .find(item => item.id === refundId);
   }
 
