@@ -82,8 +82,10 @@ export class AccountService {
 
   list(actor: Actor): ReturnType<typeof publicAccount>[] {
     requirePermission(actor, "accounts.read");
-    const accounts = this.repository.listOperations("account", isPlatform(actor) ? undefined : actor.merchantId!);
-    const visible = isPlatform(actor) ? accounts.filter(isPlatformAccount) : accounts;
+    const result=queryRecords(this.repository,"account",isPlatform(actor)
+      ?{filters:[{field:"merchantId",op:"is_null"}],orderBy:"createdAt",direction:"asc",limit:500,count:false}
+      :{merchantId:actor.merchantId!,orderBy:"createdAt",direction:"asc",limit:500,count:false});
+    const visible = isPlatform(actor) ? result.data.filter(isPlatformAccount) : result.data;
     return visible.map(publicAccount);
   }
 
@@ -93,8 +95,8 @@ export class AccountService {
     if (!this.repository.findMerchantById(merchantId)) throw new AppError(404, "merchant_not_found", "代理商不存在");
     const roleOrder: Record<AccountRole, number> = {agent_owner: 0, agent_staff: 1, agent_finance: 2,
       platform_admin: 9, platform_support: 9, platform_finance: 9, platform_auditor: 9};
-    return this.repository.listOperations("account", merchantId)
-      .filter(account => account.role.startsWith("agent_"))
+    return queryRecords(this.repository,"account",{merchantId,filters:[{field:"role",op:"in",value:["agent_owner","agent_staff","agent_finance"]}],
+      orderBy:"createdAt",direction:"asc",limit:500,count:false}).data
       .sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || a.displayName.localeCompare(b.displayName, "zh-CN"))
       .map(publicAccount);
   }
@@ -114,7 +116,7 @@ export class AccountService {
       this.assertAccountScope(actor, role, target.merchantId);
       if (actor.role !== "platform_admin" && target.role === "agent_owner") throw new AppError(403, "owner_protected", "代理主账号只能由平台调整");
       if (target.role === "platform_admin" && (role !== target.role || status !== "active")
-          && this.repository.listOperations("account").filter(x => x.role === "platform_admin" && x.status === "active").length <= 1) {
+          && queryRecords(this.repository,"account",{filters:[{field:"role",value:"platform_admin"},{field:"status",value:"active"}],limit:1}).meta.total <= 1) {
         throw new AppError(409, "last_admin", "不能禁用或降权最后一名管理员");
       }
       const updated = {...target, role, status, authVersion: target.authVersion + 1, updatedAt: new Date()};
@@ -264,7 +266,8 @@ export class AccountService {
     const profile = this.repository.getOperations("agent_profile", merchantId);
     const rules = this.repository.getOperations("tier_rules", "default");
     const benefits = resolveTierBenefits(profile?.tier ?? "standard", rules ?? {id: "default", merchantId: null, version: 0, metric: "supply_amount", enabled: false, levels: [], updatedAt: new Date(0)});
-    const staffCount = this.repository.listOperations("account").filter(account => account.merchantId === merchantId && account.status === "active" && (includeOwner || account.role !== "agent_owner")).length;
+    const roles=includeOwner?["agent_owner","agent_staff","agent_finance"]:["agent_staff","agent_finance"];
+    const staffCount=queryRecords(this.repository,"account",{merchantId,filters:[{field:"status",value:"active"},{field:"role",op:"in",value:roles}],limit:1}).meta.total;
     const limit = includeOwner ? benefits.maxStaffAccounts + 1 : benefits.maxStaffAccounts;
     if (staffCount >= limit) throw new AppError(409, "staff_limit_reached", "当前会员等级最多可创建 " + benefits.maxStaffAccounts + " 个子账号");
   }
