@@ -463,10 +463,22 @@ export class SqliteRepository implements Repository {
       order:row.order_payload?decode<Order>(String(row.order_payload)):null,targetMinor:BigInt(String(row.target))}));
   }
 
-  hasPendingRefundForReleasedEarnings(merchantId:string) {
-    return !!this.db.prepare(`SELECT 1 FROM sandbox_records c JOIN sandbox_records r
+  hasPendingRefundForReleasedEarnings(merchantId:string,orderIds?:readonly string[]) {
+    const unique=orderIds?[...new Set(orderIds)].filter(Boolean):null;
+    if(unique&&!unique.length)return false;
+    if(!unique)return !!this.db.prepare(`SELECT 1 FROM sandbox_records c JOIN sandbox_records r
       ON r.kind='refund' AND r.merchant_id=c.merchant_id AND json_extract(r.payload,'$.orderId')=json_extract(c.payload,'$.orderId')
       WHERE c.kind='ops_wallet_credit' AND c.merchant_id=? AND json_extract(r.payload,'$.status') IN ('requested','approved','processing') LIMIT 1`).get(merchantId);
+    for(let offset=0;offset<unique.length;offset+=400){
+      const ids=unique.slice(offset,offset+400),placeholders=ids.map(()=>'?').join(',');
+      const pending=this.db.prepare(`SELECT 1 FROM sandbox_records r WHERE r.kind='refund' AND r.merchant_id=?
+        AND json_extract(r.payload,'$.orderId') IN (${placeholders})
+        AND json_extract(r.payload,'$.status') IN ('requested','approved','processing')
+        AND EXISTS(SELECT 1 FROM sandbox_records c WHERE c.kind='ops_wallet_credit' AND c.merchant_id=r.merchant_id
+          AND json_extract(c.payload,'$.orderId')=json_extract(r.payload,'$.orderId')) LIMIT 1`).get(merchantId,...ids);
+      if(pending)return true;
+    }
+    return false;
   }
 
   creditedDepositTotal(merchantId:string) {

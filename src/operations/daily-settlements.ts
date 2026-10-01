@@ -122,13 +122,17 @@ export class DailySettlementService {
     return this.repository.transaction(() => {
       const current = this.repository.getOperations("daily_settlement", id);
       if (!current) throw new AppError(404, "daily_settlement_not_found", "每日核算单不存在");
-      if (current.status === "paid" && current.payoutReference === reference) return current;
+      if (current.status === "paid") {
+        if (current.payoutReference === reference && current.payoutMethod === input.method
+          && current.payoutEvidence === evidence && current.note === note) return current;
+        throw new AppError(409, "daily_settlement_payment_conflict", "该核算单已登记打款，重放内容与原付款记录不一致");
+      }
       if (current.status !== "pending_payment" || current.payableMinor <= 0n) throw new AppError(409, "daily_settlement_final", "该核算单不可确认打款");
       const duplicateStatement = queryRecords(this.repository,"daily_settlement",{filters:[{field:"payoutReference",value:reference},
         {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length>0;
       const duplicateWithdrawal = queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference}],limit:1,count:false}).data.length>0;
       if (duplicateStatement || duplicateWithdrawal) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
-      const refundPending=this.repository.hasPendingRefundForReleasedEarnings?.(current.merchantId)
+      const refundPending=this.repository.hasPendingRefundForReleasedEarnings?.(current.merchantId,current.orderIds)
         ??current.orderIds.some(orderId=>this.repository.listRefundsForOrder(current.merchantId,orderId)
           .some(refund=>["requested","approved","processing"].includes(refund.status)));
       if(refundPending)throw new AppError(409,"settlement_refund_pending","代理收益关联订单仍有退款待确认，暂不能登记打款");
