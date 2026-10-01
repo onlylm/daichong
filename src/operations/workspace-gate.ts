@@ -1,7 +1,7 @@
 import type {FastifyInstance} from "fastify";
 import {brandFaviconLinks, quefaLogoStackHtml} from "./brand-assets.js";
 
-const gateCsp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const gateCsp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 export function registerWorkspaceGate(app: FastifyInstance): void {
   app.get("/workspace", async (_request, reply) => reply.type("text/html; charset=utf-8")

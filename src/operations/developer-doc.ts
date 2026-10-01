@@ -130,7 +130,7 @@ export function registerDeveloperDocs(app: FastifyInstance): void {
     return reply.type("text/html; charset=utf-8")
       .header("cache-control", "no-store")
       .header("referrer-policy", "no-referrer")
-      .header("content-security-policy", "default-src 'none'; style-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+      .header("content-security-policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
       .header("x-content-type-options", "nosniff")
       .send(docPageHtml(slug, renderMarkdownToHtml(markdown)));
   });

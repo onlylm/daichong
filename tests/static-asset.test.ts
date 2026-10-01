@@ -4,7 +4,7 @@ import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import {contentAddressedAssetPath, staticAssetHash} from "../src/infra/static-asset.js";
-import {workspaceCss, workspaceJs} from "../src/operations/workspace-page.js";
+import {workspaceBootJs, workspaceCss, workspaceJs} from "../src/operations/workspace-page.js";
 
 describe("workspace static assets", () => {
   let runtime: Runtime;
@@ -53,10 +53,18 @@ describe("workspace static assets", () => {
     expect(page.headers["cache-control"]).toBe("no-store");
     expect(page.body).not.toContain("20261001-cdk-template-v5");
     expect(page.body).not.toContain('src="/workspace/assets/app.js"');
-    const scriptPath = page.body.match(/<script src="([^"]+)" defer><\/script>/)?.[1];
+    const scriptPaths = [...page.body.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map(match => match[1]);
+    const scriptPath = contentAddressedAssetPath("/workspace/assets/app", "js", workspaceJs);
+    const bootScriptPath = contentAddressedAssetPath("/workspace/assets/boot", "js", workspaceBootJs);
     const stylePath = page.body.match(/<link rel="stylesheet" href="([^"]+)">/)?.[1];
-    expect(scriptPath).toBe(contentAddressedAssetPath("/workspace/assets/app", "js", workspaceJs));
+    expect(scriptPaths).toEqual([bootScriptPath, scriptPath]);
+    expect(page.body).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/);
     expect(stylePath).toBe(contentAddressedAssetPath("/workspace/assets/app", "css", workspaceCss));
+
+    const boot = await app.inject({url: bootScriptPath});
+    expect(boot.statusCode).toBe(200);
+    expect(boot.headers["cache-control"]).toContain("immutable");
+    expect(boot.body).toContain("页面加载超时");
 
     const current = await app.inject({url: scriptPath!});
     expect(current.statusCode).toBe(200);
