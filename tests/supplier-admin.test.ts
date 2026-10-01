@@ -170,6 +170,9 @@ describe("platform recharge supplier administration", () => {
     const synced = await app.inject({method: "POST", url: "/internal/admin/api/supply/plans/sync", headers: adminHeaders(config), payload: {}});
     expect(synced.statusCode).toBe(200);
     expect(new Set(synced.json().data.map((item: {product: string}) => item.product))).toEqual(new Set(["gpt"]));
+    expect(synced.json().data.map((item: {plan: string}) => item.plan)).toEqual(["plus"]);
+    expect(runtime.repository.listSupplierPlanSnapshots("supplier_primary").map(item => item.plan)).toEqual(["plus"]);
+    expect(synced.body).not.toContain("codex_points");
 
     const mappings = (await app.inject({method: "GET", url: "/internal/admin/api/supply/mappings", headers: adminHeaders(config)})).json().data;
     expect(mappings).toHaveLength(4);

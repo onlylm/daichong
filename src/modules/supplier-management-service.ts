@@ -170,7 +170,12 @@ export class SupplierManagementService {
     try {
       const data = await client.getPlanCatalog("gpt");
       const syncedAt = new Date();
-      const plans = normalizePlans(connection.id, "gpt", data, syncedAt);
+      // Persist only plans that can back one of the four managed products.
+      // The upstream GPT catalogue may also contain Codex points, renewals or
+      // future SKUs; keeping those in the operational snapshot makes them look
+      // configurable even though the order boundary rejects them.
+      const plans = normalizePlans(connection.id, "gpt", data, syncedAt)
+        .filter(plan => managedGptProducts.some(product => product.matchPlan(plan)));
       this.repository.transaction(() => {
         const latest = this.requireVersion(connection.configVersion);
         this.repository.replaceSupplierPlanSnapshots(connection.id, "gpt", plans);
@@ -179,7 +184,7 @@ export class SupplierManagementService {
         this.reconcileDisabledMappings(plans);
         this.repository.saveSupplierConnection({...latest, lastPlanSyncAt: syncedAt, updatedAt: syncedAt});
       });
-      return this.repository.listSupplierPlanSnapshots(connection.id).sort(planSort);
+      return this.listPlans();
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError(502, "supplier_plan_sync_failed", safeSupplierError(error), error instanceof UpstreamRequestError && error.retryable);
