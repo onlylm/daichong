@@ -10,13 +10,17 @@ describe("OpenAPI document", () => {
     const document = YAML.parse(readFileSync(join(here, "../openapi/openapi.yaml"), "utf8"));
     expect(document.openapi).toBe("3.1.0");
     for (const path of [
-      "/v1/products", "/v1/payment-methods", "/v1/orders", "/v1/orders/{order_id}",
+      "/v1/products", "/v1/payment-methods", "/v1/orders", "/v1/orders/{order_id}", "/v1/orders/{order_id}/payment-code",
       "/v1/orders/{order_id}/fulfillments", "/v1/orders/{order_id}/refunds",
       "/v1/ledger", "/v1/settlements", "/v1/settlements/{settlement_id}", "/v1/webhooks/test",
       "/v1/redemptions", "/v1/redemptions/{redemption_id}", "/v1/tier-applications", "/v1/tickets", "/v1/wallet",
     ]) expect(document.paths[path]).toBeDefined();
     expect(document.paths["/v1/orders"].get).toBeDefined();
     expect(document.paths["/v1/orders"].post).toBeDefined();
+    expect(document.paths["/v1/orders/{order_id}/payment-code"].post.requestBody.content["application/json"].schema)
+      .toMatchObject({additionalProperties: false, maxProperties: 0});
+    expect(document.components.schemas.Order.properties.qr_payload.description).toContain("付款页 URL");
+    expect(document.components.schemas.PaymentCode.properties.qr_image_data_url.pattern).toBe("^data:image/png;base64,");
   });
 
   it("does not expose per-agent Alipay configuration", () => {

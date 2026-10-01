@@ -20,6 +20,7 @@ import {registerWorkspacePage} from "./operations/workspace-page.js";
 import {registerUsdtRoutes} from "./modules/usdt-routes.js";
 import type {Repository} from "./infra/repository.js";
 import {publicWorkerHealth, readWorkerHealth} from "./worker/worker-health.js";
+import {paymentQrDataUrl} from "./modules/payment-qr.js";
 
 const createOrderSchema = z.object({
   merchant_order_no: z.string().min(1).max(64),
@@ -198,6 +199,46 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
     const order = runtime.orders.get(tenant.merchantId, request.params.orderId);
     const latest = latestFulfillmentOf(runtime.repository.listFulfillments(tenant.merchantId, order.id));
     return {data: publicOrder(order, latest, latest ? runtime.fulfillments.canResubmit(latest) : false)};
+  });
+
+  app.post<{Params: {orderId: string}}>("/v1/orders/:orderId/payment-code", async (request, reply) => {
+    const tenant = requireTenant(request);
+    // Response format is intentionally fixed. In particular, this endpoint
+    // accepts no amount, payment-channel or payment-config override.
+    z.object({}).strict().parse(request.body);
+    return sendIdempotent(runtime, request, reply, "POST /v1/orders/:orderId/payment-code", 200, async () => {
+      const profile = runtime.agents.profile(tenant.merchantId);
+      if (!profile.directPaymentCodeEnabled) {
+        throw new AppError(403, "direct_payment_code_disabled", "当前代理尚未开通后端直出付款码");
+      }
+      const order = runtime.orders.get(tenant.merchantId, request.params.orderId);
+      const attempt = runtime.repository.findPaymentAttemptByOrder(tenant.merchantId, order.id);
+      if (order.collectionMode === "agent_collect" || attempt?.provider !== "alipay_page") {
+        throw new AppError(409, "payment_code_not_supported", "该订单不使用平台支付宝收款");
+      }
+      if (order.paymentStatus !== "pending" || order.expiresAt <= new Date()) {
+        throw new AppError(409, "payment_not_available", "订单不可支付，请查询订单状态或重新下单");
+      }
+      if (attempt.status !== "pending" || attempt.requestedMinor !== order.saleAmountMinor || attempt.expiresAt.getTime() !== order.expiresAt.getTime()) {
+        throw new AppError(409, "payment_binding_mismatch", "支付记录与订单金额或有效期不一致");
+      }
+      if (!runtime.alipay) throw new AppError(503, "payment_provider_unavailable", "支付宝付款码暂不可用", true);
+      const paymentCode = await runtime.alipay.precreate(order.id);
+      const qrImageDataUrl = await paymentQrDataUrl(paymentCode);
+      runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "payment_code.fetch",
+        targetType: "order", targetId: order.id, requestId: request.id});
+      return {data: {
+        order_id: order.id,
+        merchant_order_no: order.merchantOrderNo,
+        amount: minorToMoney(order.saleAmountMinor),
+        currency: order.currency,
+        payment_status: order.paymentStatus,
+        payment_code_type: "alipay_precreate",
+        payment_code: paymentCode,
+        qr_image_data_url: qrImageDataUrl,
+        expires_at: order.expiresAt.toISOString(),
+      }};
+    });
   });
 
   app.post<{Params: {orderId: string}}>("/v1/orders/:orderId/fulfillments", async (request, reply) => {

@@ -22,6 +22,8 @@ export interface MfaChallenge extends BaseRecord {
 }
 export interface AgentProfile extends BaseRecord {
   merchantId: string; tier: string; collectionModes: CollectionMode[]; customRedemptionEnabled?: boolean;
+  /** Allows the signed partner backend to fetch a provider payment code for local display. */
+  directPaymentCodeEnabled?: boolean;
   /** 2–8 chars; injected into the controlled public CDK template. */
   cdkCodePrefix?: string;
   /** Controlled template containing one `{PREFIX}` and at least 20 random hexadecimal chars. */
@@ -81,6 +83,13 @@ export interface Ticket extends BaseRecord {
 }
 export interface TicketMessage extends BaseRecord {merchantId: string; ticketId: string; actorId: string; author: "agent" | "platform"; internal: boolean; body: string; createdAt: Date}
 export interface TicketRead extends BaseRecord {ticketId: string; accountId: string; version: number}
+/** Business exception state. It is deliberately independent from support conversations. */
+export interface OperationalIssue extends BaseRecord {
+  merchantId: string; orderId: string; entityId: string; kind: "recharge" | "cdk" | "refund";
+  status: "open" | "resolved"; severity: "normal" | "urgent"; reason: string; retryAllowed: boolean;
+  attentionKey: string; dueAt: Date; firstDetectedAt: Date; updatedAt: Date; resolvedAt: Date | null;
+  legacyTicketIds: string[];
+}
 export interface Announcement extends BaseRecord {
   title: string; body: string; status: "draft" | "published" | "withdrawn"; version: number;
   audience: "all" | "merchants" | "tiers"; merchantIds: string[]; tierCodes: string[];
@@ -167,6 +176,7 @@ export interface OperationsRecords {
   service_checkpoint: ServiceCheckpoint; worker_health: WorkerHealth;
   account: Account; session: LoginSession; login_throttle: LoginThrottle; mfa_challenge: MfaChallenge; agent_profile: AgentProfile; tier_rules: TierRules; global_product_catalog: GlobalProductCatalog;
   ticket: Ticket; ticket_message: TicketMessage; ticket_read: TicketRead; announcement: Announcement; announcement_read: AnnouncementRead;
+  operational_issue: OperationalIssue;
   wallet_entry: WalletEntry; wallet_deposit: WalletDeposit; wallet_withdrawal: WalletWithdrawal; wallet_credit: WalletCredit;
   refund_reconciliation: RefundReconciliation; refund_reconciliation_event: RefundReconciliationEvent;
   invoice_application: InvoiceApplication; invoice_fee_payment: InvoiceFeePayment;

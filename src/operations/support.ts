@@ -127,14 +127,15 @@ export class SupportService {
   list(actor: Actor) {
     requirePermission(actor, "tickets.read");
     return this.repository.listOperations("ticket", isPlatform(actor) ? undefined : actor.merchantId!)
-      .filter(ticket => !ticket.archivedAt)
+      .filter(ticket => !ticket.archivedAt && !ticket.systemCase && !ticket.apiApplication && !ticket.tierApplication && !ticket.withdrawalApplication)
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()).map(t => this.view(actor, t));
   }
   page(actor: Actor, input: {merchantId?: string; status?: Ticket["status"] | "all"; page: number; limit: number}) {
     requirePermission(actor, "tickets.read");
     const scopedMerchant = isPlatform(actor) ? input.merchantId : actor.merchantId ?? undefined;
     if (input.merchantId) requireTenantScope(actor, input.merchantId);
-    const filters: RecordFilter[] = [{field: "archivedAt", op: "is_null"}];
+    const filters: RecordFilter[] = [{field: "archivedAt", op: "is_null"}, {field:"systemCase",op:"is_null"},
+      {field:"apiApplication",op:"is_null"},{field:"tierApplication",op:"is_null"},{field:"withdrawalApplication",op:"is_null"}];
     if (input.status && input.status !== "all") filters.push({field: "status", value: input.status});
     const result = queryRecords(this.repository, "ticket", {
       ...(scopedMerchant ? {merchantId: scopedMerchant} : {}), filters,
@@ -147,6 +148,7 @@ export class SupportService {
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部代理工单");
     const page = queryRecords(this.repository, "ticket", {filters: [
       {field: "archivedAt", op: "is_null"}, {field: "systemCase", op: "is_null"},
+      {field:"apiApplication",op:"is_null"},{field:"tierApplication",op:"is_null"},{field:"withdrawalApplication",op:"is_null"},
       {field: "status", op: "in", value: ["open", "in_progress", "waiting_agent"]},
     ], page: 1, limit, orderBy: "updatedAt", direction: "desc"});
     return {...page, data: page.data.map(ticket => this.view(actor, ticket))};

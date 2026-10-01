@@ -124,6 +124,9 @@ export interface Order {
 export interface PaymentAttempt {
   paymentConfigId?: string;
   nextCheckAt?: Date;
+  /** Cross-process lease used while requesting a provider payment code. */
+  precreateLeaseToken?: string | null;
+  precreateLeaseUntil?: Date | null;
   id: string;
   merchantId: string;
   orderId: string;

@@ -136,7 +136,8 @@ export class AgentService {
     });
   }
   saveProfile(actor: Actor, merchantId: string, input: Pick<AgentProfile, "tier" | "collectionModes" | "version"> &
-      {customRedemptionEnabled?: boolean | undefined; cdkCodePrefix?: string | undefined; cdkCodeTemplate?: string | undefined;
+      {customRedemptionEnabled?: boolean | undefined; directPaymentCodeEnabled?: boolean | undefined;
+        cdkCodePrefix?: string | undefined; cdkCodeTemplate?: string | undefined;
         orderVisibility?: AgentProfile["orderVisibility"]}): AgentProfile {
     requirePermission(actor, "agents.manage");
     return this.repository.transaction(() => {
@@ -145,7 +146,9 @@ export class AgentService {
       if (!rules.levels.some(x => x.code === input.tier) || !input.collectionModes.length) throw new AppError(422, "profile_invalid", "等级或销售模式无效");
       const collectionModes = input.tier !== profile.tier ? mergedCollectionModes(input.collectionModes, input.tier, rules) : input.collectionModes;
       const updated = {...profile, tier: input.tier, collectionModes,
-        customRedemptionEnabled: input.customRedemptionEnabled ?? profile.customRedemptionEnabled ?? false, version: profile.version + 1, updatedAt: new Date()};
+        customRedemptionEnabled: input.customRedemptionEnabled ?? profile.customRedemptionEnabled ?? false,
+        directPaymentCodeEnabled: input.directPaymentCodeEnabled ?? profile.directPaymentCodeEnabled ?? false,
+        version: profile.version + 1, updatedAt: new Date()};
       if (input.cdkCodePrefix !== undefined) updated.cdkCodePrefix = assertCdkPrefix(input.cdkCodePrefix);
       if (input.cdkCodeTemplate !== undefined) updated.cdkCodeTemplate = assertCdkTemplate(input.cdkCodeTemplate);
       updated.orderVisibility = input.orderVisibility ?? profile.orderVisibility ?? [...defaultOrderVisibility];
@@ -225,7 +228,8 @@ export class AgentService {
     }
     const rules = this.rules(), benefits = resolveTierBenefits("standard", rules);
     const profile: AgentProfile = {id: merchant.id, merchantId: merchant.id, tier: "standard", collectionModes: [...benefits.collectionModes],
-      customRedemptionEnabled: true, orderVisibility: [...defaultOrderVisibility], version: 1, updatedAt: new Date()};
+      customRedemptionEnabled: true, directPaymentCodeEnabled: false,
+      orderVisibility: [...defaultOrderVisibility], version: 1, updatedAt: new Date()};
     this.repository.saveOperations("agent_profile", profile);
     this.repository.saveOperations("api_access", {id: merchant.id, merchantId: merchant.id, enabled: true,
       depositId: "default:open-api", ticketId: "", version: 1, updatedAt: new Date()}, true);

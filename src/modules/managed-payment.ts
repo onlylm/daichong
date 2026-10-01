@@ -23,6 +23,7 @@ export class ManagedPaymentProvider implements PaymentProvider {
 }
 export class ManagedAlipayService {
   private externalRefundHandler?: (orderId: string, refundedMinor: bigint, providerReference: string) => void;
+  private readonly precreateInflight = new Map<string, Promise<string>>();
   constructor(private readonly repo: Repository, private readonly settings: PaymentSettingsService, private readonly payment: PaymentService,
     private readonly base: string, private readonly provider: AlipayPagePaymentProvider, private readonly legacy: AlipayPaymentService | null = null) {}
   private service(id: string): AlipayPaymentService {
@@ -42,7 +43,14 @@ export class ManagedAlipayService {
     this.externalRefundHandler = handler;
     this.legacy?.setExternalRefundHandler(handler);
   }
-  async precreate(id: string): Promise<string> {this.settings.assertOpen("alipay_page"); return this.service(id).precreate(id);}
+  async precreate(id: string): Promise<string> {
+    this.settings.assertOpen("alipay_page");
+    const running = this.precreateInflight.get(id);
+    if (running) return running;
+    const work = this.service(id).precreate(id).finally(() => this.precreateInflight.delete(id));
+    this.precreateInflight.set(id, work);
+    return work;
+  }
   handleNotification(input: Record<string, string>): void {this.service(input.out_trade_no ?? "").handleNotification(input);}
   async reconcile(id: string): Promise<void> {await this.service(id).reconcile(id);}
   async refund(orderId: string, refundId: string, amountMinor: bigint, reason: string): Promise<string> {

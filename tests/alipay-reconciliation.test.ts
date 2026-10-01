@@ -1,4 +1,7 @@
 import {randomUUID} from "node:crypto";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
@@ -50,6 +53,60 @@ describe("Alipay payment reconciliation", () => {
     value.setExternalRefundHandler((orderId, amount, reference) => runtime.refunds.syncProviderRefund(orderId, amount, reference));
     return value;
   }
+
+  it("reuses one provider precreate call for concurrent payment-code requests", async () => {
+    const order = await orderWithAlipayAttempt();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {release = resolve;});
+    const exec = vi.fn(async () => {await gate; return {code: "10000", qr_code: "https://qr.alipay.com/concurrent-code"};});
+    const client = {exec, pageExecute: vi.fn(async () => ""), checkNotifySignV2: vi.fn(() => true)} as unknown as AlipayClient;
+    const alipay = new AlipayPaymentService(runtime.repository, runtime.payment, client,
+      {appId: "test-app", sellerId: "2088000000000000"}, config.publicBaseUrl,
+      new AlipayPagePaymentProvider(config.publicBaseUrl, runtime.portalTokens));
+
+    const first = alipay.precreate(order.id), second = alipay.precreate(order.id);
+    await Promise.resolve(); release();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      "https://qr.alipay.com/concurrent-code", "https://qr.alipay.com/concurrent-code",
+    ]);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)).toMatchObject({
+      qrPayload: "https://qr.alipay.com/concurrent-code", precreateLeaseToken: null, precreateLeaseUntil: null,
+    });
+  });
+
+  it("rejects a cross-process precreate race while the database lease is active", async () => {
+    const order = await orderWithAlipayAttempt(), attempt = runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
+    runtime.repository.updatePaymentAttempt({...attempt, precreateLeaseToken: "another-process",
+      precreateLeaseUntil: new Date(Date.now() + 30_000), updatedAt: new Date()});
+    await expect(service({code: "10000", qr_code: "https://qr.alipay.com/should-not-run"}).precreate(order.id))
+      .rejects.toMatchObject({code: "payment_code_generating", retryable: true});
+  });
+
+  it("preserves the payment-code lease as a Date across a SQLite restart", async () => {
+    const directory=mkdtempSync(join(tmpdir(),"payment-code-lease-")),path=join(directory,"lease.sqlite");
+    const sqliteConfig={...config,storageDriver:"sqlite" as const,sqlitePath:path};
+    let seeded=createRuntime(sqliteConfig);
+    try{
+      publishTestRechargeProduct(seeded);
+      const bundle=seeded.repository.findCredential(config.demoPartnerId,config.demoKeyId)!;
+      const context={merchantId:bundle.merchant.id,partnerId:bundle.merchant.partnerId,appId:bundle.app.id,keyId:bundle.key.keyId};
+      const order=await seeded.orders.create(context,{merchantOrderNo:randomUUID(),productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      const attempt=seeded.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+      seeded.repository.updatePaymentAttempt({...attempt,provider:"alipay_page",qrPayload:null,precreateLeaseToken:"other-worker",
+        precreateLeaseUntil:new Date(Date.now()+30_000),updatedAt:new Date()});
+      seeded.close();
+      seeded=createRuntime(sqliteConfig);
+      const restored=seeded.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+      expect(restored.precreateLeaseUntil).toBeInstanceOf(Date);
+      const client={exec:vi.fn(),pageExecute:vi.fn(async()=>""),checkNotifySignV2:vi.fn(()=>true)} as unknown as AlipayClient;
+      const alipay=new AlipayPaymentService(seeded.repository,seeded.payment,client,
+        {appId:"test-app",sellerId:"2088000000000000"},config.publicBaseUrl,
+        new AlipayPagePaymentProvider(config.publicBaseUrl,seeded.portalTokens));
+      await expect(alipay.precreate(order.id)).rejects.toMatchObject({code:"payment_code_generating"});
+      expect(client.exec).not.toHaveBeenCalled();
+    }finally{seeded.close();rmSync(directory,{recursive:true,force:true});}
+  });
 
   it("holds an aggregate provider-side refund for exact-reference review instead of guessing its type", async () => {
     const created = await orderWithAlipayAttempt();
@@ -152,6 +209,75 @@ describe("Alipay payment reconciliation", () => {
     const events=runtime.repository.listOperations("refund_reconciliation_event",paid.merchantId)
       .filter(item=>item.orderId===paid.id);
     expect(events.map(item=>item.action)).toEqual(["detected","amount_updated"]);
+  });
+
+  it("keeps the greatest provider cumulative total across out-of-order queries and partial postings", async()=>{
+    const created=await orderWithAlipayAttempt(),tradeNo="2026100100000088";
+    const paid=runtime.payment.markPaid(created.merchantId,created.id,
+      {channel:"alipay_page",providerRef:tradeNo,receivedMinor:created.saleAmountMinor});
+    const actor={id:"finance",role:"platform_finance" as const,merchantId:null};
+
+    runtime.refundReconciliations.observe({merchantId:paid.merchantId,orderId:paid.id,reportedMinor:2_000n,recordedMinor:0n,
+      providerReference:`alipay-query:${tradeNo}:20.00`});
+    runtime.refunds.recordExternalCustomerRefund(actor,paid.id,{amount:"10.00",reason:"支付宝已退款，部分补登",
+      requestKey:"partial-provider-refund-1",providerRefundNo:"2026100100000881",confirmAlreadyRefundedAtChannel:true});
+
+    const partial=runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id));
+    expect(partial).toMatchObject({status:"reviewing",reportedMinor:2_000n,recordedMinor:1_000n,differenceMinor:1_000n});
+
+    runtime.refundReconciliations.observe({merchantId:paid.merchantId,orderId:paid.id,reportedMinor:1_000n,recordedMinor:1_000n,
+      providerReference:`alipay-query-stale:${tradeNo}:10.00`});
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+      .toMatchObject({status:"reviewing",reportedMinor:2_000n,recordedMinor:1_000n,differenceMinor:1_000n});
+
+    runtime.refunds.recordExternalCustomerRefund(actor,paid.id,{amount:"10.00",reason:"支付宝已退款，补齐差额",
+      requestKey:"partial-provider-refund-2",providerRefundNo:"2026100100000882",confirmAlreadyRefundedAtChannel:true});
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+      .toMatchObject({status:"resolved",reportedMinor:2_000n,recordedMinor:2_000n,differenceMinor:0n});
+  });
+
+  it("migrates legacy refund discrepancy tickets at startup before the new business lock is evaluated", async()=>{
+    const folder=mkdtempSync(join(tmpdir(),"quefa-refund-migration-")),database=join(folder,"runtime.sqlite");
+    const sqliteConfig=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:database,LOG_LEVEL:"silent",
+      PUBLIC_BASE_URL:"https://tibo.ink",ADMIN_BASE_URL:"https://admin.tibo.ink"});
+    let seeded:Runtime|null=null,reopened:Runtime|null=null;
+    try{
+      seeded=createRuntime(sqliteConfig);
+      publishTestRechargeProduct(seeded);
+      const bundle=seeded.repository.findCredential(sqliteConfig.demoPartnerId,sqliteConfig.demoKeyId)!;
+      const sqliteTenant={merchantId:bundle.merchant.id,partnerId:bundle.merchant.partnerId,appId:bundle.app.id,keyId:bundle.key.keyId};
+      const created=await seeded.orders.create(sqliteTenant,{merchantOrderNo:randomUUID(),productCode:"chatgpt_plus_cdk_1m",
+        quantity:1,saleAmount:"135.00",deliveryMode:"auto_recharge"});
+      const attempt=seeded.repository.findPaymentAttemptByOrder(created.merchantId,created.id)!;
+      seeded.repository.updatePaymentAttempt({...attempt,provider:"alipay_page",providerRef:created.id,qrPayload:null,updatedAt:new Date()});
+      const paid=seeded.payment.markPaid(created.merchantId,created.id,
+        {channel:"alipay_page",providerRef:"2026100100000098",receivedMinor:created.saleAmountMinor});
+      const now=new Date(),ticketId="case_prelaunch_refund_review";
+      seeded.repository.saveOperations("ticket",{id:ticketId,merchantId:paid.merchantId,orderId:paid.id,category:"refund",
+        title:"待迁移退款差异",status:"in_progress",assigneeId:null,version:1,publicVersion:1,createdBy:"system",
+        systemCase:{issueKey:`refund-reconcile:${paid.id}:2000`,entityId:`provider-refund:${paid.id}`},priority:"urgent",
+        dueAt:new Date(now.getTime()+30_000),createdAt:now,updatedAt:now},true);
+      seeded.repository.saveOperations("ticket_message",{id:"prelaunch-refund-message",merchantId:paid.merchantId,ticketId,
+        actorId:"system",author:"platform",internal:false,body:"旧消息仍需追溯",createdAt:now},true);
+      seeded.close();seeded=null;
+
+      reopened=createRuntime(sqliteConfig);
+      expect(reopened.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+        .toMatchObject({status:"reviewing",reportedMinor:2_000n,recordedMinor:0n,differenceMinor:2_000n,legacyTicketIds:[ticketId]});
+      expect(reopened.repository.getOperations("ticket",ticketId)?.status).toBe("resolved");
+      const messages=reopened.repository.listOperations("ticket_message",paid.merchantId).filter(item=>item.ticketId===ticketId);
+      expect(messages.map(item=>item.body)).toContain("旧消息仍需追溯");
+      expect(messages.some(item=>item.internal&&item.body.includes("独立财务核对记录"))).toBe(true);
+
+      reopened.close();reopened=null;
+      const second=createRuntime(sqliteConfig);
+      try{
+        expect(second.repository.listOperations("refund_reconciliation_event",paid.merchantId)
+          .filter(item=>item.orderId===paid.id&&item.action==="legacy_ticket_migrated")).toHaveLength(1);
+      }finally{second.close();}
+    }finally{
+      seeded?.close();reopened?.close();rmSync(folder,{recursive:true,force:true});
+    }
   });
 
   it("re-reads local totals inside the transaction when manual posting interleaves with worker reconciliation", async () => {

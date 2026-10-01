@@ -13,15 +13,24 @@ export class RefundReconciliationService {
   constructor(private readonly repository: Repository) {}
 
   observe(input: DiscrepancyInput): RefundReconciliation {
-    const id=refundReconciliationId(input.orderId),now=new Date(),difference=input.reportedMinor-input.recordedMinor;
-    if(difference<=0n) return this.recorded({merchantId:input.merchantId,orderId:input.orderId,recordedMinor:input.recordedMinor})
-      ?? this.snapshotResolved(input,now);
+    const id=refundReconciliationId(input.orderId),now=new Date();
     const current=this.repository.getOperations("refund_reconciliation",id);
+    // Provider queries are cumulative snapshots and may arrive out of order. Neither the
+    // confirmed provider total nor the locally posted total may move backwards.
+    const reportedMinor=current&&current.merchantId===input.merchantId
+      ? bigintMax(current.reportedMinor,input.reportedMinor):input.reportedMinor;
+    const recordedMinor=current&&current.merchantId===input.merchantId
+      ? bigintMax(current.recordedMinor,input.recordedMinor):input.recordedMinor;
+    const difference=reportedMinor-recordedMinor;
+    if(difference<=0n) return this.recorded({merchantId:input.merchantId,orderId:input.orderId,recordedMinor})
+      ?? this.snapshotResolved({...input,reportedMinor,recordedMinor},now);
     const legacyTicketIds=this.migrateLegacyTickets(input.merchantId,input.orderId,id);
+    const newLegacyTicketIds=legacyTicketIds.filter(ticketId=>!current?.legacyTicketIds.includes(ticketId));
     const action:RefundReconciliationEvent["action"]=!current?"detected":current.status==="resolved"?"reopened":"amount_updated";
     const next:RefundReconciliation={id,merchantId:input.merchantId,orderId:input.orderId,provider:"alipay_page",status:"reviewing",
-      reportedMinor:input.reportedMinor,recordedMinor:input.recordedMinor,differenceMinor:difference,
-      providerReferenceFingerprint:createHash("sha256").update(input.providerReference).digest("hex").slice(0,32),
+      reportedMinor,recordedMinor,differenceMinor:difference,
+      providerReferenceFingerprint:!current||input.reportedMinor>current.reportedMinor
+        ? createHash("sha256").update(input.providerReference).digest("hex").slice(0,32):current.providerReferenceFingerprint,
       legacyTicketIds:[...new Set([...(current?.legacyTicketIds??[]),...legacyTicketIds])],version:(current?.version??0)+1,
       firstDetectedAt:current?.firstDetectedAt??now,lastCheckedAt:now,resolvedAt:null};
     const changed=!current||current.status!==next.status||current.reportedMinor!==next.reportedMinor||current.recordedMinor!==next.recordedMinor
@@ -29,7 +38,7 @@ export class RefundReconciliationService {
     if(changed){
       this.repository.saveOperations("refund_reconciliation",next,!current);
       this.event(next,action);
-      if(legacyTicketIds.length)this.event(next,"legacy_ticket_migrated");
+      if(newLegacyTicketIds.length)this.event(next,"legacy_ticket_migrated");
       return next;
     }
     const checked={...current,lastCheckedAt:now,version:current.version+1};
@@ -40,19 +49,72 @@ export class RefundReconciliationService {
   recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint}):RefundReconciliation|null {
     const id=refundReconciliationId(input.orderId),current=this.repository.getOperations("refund_reconciliation",id);
     if(!current||current.merchantId!==input.merchantId)return null;
-    const difference=current.reportedMinor-input.recordedMinor;
+    const recordedMinor=bigintMax(current.recordedMinor,input.recordedMinor);
+    const difference=current.reportedMinor-recordedMinor;
     if(difference>0n){
-      const updated={...current,recordedMinor:input.recordedMinor,differenceMinor:difference,lastCheckedAt:new Date(),version:current.version+1};
+      const updated={...current,recordedMinor,differenceMinor:difference,lastCheckedAt:new Date(),version:current.version+1};
       this.repository.saveOperations("refund_reconciliation",updated);
       if(current.recordedMinor!==updated.recordedMinor||current.differenceMinor!==updated.differenceMinor)this.event(updated,"amount_updated");
       return updated;
     }
     if(current.status==="resolved"&&current.differenceMinor===0n)return current;
-    const resolved={...current,status:"resolved" as const,recordedMinor:input.recordedMinor,differenceMinor:0n,
+    const resolved={...current,status:"resolved" as const,recordedMinor,differenceMinor:0n,
       lastCheckedAt:new Date(),resolvedAt:new Date(),version:current.version+1};
     this.repository.saveOperations("refund_reconciliation",resolved);
     this.event(resolved,"resolved");
     return resolved;
+  }
+
+  /**
+   * One-time-compatible startup migration for databases that ran the former
+   * ticket-backed refund review. It is idempotent and runs before workers can
+   * evaluate the new business lock.
+   */
+  migrateLegacyRecords():{migrated:number;reviewing:number;resolved:number;skipped:number} {
+    return this.repository.transaction(()=>{
+      const groups=new Map<string,{merchantId:string;orderId:string;reportedMinor:bigint;firstDetectedAt:Date;ticketIds:string[]}>();
+      let skipped=0;
+      for(const ticket of this.repository.listOperations("ticket")){
+        const parsed=parseLegacyIssue(ticket);
+        if(!parsed)continue;
+        const order=this.repository.findOrderInternal(parsed.orderId);
+        if(!order||order.merchantId!==ticket.merchantId){skipped++;continue;}
+        const key=`${ticket.merchantId}:${parsed.orderId}`,current=groups.get(key);
+        if(current){
+          current.reportedMinor=bigintMax(current.reportedMinor,parsed.reportedMinor);
+          if(ticket.createdAt<current.firstDetectedAt)current.firstDetectedAt=ticket.createdAt;
+          current.ticketIds.push(ticket.id);
+        }else groups.set(key,{merchantId:ticket.merchantId,orderId:parsed.orderId,reportedMinor:parsed.reportedMinor,
+          firstDetectedAt:ticket.createdAt,ticketIds:[ticket.id]});
+      }
+
+      let migrated=0,reviewing=0,resolved=0;
+      for(const group of groups.values()){
+        const order=this.repository.findOrderInternal(group.orderId)!;
+        const recordedMinor=order.ordinaryRefundedMinor+order.priceAdjustmentRefundedMinor;
+        const id=refundReconciliationId(group.orderId),before=this.repository.getOperations("refund_reconciliation",id);
+        const beforeTickets=new Set(before?.legacyTicketIds??[]);
+        let value:RefundReconciliation;
+        if(group.reportedMinor>recordedMinor||before){
+          value=this.observe({merchantId:group.merchantId,orderId:group.orderId,reportedMinor:group.reportedMinor,recordedMinor,
+            providerReference:`legacy-ticket-migration:${group.orderId}:${group.reportedMinor}`});
+        }else{
+          const legacyTicketIds=this.migrateLegacyTickets(group.merchantId,group.orderId,id);
+          const now=new Date();
+          value={id,merchantId:group.merchantId,orderId:group.orderId,provider:"alipay_page",status:"resolved",
+            reportedMinor:group.reportedMinor,recordedMinor,differenceMinor:0n,
+            providerReferenceFingerprint:createHash("sha256").update(`legacy-ticket-migration:${group.orderId}:${group.reportedMinor}`).digest("hex").slice(0,32),
+            legacyTicketIds,version:1,firstDetectedAt:group.firstDetectedAt,lastCheckedAt:now,resolvedAt:now};
+          this.repository.saveOperations("refund_reconciliation",value,true);
+          this.event(value,"legacy_ticket_migrated");
+        }
+        const newlyMigrated=value.legacyTicketIds.filter(ticketId=>!beforeTickets.has(ticketId)).length;
+        migrated+=newlyMigrated;
+        if(value.status==="reviewing")reviewing+=newlyMigrated?1:0;
+        else resolved+=newlyMigrated?1:0;
+      }
+      return {migrated,reviewing,resolved,skipped};
+    });
   }
 
   page(actor:Actor,page=1,limit=20,status:"reviewing"|"resolved"|"all"="reviewing"){
@@ -91,4 +153,13 @@ export class RefundReconciliationService {
     }
     return tickets.map(ticket=>ticket.id);
   }
+}
+
+function bigintMax(left:bigint,right:bigint):bigint{return left>right?left:right;}
+
+function parseLegacyIssue(ticket:Ticket):{orderId:string;reportedMinor:bigint}|null {
+  if(ticket.createdBy!=="system")return null;
+  const match=/^refund-reconcile:(.+):(\d+)$/.exec(ticket.systemCase?.issueKey??"");
+  if(!match)return null;
+  return {orderId:match[1]!,reportedMinor:BigInt(match[2]!)};
 }

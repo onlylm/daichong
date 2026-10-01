@@ -30,7 +30,7 @@ describe("platform action center", () => {
     const response = await app.inject({method: "GET", url: "/workspace/api/action-center", headers: {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode,response.body).toBe(200);
     expect(response.json().data).toMatchObject({
       counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, tickets: 0},
       tasks: [], refunds: [], refundReviews: [], settlements: [], tickets: [],
@@ -51,6 +51,9 @@ describe("platform action center", () => {
     runtime.repository.saveOperations("ticket", {id: "case_system_pending", merchantId: merchant.id, orderId: null, title: "系统异常",
       category: "recharge", status: "open", systemCase: {issueKey: "test", entityId: "missing-order"}, assigneeId: null,
       version: 1, publicVersion: 1, createdBy: "system", createdAt: now, updatedAt: now}, true);
+    runtime.repository.saveOperations("operational_issue",{id:"issue_pending",merchantId:merchant.id,orderId:"missing-order",
+      entityId:"missing-task",kind:"recharge",status:"open",severity:"urgent",reason:"充值任务已超时",retryAllowed:false,
+      attentionKey:`0:${now.toISOString()}`,dueAt:now,firstDetectedAt:now,updatedAt:now,resolvedAt:null,legacyTicketIds:[]},true);
     runtime.repository.saveOperations("daily_settlement", {id: "ds_pending", merchantId: merchant.id, businessDate: "2026-10-01",
       periodFrom: now, periodTo: now, status: "pending_payment", orderIds: [], orderCount: 0, supplyAmountMinor: 0n,
       agentEarningsMinor: 100n, platformCostMinor: 0n, platformProfitMinor: 0n, payableMinor: 100n, currency: "CNY",
@@ -79,6 +82,36 @@ describe("platform action center", () => {
     expect(response.json().data).toMatchObject({counts: {tasks: 1, refunds: 1, refundReviews:1, settlements: 1, tickets: 1, invoices: 1},
       refundReviews:[{orderId:"missing-order",reportedAmount:"5.00",recordedAmount:"1.00",differenceAmount:"4.00",status:"reviewing"}]});
     expect(response.json().data.tickets.map((item: {id: string}) => item.id)).toEqual(["tk_agent_pending"]);
-    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["refund","refund_reconciliation", "daily_settlement", "ticket", "invoice_application"]));
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["operational_issue","refund","refund_reconciliation", "daily_settlement", "ticket", "invoice_application"]));
+  });
+
+  it("uses the full server count when more than fifty abnormal records exist",async()=>{
+    const merchant=runtime.repository.listMerchants()[0]!,now=new Date();
+    for(let index=0;index<55;index++)runtime.repository.saveOperations("operational_issue",{id:`issue_${index}`,merchantId:merchant.id,
+      orderId:`order_${index}`,entityId:`task_${index}`,kind:"recharge",status:"open",severity:index<2?"urgent":"normal",
+      reason:"测试异常",retryAllowed:false,attentionKey:`${index<2?"0":"1"}:${new Date(now.getTime()+index).toISOString()}`,
+      dueAt:now,firstDetectedAt:new Date(now.getTime()+index),updatedAt:now,resolvedAt:null,legacyTicketIds:[]},true);
+    const actor=runtime.repository.listOperations("account").find(value=>value.role==="platform_admin")!;
+    expect(runtime.notifications.tasksPage({id:actor.id,role:actor.role,merchantId:null},1,50).meta.total).toBe(55);
+    const login=await loginPlatform(app,"action-admin","test-action-center-password","https://admin.tibo.ink");
+    const response=await app.inject({method:"GET",url:"/workspace/api/action-center",headers:{origin:"https://admin.tibo.ink",
+      cookie:String(login.headers["set-cookie"]).split(";")[0]!}});
+    expect(response.statusCode,response.body).toBe(200);
+    expect(response.json().data.counts.tasks).toBe(55);
+    expect(response.json().data.tasks).toHaveLength(4);
+  });
+
+  it("keeps healthy modules available when one action-center query fails",async()=>{
+    const repository=runtime.repository as any,original=repository.queryRecords.bind(repository);
+    vi.spyOn(repository,"queryRecords").mockImplementation(((kind:string,query:unknown)=>{
+      if(kind==="refund")throw new Error("simulated refund storage failure");
+      return original(kind,query);
+    }) as any);
+    const login=await loginPlatform(app,"action-admin","test-action-center-password","https://admin.tibo.ink");
+    const response=await app.inject({method:"GET",url:"/workspace/api/action-center",headers:{origin:"https://admin.tibo.ink",
+      cookie:String(login.headers["set-cookie"]).split(";")[0]!}});
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({counts:{refunds:null,tasks:0,refundReviews:0},
+      moduleStatus:{refunds:{available:false,error:"暂时无法读取"},tasks:{available:true,error:null}}});
   });
 });

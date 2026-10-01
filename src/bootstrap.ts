@@ -77,6 +77,7 @@ export function createRuntime(config: AppConfig) {
   const catalog = new CatalogService(repository, config.fulfillmentProvider === "zovocard");
   const cipher = new SensitivePayloadCipher(config.dataEncryptionKey, config.keyEncryptionKeyId);
   const notifications = new NotificationService(repository);
+  notifications.migrateLegacyCases();
   const portalTokens = new PortalTokenService(config.publicBaseUrl, config.portalTokenSecret ?? "test-public-portal-secret-at-least-32-chars");
   const supplierManagement = new SupplierManagementService(repository, cipher, config.supplierAllowedHosts, config.fulfillmentProvider === "zovocard", config.liveTest, config.executionMode);
   supplierManagement.seed(config);
@@ -119,6 +120,9 @@ export function createRuntime(config: AppConfig) {
   const fulfillments = new FulfillmentService(repository, cipher, webhooks, upstream, livePolicy, orderId => wallets.reconcileOrderEarnings(orderId));
   const cdk = new CdkService(repository, cipher, upstream, webhooks, livePolicy);
   const refundReconciliations = new RefundReconciliationService(repository);
+  // Migrate former ticket-backed discrepancies before any worker can decide
+  // whether an order is safe to fulfil.
+  refundReconciliations.migrateLegacyRecords();
   const refundExecutor = alipay ? {
     providerFor: (orderId: string) => {
       const order = repository.findOrderInternal(orderId);

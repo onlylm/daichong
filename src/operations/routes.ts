@@ -143,23 +143,51 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const permissions = new Set(permissionList(actor));
     const canReviewWallet = permissions.has("*") || permissions.has("wallet.review");
     const canReadWallet = permissions.has("*") || permissions.has("wallet.read");
-    const taskPage = runtime.notifications.tasksPage(actor, 1, 8);
-    const refundPage = canReviewWallet ? runtime.refunds.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
-    const refundReviewPage = canReviewWallet ? runtime.refundReconciliations.page(actor, 1, 8, "reviewing") : {data: [], meta: {total: 0}};
-    const settlementPage = canReadWallet ? runtime.dailySettlements.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
-    const ticketPage = runtime.support.pendingAgentPage(actor, 8);
-    const invoicePage = permissions.has("*") || permissions.has("invoices.manage")
-      ? runtime.invoices.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
+    const now=new Date(),moduleStatus:Record<string,{available:boolean;updatedAt:string|null;error:string|null}>={};
+    const read=<T>(name:string,loader:()=>T,fallback:T):T=>{try{const value=loader();moduleStatus[name]={available:true,updatedAt:now.toISOString(),error:null};return value;}
+      catch{moduleStatus[name]={available:false,updatedAt:null,error:"暂时无法读取"};return fallback;}};
+    const unavailable=<T>(name:string,fallback:T):T=>{moduleStatus[name]={available:false,updatedAt:null,error:"权限不可用"};return fallback;};
+    const emptyPage={data:[],meta:{total:null}} as {data:any[];meta:{total:number|null}};
+    const taskPage=read("tasks",()=>runtime.notifications.tasksPage(actor,1,50),emptyPage);
+    const refundPage=canReviewWallet?read("refunds",()=>runtime.refunds.pendingPage(actor,50),emptyPage):unavailable("refunds",emptyPage);
+    const refundReviewPage=canReviewWallet?read("refundReviews",()=>runtime.refundReconciliations.page(actor,1,50,"reviewing"),emptyPage)
+      :unavailable("refundReviews",emptyPage);
+    const settlementPage=canReadWallet?read("settlements",()=>runtime.dailySettlements.pendingPage(actor,50),emptyPage)
+      :unavailable("settlements",emptyPage);
+    const ticketPage=read("tickets",()=>runtime.support.pendingAgentPage(actor,50),emptyPage);
+    const invoicePage=permissions.has("*")||permissions.has("invoices.manage")
+      ?read("invoices",()=>runtime.invoices.pendingPage(actor,50),emptyPage):unavailable("invoices",emptyPage);
+    const processingPage=read("processing",()=>queryRecords(runtime.repository,"fulfillment",{filters:[
+      {field:"status",op:"in",value:["queued","running"]},{field:"createdAt",op:"gt",value:new Date(now.getTime()-600_000)}],
+      page:1,limit:50,orderBy:"createdAt",direction:"asc"}),emptyPage);
+    const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
+    const rank=(status:string,urgent:string[])=>urgent.includes(status)?0:1;
+    const oldest=(value:{createdAt?:Date|string;firstDetectedAt?:Date|string;updatedAt?:Date|string})=>{
+      const timestamp=value.firstDetectedAt??value.createdAt??value.updatedAt??now;
+      return timestamp instanceof Date?timestamp.getTime():new Date(timestamp).getTime();
+    };
+    const top=<T>(values:T[],score:(value:T)=>number)=>[...values].sort((a,b)=>score(a)-score(b)).slice(0,4);
+    const tasks=top(taskPage.data,item=>(item.priority==="urgent"?0:1)*10**15+oldest(item));
+    const refunds=top(refundPage.data,item=>rank(item.status,["failed"])*10**15+oldest(item));
+    const refundReviews=top(refundReviewPage.data,item=>oldest(item));
+    const settlements=top(settlementPage.data,item=>rank(item.status,["disputed"])*10**15+oldest(item));
+    const tickets=top(ticketPage.data,item=>oldest(item));
+    const invoices=top(invoicePage.data,item=>oldest(item));
+    moduleStatus.worker={available:true,updatedAt:now.toISOString(),error:null};
     return wire({data: {
+      generatedAt:now.toISOString(),moduleStatus,
       counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total, refundReviews: refundReviewPage.meta.total,
         settlements: settlementPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
-      tasks: taskPage.data,
-      refunds: workspaceRefunds(runtime, refundPage.data),
-      refundReviews: workspaceRefundReconciliations(runtime,refundReviewPage.data),
-      settlements: settlementPage.data,
-      tickets: ticketPage.data,
-      invoices: invoicePage.data,
+      tasks,
+      processing:{total:processingPage.meta.total,items:processingPage.data.slice(0,4).map(item=>({id:item.id,orderId:item.orderId,
+        merchantId:item.merchantId,merchantName:merchantMap.get(item.merchantId)?.name??"",status:item.status,createdAt:item.createdAt}))},
+      refunds: workspaceRefunds(runtime,refunds),
+      refundReviews: workspaceRefundReconciliations(runtime,refundReviews),
+      settlements,
+      tickets,
+      invoices,
       worker: readWorkerHealth(runtime.repository),
+      checks:{payment:{status:"undetected"},upstream:{status:"undetected"},backup:{status:"undetected"}},
     }});
   });
   app.get("/workspace/api/refund-reconciliations", async request => {
@@ -643,6 +671,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   app.put<{Params: {id: string}}>("/workspace/api/agents/:id", async request => {
     const input = z.object({tier: z.string().min(1).max(32), collectionModes: z.array(z.enum(["platform_collect", "agent_collect"])).min(1).max(2),
       customRedemptionEnabled: z.boolean().optional(), cdkCodePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,8}$/).optional(),
+      directPaymentCodeEnabled: z.boolean().optional(),
       cdkCodeTemplate: z.string().trim().min(1).max(120).optional(),
       orderVisibility: z.array(z.enum(orderVisibilityFields)).max(orderVisibilityFields.length).optional(),
       version: z.number().int().nonnegative()}).strict().parse(request.body);

@@ -138,6 +138,40 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 平台代收订单的支付入口由平台支付配置生成。代理商应在自己的页面展示付款按钮并轮询订单状态，不需要维护平台支付宝密钥。付款后继续使用代理商自己的订单链接；通过服务端调用 `/v1/redemptions` 提交自动直充，不把客户跳转到平台品牌页。
 
+### 5.1 自有页面直出付款码（按代理开通）
+
+需要买家始终停留在代理商页面时，由代理商后端调用：
+
+```http
+POST /v1/orders/{order_id}/payment-code
+Idempotency-Key: paycode-M202609250001
+Content-Type: application/json
+
+{}
+```
+
+该接口使用与开单相同的 HMAC 签名，只接受空 JSON 对象。平台从原订单读取金额、币种、有效期和已绑定的支付配置；请求不得传入或覆盖这些字段。平台会校验代理归属、平台代收方式、待支付状态、支付记录金额、有效期和通道配置，然后复用或生成支付宝当面付付款码。
+
+```json
+{
+  "data": {
+    "order_id": "ord_xxx",
+    "merchant_order_no": "M202609250001",
+    "amount": "135.00",
+    "currency": "CNY",
+    "payment_status": "pending",
+    "payment_code_type": "alipay_precreate",
+    "payment_code": "https://qr.alipay.com/xxx",
+    "qr_image_data_url": "data:image/png;base64,...",
+    "expires_at": "2026-10-01T09:30:00.000Z"
+  }
+}
+```
+
+代理后端可以把 `qr_image_data_url` 原样转交自己的页面作为 `<img src>`，也可以只使用 `payment_code` 在本地绘码。买家浏览器只能请求代理商后端，不得直接请求 Quefa 接口或第三方绘码网站；API 密钥、签名密钥、供货价和平台域名不得进入浏览器。重复请求应沿用原幂等键；即使使用新键，已生成的有效付款码也会复用原支付记录。过期、已支付、已关闭、非平台支付宝收款或金额绑定不一致时不会重新生成。
+
+此能力由平台对单个代理灰度开通，未开通返回 `403 direct_payment_code_disabled`。旧 `qr_payload` 的含义和旧接入保持不变，不能把它当作新直出码字段。付款是否到账仍只认验签后的 Webhook 或代理后端签名查询 `GET /v1/orders/{order_id}`；晚到款由平台原支付记录继续核对，代理不得仅因二维码过期自行宣布未付款。
+
 ## 6. 查单与支付
 
 `GET /v1/orders?payment_status=&cursor=&limit=` 分页查询当前代理商订单，默认每页 20 条、最大 100 条。`next_cursor` 为 `null` 表示没有下一页；继续查询时必须原样保留筛选条件。代理商仍应在自己的数据库保存 `merchant_order_no ↔ order_id` 映射。

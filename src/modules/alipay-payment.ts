@@ -1,4 +1,5 @@
 import {readFileSync} from "node:fs";
+import {randomUUID} from "node:crypto";
 import {AlipaySdk} from "alipay-sdk";
 import type {AppConfig} from "../config.js";
 import {AppError} from "../domain/errors.js";
@@ -43,6 +44,7 @@ export class AlipayPagePaymentProvider implements PaymentProvider {
 }
 
 export class AlipayPaymentService {
+  private readonly precreateInflight = new Map<string, Promise<string>>();
   constructor(
     private readonly repository: Repository,
     private readonly payment: PaymentService,
@@ -58,21 +60,57 @@ export class AlipayPaymentService {
   }
 
   async precreate(orderId: string): Promise<string> {
-    const order = this.order(orderId);
-    if (order.paymentStatus !== "pending" || order.expiresAt <= new Date()) {
-      throw new AppError(409, "payment_not_available", "订单不可支付，请查询订单状态或重新下单");
+    const running = this.precreateInflight.get(orderId);
+    if (running) return running;
+    const work = this.precreateOnce(orderId).finally(() => this.precreateInflight.delete(orderId));
+    this.precreateInflight.set(orderId, work);
+    return work;
+  }
+
+  private async precreateOnce(orderId: string): Promise<string> {
+    const leaseToken = randomUUID(), now = new Date();
+    const claimed = this.repository.transaction(() => {
+      const order = this.order(orderId);
+      if (order.paymentStatus !== "pending" || order.expiresAt <= now) {
+        throw new AppError(409, "payment_not_available", "订单不可支付，请查询订单状态或重新下单");
+      }
+      const attempt = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
+      if (attempt.status !== "pending" || attempt.requestedMinor !== order.saleAmountMinor || attempt.expiresAt.getTime() !== order.expiresAt.getTime()) {
+        throw new AppError(409, "payment_binding_mismatch", "支付记录与订单金额或有效期不一致");
+      }
+      if (attempt.qrPayload && isAlipayPrecreateQr(attempt.qrPayload)) return {order, attempt, existing: attempt.qrPayload};
+      if (attempt.precreateLeaseUntil && attempt.precreateLeaseUntil > now) {
+        throw new AppError(409, "payment_code_generating", "付款码正在生成，请稍后重试", true);
+      }
+      const leased = {...attempt, precreateLeaseToken: leaseToken, precreateLeaseUntil: new Date(now.getTime() + 30_000), updatedAt: now};
+      this.repository.updatePaymentAttempt(leased);
+      return {order, attempt: leased, existing: null};
+    });
+    if (claimed.existing) return claimed.existing;
+    try {
+      const result = await this.client.exec("alipay.trade.precreate", {
+        notifyUrl: this.base + "/internal/webhooks/alipay",
+        bizContent: {out_trade_no: claimed.order.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: this.identity.sellerId,
+          total_amount: minorToMoney(claimed.order.saleAmountMinor), subject: claimed.order.id, timeout_express: timeoutExpress(claimed.order.expiresAt)},
+      }, {validateSign: true});
+      const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
+      if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝当面付暂不可用，请稍后重试");
+      return this.repository.transaction(() => {
+        const current = this.repository.findPaymentAttemptByOrder(claimed.order.merchantId, claimed.order.id)!;
+        if (current.qrPayload && isAlipayPrecreateQr(current.qrPayload)) return current.qrPayload;
+        if (current.precreateLeaseToken !== leaseToken) throw new AppError(409, "payment_code_generation_changed", "付款码生成状态已变化，请重新查询", true);
+        this.repository.updatePaymentAttempt({...current, qrPayload: qrCode, precreateLeaseToken: null,
+          precreateLeaseUntil: null, updatedAt: new Date()});
+        return qrCode;
+      });
+    } catch (error) {
+      this.repository.transaction(() => {
+        const current = this.repository.findPaymentAttemptByOrder(claimed.order.merchantId, claimed.order.id);
+        if (current?.precreateLeaseToken === leaseToken) this.repository.updatePaymentAttempt({...current,
+          precreateLeaseToken: null, precreateLeaseUntil: null, updatedAt: new Date()});
+      });
+      throw error;
     }
-    const attempt = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
-    if (attempt.qrPayload && isAlipayPrecreateQr(attempt.qrPayload)) return attempt.qrPayload;
-    const result = await this.client.exec("alipay.trade.precreate", {
-      notifyUrl: this.base + "/internal/webhooks/alipay",
-      bizContent: {out_trade_no: order.id, product_code: "FACE_TO_FACE_PAYMENT", seller_id: this.identity.sellerId,
-        total_amount: minorToMoney(order.saleAmountMinor), subject: order.id, timeout_express: timeoutExpress(order.expiresAt)},
-    }, {validateSign: true});
-    const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
-    if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝当面付暂不可用，请稍后重试");
-    this.repository.updatePaymentAttempt({...attempt, qrPayload: qrCode, updatedAt: new Date()});
-    return qrCode;
   }
 
   handleNotification(input: Record<string, string>): void {

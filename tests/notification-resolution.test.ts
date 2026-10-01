@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it,vi} from "vitest";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import type {Order, TenantContext} from "../src/domain/model.js";
@@ -19,7 +19,7 @@ describe("notification case resolution", () => {
     tenant = {merchantId: bundle.merchant.id, partnerId: bundle.merchant.partnerId, appId: bundle.app.id, keyId: bundle.key.keyId};
   });
 
-  afterEach(() => runtime.close());
+  afterEach(() => {vi.useRealTimers();runtime.close();});
 
   async function cancelledOrder(): Promise<{order: Order; taskId: string}> {
     const draft = await runtime.orders.create(tenant, {merchantOrderNo: randomUUID(), productCode: "chatgpt_plus_cdk_1m",
@@ -48,5 +48,40 @@ describe("notification case resolution", () => {
     await runtime.notifications.tick();
     expect(runtime.repository.getOperations("ticket", legacy.id)?.status).toBe("resolved");
     expect(runtime.notifications.tasksPage(admin, 1, 30).data).toHaveLength(0);
+  });
+
+  it("classifies the ten-minute boundary as abnormal while keeping a newer task in normal processing",async()=>{
+    vi.useFakeTimers();const now=new Date("2026-10-01T12:00:00.000Z");vi.setSystemTime(now);
+    const make=async(suffix:string,ageMs:number)=>{
+      const draft=await runtime.orders.create(tenant,{merchantOrderNo:`timeout-${suffix}`,productCode:"chatgpt_plus_cdk_1m",
+        quantity:1,saleAmount:"135.00",deliveryMode:"auto_recharge"});
+      const order=runtime.payment.markPaid(tenant.merchantId,draft.id,{providerRef:`test:${suffix}`,receivedMinor:draft.saleAmountMinor});
+      const voucher=(await runtime.cdk.issueOne())!;
+      const task=runtime.fulfillments.createCdkPublic(order,voucher,runtime.cdk.readUpstreamCode(voucher),{mode:"session",session:`test-${suffix}`});
+      runtime.repository.updateFulfillment({...task,createdAt:new Date(now.getTime()-ageMs)});
+      return task;
+    };
+    const boundary=await make("boundary",600_000),normal=await make("normal",599_999);
+    await runtime.notifications.tick();
+    const tasks=runtime.notifications.tasksPage(admin,1,30).data;
+    expect(tasks.map(item=>item.orderId)).toEqual([boundary.orderId]);
+    expect(tasks.some(item=>item.orderId===normal.orderId)).toBe(false);
+  });
+
+  it("updates an existing timeout issue when the upstream later confirms a retryable failure",async()=>{
+    vi.useFakeTimers();const now=new Date("2026-10-01T12:00:00.000Z");vi.setSystemTime(now);
+    const draft=await runtime.orders.create(tenant,{merchantOrderNo:"timeout-to-retryable",productCode:"chatgpt_plus_cdk_1m",
+      quantity:1,saleAmount:"135.00",deliveryMode:"auto_recharge"});
+    const order=runtime.payment.markPaid(tenant.merchantId,draft.id,{providerRef:"timeout-to-retryable",receivedMinor:draft.saleAmountMinor});
+    const voucher=(await runtime.cdk.issueOne())!;
+    const task=runtime.fulfillments.createCdkPublic(order,voucher,runtime.cdk.readUpstreamCode(voucher),{mode:"session",session:"test"});
+    runtime.repository.updateFulfillment({...task,createdAt:new Date(now.getTime()-600_000)});
+    await runtime.notifications.tick();
+    expect(runtime.notifications.tasksPage(admin).data[0]).toMatchObject({retryAllowed:false,message:"充值结果尚未确认，请等待平台核对，不要重复下单"});
+
+    runtime.fulfillments.applyUpstreamEvent(task.id,{orderId:"supplier-failed",lookupToken:null,status:"failed_precharge",stage:"failed",
+      accountEmail:null,quotedAmountMinor:null,currency:null,message:"凭据校验失败"});
+    vi.advanceTimersByTime(10_001);await runtime.notifications.tick();
+    expect(runtime.notifications.tasksPage(admin).data[0]).toMatchObject({retryAllowed:true,message:"充值已明确失败，请核对资料后在原订单重新提交"});
   });
 });

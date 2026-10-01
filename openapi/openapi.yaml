@@ -386,6 +386,38 @@ paths:
               schema: {$ref: '#/components/schemas/OrderEnvelope'}
         '404': {$ref: '#/components/responses/NotFound'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/orders/{order_id}/payment-code:
+    post:
+      tags: [Orders]
+      operationId: createOrGetPaymentCode
+      summary: 为已开通代理复用或生成平台支付宝付款码
+      description: 仅代理后端调用。金额、币种、有效期及支付配置只取服务端原订单，禁止请求覆盖；返回付款码内容和平台本地绘制的 PNG Data URL。旧 qr_payload 含义保持不变。付款结果仍以验签 Webhook 或查单为准。
+      parameters:
+        - $ref: '#/components/parameters/XPartnerId'
+        - $ref: '#/components/parameters/XKeyId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              maxProperties: 0
+      responses:
+        '200':
+          description: 原付款记录对应的有效付款码；幂等重放保持相同 data
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PaymentCodeEnvelope'}
+        '403': {description: 当前代理未开通后端直出付款码}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: 订单已支付、关闭、过期，支付记录绑定不一致，或付款码正由另一进程生成}
+        default: {$ref: '#/components/responses/Error'}
   /v1/orders/{order_id}/fulfillments:
     post:
       tags: [Fulfillments]
@@ -819,6 +851,26 @@ components:
       properties:
         data: {$ref: '#/components/schemas/Order'}
         idempotent: {type: boolean, default: false}
+    PaymentCodeEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: {$ref: '#/components/schemas/PaymentCode'}
+        idempotent: {type: boolean, default: false}
+    PaymentCode:
+      type: object
+      additionalProperties: false
+      required: [order_id, merchant_order_no, amount, currency, payment_status, payment_code_type, payment_code, qr_image_data_url, expires_at]
+      properties:
+        order_id: {type: string}
+        merchant_order_no: {type: string}
+        amount: {$ref: '#/components/schemas/Money'}
+        currency: {type: string, const: CNY}
+        payment_status: {type: string, const: pending}
+        payment_code_type: {type: string, const: alipay_precreate}
+        payment_code: {type: string, format: uri, description: 支付宝签发的实际付款码内容；代理可在自己的服务端或前端本地绘码}
+        qr_image_data_url: {type: string, pattern: '^data:image/png;base64,', description: 平台服务端本地绘制；代理后端可原样转交给自己的页面}
+        expires_at: {type: string, format: date-time}
     Order:
       type: object
       required: [order_id, merchant_order_no, product_code, quantity, sale_amount, supply_amount, merchant_margin, currency, payment_status, fulfillment_mode, delivery_mode, fulfillment_url, voucher_code, fallback_recharge_available, created_at, expires_at]

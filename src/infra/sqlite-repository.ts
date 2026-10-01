@@ -73,6 +73,10 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS sandbox_records_public_code_idx
         ON sandbox_records(kind, json_extract(payload, '$.publicCode'));
       CREATE INDEX IF NOT EXISTS records_created_idx ON sandbox_records(kind,json_extract(payload,'$.createdAt') DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS records_operational_issue_attention_idx
+        ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.attentionKey'),id);
+      CREATE INDEX IF NOT EXISTS records_refund_reconciliation_status_idx
+        ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.lastCheckedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_updated_idx ON sandbox_records(kind,json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.updatedAt') DESC,id DESC);
@@ -840,8 +844,9 @@ const dateKeys = new Set([
   "notBefore", "expiresAt", "paidAt", "createdAt", "updatedAt", "finishedAt", "clearedAt", "progressUpdatedAt",
   "refundedAt", "occurredAt", "periodFrom", "periodTo", "sealedAt", "nextAttemptAt", "leaseUntil", "deliveredAt",
   "verifiedAt", "activatedAt", "sentAt", "nextCheckAt", "consumedAt", "receivedAt", "processedAt", "lastTestAt", "lastPlanSyncAt", "syncedAt",
-  "generatedAt", "reconciledAt",
+  "generatedAt", "reconciledAt", "firstDetectedAt", "lastCheckedAt", "resolvedAt", "submittedAt", "issuedAt",
   "startedAt", "heartbeatAt", "lastStartedAt", "lastCompletedAt", "lastSucceededAt", "lastFailedAt",
+  "precreateLeaseUntil",
 ]);
 
 function encode(value: unknown): string {
