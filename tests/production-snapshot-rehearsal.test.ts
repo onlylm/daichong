@@ -30,6 +30,7 @@ describe("production snapshot migration rehearsal", () => {
       sourceSnapshotUnchanged: true,
       productionWrites: false,
       startupRoutes: {ready: 200, developers: 200, openapi: 200},
+      runtimeMode: {nodeEnv: "production", executionMode: "production", storageDriver: "sqlite"},
     });
     expect(report.criticalRecordCount).toBeGreaterThanOrEqual(3);
     expect(report.criticalKindCounts).toMatchObject({order: 1, payment_attempt: 1, ops_wallet_entry: 1});
@@ -54,6 +55,23 @@ describe("production snapshot migration rehearsal", () => {
     delete environment.AUDIT_ISOLATED_SNAPSHOT;
     await expect(rehearseProductionSnapshot(fixture.snapshot, environment)).rejects.toThrow("isolated_snapshot_required");
     expect(readFileSync(fixture.snapshot)).toEqual(before);
+  });
+
+  it.each([
+    {NODE_ENV: "test", EXECUTION_MODE: "disabled", STORAGE_DRIVER: "memory"},
+    {NODE_ENV: "test", EXECUTION_MODE: "disabled", STORAGE_DRIVER: "sqlite"},
+    {NODE_ENV: "production", EXECUTION_MODE: "disabled", STORAGE_DRIVER: "sqlite"},
+    {NODE_ENV: "production", EXECUTION_MODE: "production", STORAGE_DRIVER: "memory"},
+  ])("rejects non-production or memory rehearsal without modifying the source: %j", async invalidMode => {
+    const fixture = await createSnapshotFixture(), before = readFileSync(fixture.snapshot);
+    const environment = {...productionEnvironment(fixture, join(fixture.folder, "live.sqlite")), ...invalidMode};
+    await expect(rehearseProductionSnapshot(fixture.snapshot, environment))
+      .rejects.toThrow("snapshot_production_sqlite_required");
+    expect(readFileSync(fixture.snapshot)).toEqual(before);
+    // Mode rejection precedes filesystem access; a missing source must not
+    // disguise a misconfigured rehearsal as a restore error.
+    await expect(rehearseProductionSnapshot(join(fixture.folder, "missing.sqlite"), environment))
+      .rejects.toThrow("snapshot_production_sqlite_required");
   });
 
   async function createSnapshotFixture() {

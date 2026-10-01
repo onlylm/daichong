@@ -34,6 +34,7 @@ export interface ProductionSnapshotRehearsalReport {
   startupRoutes: {ready: 200; developers: 200; openapi: 200};
   changedKinds: string[];
   productionWrites: false;
+  runtimeMode: {nodeEnv: "production"; executionMode: "production"; storageDriver: "sqlite"};
 }
 
 /** Start candidate code only against a temporary restore of a self-contained snapshot. */
@@ -42,6 +43,10 @@ export async function rehearseProductionSnapshot(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<ProductionSnapshotRehearsalReport> {
   if (environment.AUDIT_ISOLATED_SNAPSHOT !== "true") throw new Error("isolated_snapshot_required");
+  // A test/memory runtime can start successfully without ever opening the
+  // restored ledger. Never present that as production migration evidence.
+  if (environment.NODE_ENV !== "production" || environment.EXECUTION_MODE !== "production"
+      || environment.STORAGE_DRIVER !== "sqlite") throw new Error("snapshot_production_sqlite_required");
   const source = requireSnapshot(snapshotPath);
   assertNotConfiguredLiveDatabase(source, environment.SQLITE_PATH);
   const sourceBefore = await inspectSqliteBackup(source);
@@ -95,6 +100,7 @@ export async function rehearseProductionSnapshot(
       criticalRecordCount: criticalBefore.count, criticalKindCounts: criticalBefore.kindCounts,
       criticalDigestUnchanged: true, sourceSnapshotUnchanged: true,
       startupRoutes: {ready: 200, developers: 200, openapi: 200}, changedKinds, productionWrites: false,
+      runtimeMode: {nodeEnv: "production", executionMode: "production", storageDriver: "sqlite"},
     };
   } finally {
     if (app) await app.close();

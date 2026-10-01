@@ -115,11 +115,13 @@ cd "$current"
 release_started_at_ms="$(($(date -u +%s) * 1000))"
 docker compose -p quefa-app -f compose.production.app.yaml up -d --no-build --remove-orphans
 
+# Each HTTP call is bounded. Twenty attempts plus retry intervals can exceed
+# 60 seconds; this is an attempt budget, not a 60-second wall-clock deadline.
 attempt=0
-until curl -fsS http://127.0.0.1:3200/health/ready >/dev/null; do
+until curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:3200/health/ready >/dev/null; do
   attempt=$((attempt + 1))
   if [ "$attempt" -ge 20 ]; then
-    printf '%s\n' 'Production API did not become ready within 60 seconds.' >&2
+    printf '%s\n' 'Production API did not become ready after 20 attempts (HTTP connect timeout 2s, total timeout 5s per probe).' >&2
     exit 1
   fi
   sleep 3
@@ -131,15 +133,15 @@ while [ "$attempt" -lt 20 ]; do
   worker_snapshot="$(sqlite3 "$state/production.sqlite" "SELECT payload FROM sandbox_records WHERE kind='ops_worker_health' AND id='primary' LIMIT 1;" 2>/dev/null || true)"
   if [ -n "$worker_snapshot" ] \
       && printf '%s' "$worker_snapshot" | node deploy/production/check-worker-release-health.mjs "$release_started_at_ms" >/dev/null 2>&1 \
-      && curl -fsS http://127.0.0.1:3200/health/worker >/dev/null; then
+      && curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:3200/health/worker >/dev/null; then
     worker_ready=1
     break
   fi
   attempt=$((attempt + 1))
-  sleep 3
+  if [ "$attempt" -lt 20 ]; then sleep 3; fi
 done
 if [ "$worker_ready" -ne 1 ]; then
-  printf '%s\n' 'Production Worker did not publish a fresh healthy heartbeat for every required lane within 60 seconds.' >&2
+  printf '%s\n' 'Production Worker did not publish a fresh healthy heartbeat for every required lane after 20 attempts (HTTP connect timeout 2s, total timeout 5s per probe).' >&2
   exit 1
 fi
 worker_status="$(docker inspect --format '{{.State.Status}}' quefa-app-worker-1 2>/dev/null || true)"
@@ -148,8 +150,8 @@ if [ "$worker_status" != running ]; then
   exit 1
 fi
 
-curl -fsS http://127.0.0.1:3200/developers >/dev/null
-curl -fsS http://127.0.0.1:3200/developers/openapi.yaml >/dev/null
+curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:3200/developers >/dev/null
+curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:3200/developers/openapi.yaml >/dev/null
 
 rollback=0
 trap - EXIT HUP INT TERM

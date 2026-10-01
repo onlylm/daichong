@@ -1,5 +1,6 @@
 import {readFileSync} from "node:fs";
-import {spawnSync} from "node:child_process";
+import {spawn,spawnSync} from "node:child_process";
+import {createServer} from "node:http";
 import {fileURLToPath} from "node:url";
 import {describe,expect,it} from "vitest";
 
@@ -57,7 +58,7 @@ describe("production health monitoring",()=>{
     expect(deploy).toContain('release_started_at_ms="$(($(date -u +%s) * 1000))"');
     expect(deploy).toContain('kind=\'ops_worker_health\'');
     expect(deploy).toContain('check-worker-release-health.mjs "$release_started_at_ms"');
-    expect(deploy).toContain('curl -fsS http://127.0.0.1:3200/health/worker');
+    expect(deploy).toContain('curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:3200/health/worker');
     expect(deploy).toContain('Production Worker did not publish a fresh healthy heartbeat');
     for(const lane of requiredLanes){expect(worker).toContain(`["${lane}"`);expect(checker).toContain(`"${lane}"`);}
   });
@@ -71,4 +72,40 @@ describe("production health monitoring",()=>{
     const failed=workerSnapshot(),lane=failed.lanes.find(item=>item.name==="retail-payment")!;lane.consecutiveFailures=1;
     expect(checkRelease(failed).status).toBe(1);
   });
+
+  it("bounds every deployment HTTP probe and describes the retry budget without claiming a 60-second deadline",()=>{
+    const deploy=read("deploy/production/deploy-production-candidate.sh");
+    const probes=[...deploy.matchAll(/curl -fsS[^\r\n]*/g)].map(value=>value[0]);
+    expect(probes).toHaveLength(4);
+    for(const probe of probes)expect(probe).toContain("--connect-timeout 2 --max-time 5");
+    expect(deploy).not.toContain("within 60 seconds");
+    expect(deploy.match(/after 20 attempts \(HTTP connect timeout 2s, total timeout 5s per probe\)/g)).toHaveLength(2);
+  });
+
+  it("makes real curl exit on a connected HTTP server that never returns a response",async()=>{
+    const deploy=read("deploy/production/deploy-production-candidate.sh");
+    const budget=/curl -fsS --connect-timeout (\d+) --max-time (\d+) http:\/\/127\.0\.0\.1:3200\/health\/ready/.exec(deploy);
+    expect(budget).not.toBeNull();
+    let requests=0;
+    const server=createServer(()=>{requests++;});
+    await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+    const address=server.address();
+    if(!address||typeof address==="string")throw new Error("http_fixture_address_missing");
+    const started=Date.now();
+    try{
+      const result=await new Promise<{code:number|null;signal:string|null;stderr:string}>((resolve,reject)=>{
+        const child=spawn(process.platform==="win32"?"curl.exe":"curl",["--noproxy","*","-fsS",
+          "--connect-timeout",budget![1]!,"--max-time",budget![2]!,`http://127.0.0.1:${address.port}/health/ready`],
+          {timeout:10000,windowsHide:true,stdio:["ignore","ignore","pipe"]});
+        let stderr="";child.stderr.on("data",data=>{stderr+=String(data);});
+        child.on("error",reject);child.on("close",(code,signal)=>resolve({code,signal,stderr}));
+      });
+      expect(requests).toBe(1);
+      expect(result).toMatchObject({code:28,signal:null});
+      expect(Date.now()-started).toBeLessThan(Number(budget![2])*1000+5000);
+    }finally{
+      server.closeAllConnections();
+      await new Promise<void>(resolve=>server.close(()=>resolve()));
+    }
+  },15000);
 });
