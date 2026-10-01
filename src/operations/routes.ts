@@ -910,7 +910,11 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     runtime.repository.saveIdempotency({merchantId: tenant.merchantId, appId: tenant.appId, routeKey, key, requestHash, responseStatus: 200, responseBody: body});
     return body;
   });
-  app.get("/v1/tickets", async request => ({data: runtime.support.list(partner(request))}));
+  app.get<{Querystring:{status?:string;page?:string;limit?:string}}>("/v1/tickets", async request => {
+    const input=z.object({status:z.enum(["all","open","in_progress","waiting_agent","resolved","closed"]).default("all"),
+      page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(100).default(50)}).parse(request.query);
+    return wire(runtime.support.page(partner(request),input));
+  });
   app.post("/v1/tier-applications", async request => {
     return once(request, () => {
     const actor = partner(request), input = z.object({targetTier: identifier, reason: text, requestKey}).strict().parse(request.body);
@@ -933,6 +937,11 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.get("/v1/announcements", async request => ({data: runtime.announcements.list(partner(request))}));
   app.post<{Params: {id: string}}>("/v1/announcements/:id/read", async request => {runtime.announcements.read(partner(request), request.params.id); return {ok: true};});
-  app.get("/v1/wallet", async request => {const actor = partner(request); return {data: runtime.wallets.summary(actor, actor.merchantId!), entries: runtime.wallets.entries(actor, actor.merchantId!)};});
+  app.get<{Querystring:{page?:string;limit?:string}}>("/v1/wallet", async request => {
+    const actor=partner(request),input=z.object({page:z.coerce.number().int().min(1).default(1),
+      limit:z.coerce.number().int().min(1).max(100).default(50)}).parse(request.query);
+    const entries=runtime.wallets.historyPage(actor,actor.merchantId!,"ledger",input.page,input.limit);
+    return {data:runtime.wallets.summary(actor,actor.merchantId!),entries:wire(entries.data),entries_meta:entries.meta};
+  });
   app.get("/v1/agent-profile", async request => {const actor = partner(request); return wire({data: runtime.agents.summary(actor, actor.merchantId!), rules: runtime.agents.rules()});});
 }

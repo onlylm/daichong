@@ -202,8 +202,12 @@ paths:
   /v1/tickets:
     get:
       summary: 本代理工单列表
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [all, open, in_progress, waiting_agent, resolved, closed], default: all}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        '200': {description: data 数组，含类别、状态、版本和未读标记，不含平台内部备注}
+        '200': {description: data 为当前页工单，meta 为分页信息；含类别、状态、版本和未读标记，不含平台内部备注}
         default: {$ref: '#/components/responses/Error'}
     post:
       summary: 创建普通工单
@@ -272,8 +276,11 @@ paths:
     get:
       tags: [Finance]
       summary: 只读查询本代理双钱包
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        '200': {description: data 包括 procurementAvailable、earningsAvailable、withdrawalFrozen、pendingReviewEarnings、earningsDebt（元文本）；entries 为流水。不能通过此接口自行加余额、审批或打款}
+        '200': {description: data 包括 procurementAvailable、earningsAvailable、withdrawalFrozen、pendingReviewEarnings、earningsDebt（元文本）；entries 为当前页流水，entries_meta 为分页信息。不能通过此接口自行加余额、审批或打款}
         default: {$ref: '#/components/responses/Error'}
   /v1/products:
     get:

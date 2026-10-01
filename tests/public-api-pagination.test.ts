@@ -41,9 +41,16 @@ describe("partner API cursor pagination",()=>{
       periodFrom:new Date(historicBase),periodTo:new Date(historicBase+86_400_000),status:"draft",grossMinor:100n,
       adjustmentMinor:0n,payableMinor:100n,currency:"CNY",sealedAt:null,paidAt:null,
       createdAt:new Date(historicBase+index*1_000),lines:[]});
+    for(let index=0;index<5;index++){
+      const createdAt=new Date(historicBase+index*1_000);
+      runtime.repository.saveOperations("wallet_entry",{id:`wallet-public-${index}`,merchantId:tenant.merchantId,kind:"adjustment",
+        procurementDelta:BigInt(index+1),earningsDelta:0n,frozenDelta:0n,reference:`wallet-page-${index}`,actorId:"test",createdAt},true);
+      runtime.repository.saveOperations("ticket",{id:`ticket-public-${index}`,merchantId:tenant.merchantId,orderId:null,title:`分页工单 ${index}`,
+        category:"other",status:"open",assigneeId:null,version:1,publicVersion:1,createdBy:"agent-api",createdAt,updatedAt:createdAt},true);
+    }
 
     const fullOrders=vi.spyOn(runtime.repository,"listOrders"),fullLedger=vi.spyOn(runtime.repository,"listLedger"),
-      fullSettlements=vi.spyOn(runtime.repository,"listSettlements");
+      fullSettlements=vi.spyOn(runtime.repository,"listSettlements"),fullOperations=vi.spyOn(runtime.repository,"listOperations");
     const firstOrders=await get("/v1/orders?limit=2"),firstOrderBody=firstOrders.json();
     expect(firstOrders.statusCode).toBe(200);expect(firstOrderBody.data).toHaveLength(2);expect(firstOrderBody.next_cursor).toBeTruthy();
     const secondOrders=(await get(`/v1/orders?limit=2&cursor=${encodeURIComponent(firstOrderBody.next_cursor)}`)).json();
@@ -63,6 +70,11 @@ describe("partner API cursor pagination",()=>{
     const secondSettlements=(await get(`/v1/settlements?limit=2&cursor=${firstSettlements.next_cursor}`)).json();
     expect(secondSettlements.data).toHaveLength(2);expect(secondSettlements.next_cursor).toBeNull();
     expect((await get("/v1/settlements?cursor=missing-settlement&limit=2")).json().error.code).toBe("invalid_cursor");
+    const tickets=(await get("/v1/tickets?status=open&page=2&limit=2")).json();
+    expect(tickets.data).toHaveLength(2);expect(tickets.meta).toMatchObject({total:5,page:2,limit:2,pages:3});
+    const wallet=(await get("/v1/wallet?page=2&limit=2")).json();
+    expect(wallet.entries).toHaveLength(2);expect(wallet.entries_meta).toMatchObject({total:5,page:2,limit:2,pages:3});
     expect(fullOrders).not.toHaveBeenCalled();expect(fullLedger).not.toHaveBeenCalled();expect(fullSettlements).not.toHaveBeenCalled();
+    expect(fullOperations).not.toHaveBeenCalled();
   });
 });
