@@ -40,15 +40,16 @@ const cdkPreflightSchema = z.object({
 
 export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runtime): void {
   app.get<{Params: {orderId: string}; Querystring: {token?: string}}>("/recharge/:orderId", async (request, reply) => {
-    const order = requirePortalOrder(runtime, request.params.orderId, request.query.token ?? "");
-    return html(reply, orderPage(order));
+    const access = portalOrderAccess(runtime, request.params.orderId, request.query.token ?? "");
+    if (access.state === "closed") reply.code(410);
+    return html(reply, orderPage(access.order, access));
   });
 
   app.get("/redeem", async (_request, reply) => html(reply, genericCdkPage()));
 
   app.post<{Params: {orderId: string}}>("/public/orders/:orderId/preflight", async (request) => {
     const input = preflightSchema.parse(request.body);
-    const order = requirePortalOrder(runtime, request.params.orderId, input.token);
+    const order = requirePortalSubmission(runtime, request.params.orderId, input.token);
     const upstreamCode = resolveAutoRechargeUpstreamCode(runtime, order);
     const result = await runtime.fulfillments.preflightPublic(order, normalizeCredential(input.credential), upstreamCode);
     return {data: {account_email: result.accountEmail}};
@@ -56,7 +57,7 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
 
   app.post<{Params: {orderId: string}}>("/public/orders/:orderId/direct", async (request, reply) => {
     const input = directSchema.parse(request.body);
-    const order = requirePortalOrder(runtime, request.params.orderId, input.token);
+    const order = requirePortalSubmission(runtime, request.params.orderId, input.token);
     const fulfillment = runtime.fulfillments.createDirectPublic(order, normalizeCredential(input.credential));
     reply.code(202);
     return {data: publicStatus(order, fulfillment)};
@@ -64,7 +65,7 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
 
   app.post<{Params: {orderId: string}}>("/public/orders/:orderId/auto-recharge", async (request, reply) => {
     const input = directSchema.parse(request.body);
-    const order = requirePortalOrder(runtime, request.params.orderId, input.token);
+    const order = requirePortalSubmission(runtime, request.params.orderId, input.token);
     if ((order.deliveryMode ?? "cdk") !== "auto_recharge" || order.fulfillmentMode !== "cdk") {
       throw new AppError(409, "auto_recharge_unavailable", "该订单未选择自动充值");
     }
@@ -79,8 +80,10 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
     const input = cdkPreflightSchema.parse(request.body);
     const voucher = runtime.cdk.findPublic(input.code);
     if (!voucher) throw new AppError(404, "voucher_not_found", "兑换码无效或不可用");
+    if (voucher.status !== "unused") throw new AppError(409, "voucher_unavailable", "兑换码已使用或不可用");
     const order = runtime.repository.findOrderInternal(voucher.orderId);
     if (!order) throw new AppError(404, "order_not_found", "兑换订单不存在");
+    requireRechargeSubmission(runtime, order);
     const result = await runtime.fulfillments.preflightPublic(order, normalizeCredential(input.credential), runtime.cdk.readUpstreamCode(voucher));
     return {data: {account_email: result.accountEmail}};
   });
@@ -92,6 +95,7 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
     if (voucher.status !== "unused") throw new AppError(409, "voucher_unavailable", "兑换码已使用或正在兑换");
     const order = runtime.repository.findOrderInternal(voucher.orderId);
     if (!order) throw new AppError(404, "order_not_found", "兑换订单不存在");
+    requireRechargeSubmission(runtime, order);
     const upstreamCode = runtime.cdk.readUpstreamCode(voucher);
     const fulfillment = runtime.fulfillments.createCdkPublic(order, voucher, upstreamCode, normalizeCredential(input.credential));
     reply.code(202);
@@ -99,7 +103,9 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
   });
 
   app.get<{Params: {orderId: string}; Querystring: {token?: string}}>("/public/orders/:orderId/status", async (request) => {
-    const order = requirePortalOrder(runtime, request.params.orderId, request.query.token ?? "");
+    const access = portalOrderAccess(runtime, request.params.orderId, request.query.token ?? "");
+    if (access.state === "closed") throw new AppError(410, "recharge_portal_closed", access.message);
+    const order = access.order;
     const latest = runtime.repository.listFulfillments(order.merchantId, order.id).at(-1) ?? null;
     return {data: publicStatus(order, latest)};
   });
@@ -144,11 +150,60 @@ export function registerPublicRechargeRoutes(app: FastifyInstance, runtime: Runt
   });
 }
 
-function requirePortalOrder(runtime: Runtime, orderId: string, token: string): Order {
+type PortalAccessState = "open" | "waiting_payment" | "processing" | "completed" | "review" | "closed";
+
+interface PortalAccess {
+  order: Order;
+  state: PortalAccessState;
+  message: string;
+}
+
+function portalOrderAccess(runtime: Runtime, orderId: string, token: string): PortalAccess {
   if (!runtime.portalTokens.verify(orderId, token)) throw new AppError(404, "portal_not_found", "充值入口不存在");
   const order = runtime.repository.findOrderInternal(orderId);
   if (!order) throw new AppError(404, "order_not_found", "订单不存在");
-  return order;
+  return rechargeOrderAccess(runtime, order);
+}
+
+function rechargeOrderAccess(runtime: Runtime, order: Order): PortalAccess {
+  if (order.archivedAt) return {order, state: "closed", message: "订单已归档，充值入口已关闭。"};
+  if (["expired", "closed", "refunded"].includes(order.paymentStatus) || order.ordinaryRefundedMinor > 0n) {
+    return {order, state: "closed", message: order.paymentStatus === "refunded" || order.ordinaryRefundedMinor > 0n
+      ? "订单已退款，充值入口已失效。"
+      : "订单已关闭或过期，充值入口已失效。"};
+  }
+  if (runtime.repository.listRefundsForOrder(order.merchantId, order.id)
+      .some(refund => ["requested", "approved", "processing"].includes(refund.status))) {
+    return {order, state: "closed", message: "订单正在退款处理中，充值入口已锁定。"};
+  }
+  if (order.paymentStatus === "pending") return {order, state: "waiting_payment", message: "订单尚未支付，请完成付款后刷新本页。"};
+  const latest = runtime.repository.listFulfillments(order.merchantId, order.id).at(-1) ?? null;
+  if (!latest) return {order, state: "open", message: ""};
+  if (["queued", "running"].includes(latest.status)) {
+    return {order, state: "processing", message: partnerFulfillmentMessage(latest) || "充值任务处理中，请勿重复提交。"};
+  }
+  if (latest.status === "succeeded") return {order, state: "completed", message: "充值已经完成，本入口不再接收凭据。"};
+  if (runtime.fulfillments.canResubmit(latest)) return {order, state: "open", message: "上次充值未成功，请核对账号后重新提交。"};
+  return {order, state: "review", message: partnerFulfillmentMessage(latest) || "充值结果正在核对，暂不能重新提交。"};
+}
+
+function requirePortalSubmission(runtime: Runtime, orderId: string, token: string): Order {
+  const access = portalOrderAccess(runtime, orderId, token);
+  return requireRechargeSubmission(runtime, access.order, access);
+}
+
+function requireRechargeSubmission(runtime: Runtime, order: Order, knownAccess?: PortalAccess): Order {
+  const access = knownAccess ?? rechargeOrderAccess(runtime, order);
+  if (access.state === "open") return access.order;
+  const codes: Record<Exclude<PortalAccessState, "open">, {status: number; code: string}> = {
+    waiting_payment: {status: 409, code: "order_not_paid"},
+    processing: {status: 409, code: "fulfillment_already_exists"},
+    completed: {status: 409, code: "recharge_already_completed"},
+    review: {status: 409, code: "recharge_result_unconfirmed"},
+    closed: {status: 410, code: "recharge_portal_closed"},
+  };
+  const error = codes[access.state];
+  throw new AppError(error.status, error.code, access.message);
 }
 
 function normalizeCredential(value: z.infer<typeof credentialSchema>): RechargeCredential {
@@ -205,7 +260,7 @@ function cardLastFour(value: unknown): string | null {
   return digits.length >= 4 ? digits.slice(-4) : null;
 }
 
-function orderPage(order: Order): string {
+function orderPage(order: Order, access: PortalAccess): string {
   const paid = ["paid", "partially_refunded"].includes(order.paymentStatus);
   const isCdk = order.fulfillmentMode === "cdk";
   const delivery = order.deliveryMode ?? (isCdk ? "cdk" : "auto_recharge");
@@ -213,12 +268,24 @@ function orderPage(order: Order): string {
   const productTag = productBadge(order.productCode);
   const title = delivery === "cdk" ? "兑换码交付" : "自动充值";
   const preparing = paid && isCdk && !code;
-  const unavailable = !paid
-    ? "订单尚未支付，请完成付款后刷新本页。"
+  const unavailable = access.state !== "open"
+    ? access.message
+    : !paid
+      ? "订单尚未支付，请完成付款后刷新本页。"
     : preparing
       ? "正在准备充值，请稍后刷新本页。"
       : "";
-  const waitScript = preparing ? "<script>setTimeout(()=>location.reload(),3000)</script>" : "";
+  const waitScript = preparing || access.state === "waiting_payment" || access.state === "processing"
+    ? "<script>setTimeout(()=>location.reload(),3000)</script>"
+    : "";
+  if (access.state === "closed") {
+    return pageShell("充值入口已关闭", `<header class="page-head"><div class="brand-mark">Q</div><div><p class="eyebrow">Quefa 履约</p><h1>充值入口已关闭</h1></div></header>
+      ${orderSummary(order, productTag, paid)}<div class="notice">${escapeHtml(access.message)}</div>`);
+  }
+  if (access.state === "completed") {
+    return pageShell("充值已完成", `<header class="page-head"><div class="brand-mark">Q</div><div><p class="eyebrow">Quefa 履约</p><h1>充值已完成</h1></div></header>
+      ${orderSummary(order, productTag, paid)}<div class="success-panel"><div class="success-icon" aria-hidden="true">✓</div><strong>充值已经完成</strong><p class="muted">本入口已关闭，不再接收账号凭据。</p></div>`);
+  }
   if (delivery === "cdk") {
     return pageShell(title, `<header class="page-head"><div class="brand-mark">Q</div><div><p class="eyebrow">Quefa 履约</p><h1>${escapeHtml(title)}</h1></div></header>
       <div class="stepper"><div class="step done"><span>1</span><small>订单确认</small></div><div class="step-line done"></div><div class="step current"><span>2</span><small>兑换码</small></div></div>
@@ -229,10 +296,11 @@ function orderPage(order: Order): string {
   const action = isCdk ? `/public/orders/${encodeURIComponent(order.id)}/auto-recharge` : `/public/orders/${encodeURIComponent(order.id)}/direct`;
   const preflight = `/public/orders/${encodeURIComponent(order.id)}/preflight`;
   const hidden = `<input type="hidden" id="token" value="${escapeHtml(portalTokenFromOrder(order))}">`;
+  const recoveryNotice = access.state === "open" && access.message ? `<div class="notice">${escapeHtml(access.message)}</div>` : "";
   return pageShell(title, `<header class="page-head"><div class="brand-mark">Q</div><div><p class="eyebrow">Quefa 履约</p><h1>${escapeHtml(title)}</h1></div></header>
     <div class="stepper" id="stepper"><div class="step done" data-step="1"><span>1</span><small>订单确认</small></div><div class="step-line done"></div><div class="step current" data-step="2"><span>2</span><small>账号检测</small></div><div class="step-line"></div><div class="step" data-step="3"><span>3</span><small>充值履约</small></div></div>
     ${orderSummary(order, productTag, paid)}
-    ${unavailable ? `<div class="notice">${escapeHtml(unavailable)}</div>${waitScript}` : `<form id="form">${hidden}${rechargeFormFields()}<div id="result" class="notice" hidden></div></form>`}
+    ${unavailable ? `<div class="notice">${escapeHtml(unavailable)}</div>${waitScript}` : `${recoveryNotice}<form id="form">${hidden}${rechargeFormFields()}<div id="result" class="notice" hidden></div></form>`}
     ${unavailable ? "" : `<dialog id="help-drawer" class="help-drawer"><div class="help-shell"><header><strong>如何获取 Session Token？</strong><button type="button" id="help-close">关闭</button></header><ol><li>登录 ChatGPT 网页版，打开浏览器开发者工具（F12）。</li><li>进入 Application / 存储 → Cookies → 选择 chatgpt.com。</li><li>找到名为 <code>__Secure-next-auth.session-token</code> 的 Cookie，复制其 Value。</li><li>粘贴到上方输入框，点击「检测账号」核对后再提交充值。</li></ol><p class="muted">请勿将 Session 发送给任何人；本页仅用于本次订单履约。</p></div></dialog><div id="success-panel" class="success-panel" hidden><div class="success-icon" aria-hidden="true">✓</div><strong>充值完成</strong><p class="muted">权益已注入，请返回 ChatGPT 查看订阅状态。</p></div><script>${formScript({action, preflight, isCdk: false})}${helpDrawerScript()}</script>`}`);
 }
 

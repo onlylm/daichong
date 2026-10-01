@@ -168,6 +168,8 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 `fulfillment_mode=direct` 时，客户打开 `fulfillment_url`，选择凭据类型并提交。Quefa 加密保存短期凭据、创建异步充值任务并在页面轮询结果。代理商通过 `GET /v1/orders/{order_id}/fulfillments` 或 Webhook 获取 `queued/running/succeeded/failed/cancelled` 稳定状态，并通过 `result_code/result_stage` 获取实际业务结果。
 
+`fulfillment_url` 不是永久入口。订单关闭、过期、发生普通退款或进入退款处理中后，平台立即以 HTTP 410 关闭页面和凭据接口；充值进行中或已经成功时页面只显示进度/结果，不再显示输入框。只有最近一次尝试由上游明确判定失败、服务端返回允许重提，或平台管理员对未派发任务选择“允许重新提交”时，原链接才会重新开放。纯差价退款不取消尚未使用的履约权益。代理页面同样必须按这些规则关闭自己的入口，不能只隐藏按钮后继续调用接口。
+
 如果代理商经双方安全评审后确实需要服务端代提交，可调用下列接口；普通商城不要使用此方式，以免接触客户敏感凭据。
 
 `POST /v1/orders/{order_id}/fulfillments` 仅允许已支付且未被退款锁定的订单：
