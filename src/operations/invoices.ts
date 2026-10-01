@@ -6,6 +6,7 @@ import type {Repository} from "../infra/repository.js";
 import {AuditService} from "../modules/audit-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, InvoiceApplication, InvoiceFeePayment} from "./model.js";
+import {queryRecords} from "../infra/record-query.js";
 
 export interface InvoiceDetailsInput {
   invoiceTitle: string;
@@ -82,6 +83,14 @@ export class InvoiceService {
     return this.repository.listOperations("invoice_application", scopedMerchant)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .map(item => this.view(actor, item));
+  }
+
+  pendingPage(actor: Actor, limit = 8) {
+    requirePermission(actor, "invoices.manage");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看待开票队列");
+    const page = queryRecords(this.repository, "invoice_application", {filters: [{field: "status", op: "in", value: ["submitted", "processing"]}],
+      page: 1, limit, orderBy: "updatedAt", direction: "desc"});
+    return {...page, data: page.data.map(item => this.view(actor, item))};
   }
 
   get(actor: Actor, id: string) {

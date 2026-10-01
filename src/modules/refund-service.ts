@@ -10,6 +10,7 @@ import { LedgerService } from "./ledger-service.js";
 import { WebhookService } from "./webhook-service.js";
 import type { Actor } from "../operations/model.js";
 import { isPlatform, requirePermission } from "../operations/accounts.js";
+import {queryRecords} from "../infra/record-query.js";
 
 export type RefundExecutor = {
   providerFor(orderId: string): string | null;
@@ -189,6 +190,13 @@ export class RefundService {
       .flatMap(order => this.repository.listRefundsForOrder(order.merchantId, order.id))
       .filter(refund => refund.type !== "price_adjustment" && ["requested", "processing", "failed"].includes(refund.status))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  pendingPage(actor: Actor, limit = 8) {
+    requirePermission(actor, "wallet.review");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看退款队列");
+    return queryRecords(this.repository, "refund", {filters: [{field: "status", op: "in", value: ["requested", "processing", "failed"]}],
+      page: 1, limit, orderBy: "createdAt", direction: "desc"});
   }
 
   /**

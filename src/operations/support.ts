@@ -5,6 +5,7 @@ import {minorToMoney} from "../domain/money.js";
 import {AuditService} from "../modules/audit-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, Announcement, Ticket, WalletWithdrawal} from "./model.js";
+import {queryRecords} from "../infra/record-query.js";
 
 export function safeText(value: string, publicPlatformText = false): string {
   if (/-----BEGIN.*PRIVATE KEY|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.|(?:access_token|authorization|cookie|api_key|session_token)\s*[:=]/i.test(value)) {
@@ -128,6 +129,15 @@ export class SupportService {
     return this.repository.listOperations("ticket", isPlatform(actor) ? undefined : actor.merchantId!)
       .filter(ticket => !ticket.archivedAt)
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()).map(t => this.view(actor, t));
+  }
+  pendingAgentPage(actor: Actor, limit = 8) {
+    requirePermission(actor, "tickets.read");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部代理工单");
+    const page = queryRecords(this.repository, "ticket", {filters: [
+      {field: "archivedAt", op: "is_null"}, {field: "systemCase", op: "is_null"},
+      {field: "status", op: "in", value: ["open", "in_progress", "waiting_agent"]},
+    ], page: 1, limit, orderBy: "updatedAt", direction: "desc"});
+    return {...page, data: page.data.map(ticket => this.view(actor, ticket))};
   }
   get(actor: Actor, id: string) {
     requirePermission(actor, "tickets.read");

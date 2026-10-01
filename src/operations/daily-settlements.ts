@@ -6,6 +6,7 @@ import {AuditService} from "../modules/audit-service.js";
 import {managedGptProduct} from "../modules/gpt-products.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, DailySettlementStatement, WalletEntry} from "./model.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const DAY = 86_400_000;
 
@@ -83,16 +84,17 @@ export class DailySettlementService {
     requirePermission(actor, "wallet.read");
     const scoped = isPlatform(actor) ? merchantId : actor.merchantId ?? undefined;
     if (scoped) requireTenantScope(actor, scoped);
-    const merchants = new Map(this.repository.listMerchants().map(item => [item.id, item]));
-    return this.repository.listOperations("daily_settlement", scoped)
+    return this.mapStatements(this.repository.listOperations("daily_settlement", scoped)
       .sort((a, b) => b.businessDate.localeCompare(a.businessDate) || b.generatedAt.getTime() - a.generatedAt.getTime())
-      .map(statement => {
-        const merchant = merchants.get(statement.merchantId);
-        return {...statement, merchantName: merchant?.name ?? "历史代理商", partnerId: merchant?.partnerId ?? "",
-          supplyAmount: minorToMoney(statement.supplyAmountMinor), agentEarnings: minorToMoney(statement.agentEarningsMinor),
-          platformCost: minorToMoney(statement.platformCostMinor), platformProfit: minorToMoney(statement.platformProfitMinor),
-          payable: minorToMoney(statement.payableMinor)};
-      });
+    );
+  }
+
+  pendingPage(actor: Actor, limit = 8) {
+    requirePermission(actor, "wallet.read");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部待核算单");
+    const page = queryRecords(this.repository, "daily_settlement", {filters: [{field: "status", op: "in", value: ["pending_payment", "paid", "disputed"]}],
+      page: 1, limit, orderBy: "updatedAt", direction: "desc"});
+    return {...page, data: this.mapStatements(page.data)};
   }
 
   confirmPaid(actor: Actor, id: string, input: {method: "alipay" | "bank" | "other"; reference: string; evidence?: string | undefined; note?: string | undefined}) {
@@ -163,6 +165,17 @@ export class DailySettlementService {
       this.audit.record({merchantId: current.merchantId, actorId: actor.id, actorType: "platform_user",
         action: "daily_settlement.cancel", targetType: "daily_settlement", targetId: current.id, requestId: randomUUID()});
       return updated;
+    });
+  }
+
+  private mapStatements(statements: DailySettlementStatement[]) {
+    const merchants = new Map(this.repository.listMerchants().map(item => [item.id, item]));
+    return statements.map(statement => {
+      const merchant = merchants.get(statement.merchantId);
+      return {...statement, merchantName: merchant?.name ?? "历史代理商", partnerId: merchant?.partnerId ?? "",
+        supplyAmount: minorToMoney(statement.supplyAmountMinor), agentEarnings: minorToMoney(statement.agentEarningsMinor),
+        platformCost: minorToMoney(statement.platformCostMinor), platformProfit: minorToMoney(statement.platformProfitMinor),
+        payable: minorToMoney(statement.payableMinor)};
     });
   }
 }

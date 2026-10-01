@@ -133,24 +133,19 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const canReviewWallet = permissions.has("*") || permissions.has("wallet.review");
     const canReadWallet = permissions.has("*") || permissions.has("wallet.read");
     const taskPage = runtime.notifications.tasksPage(actor, 1, 8);
-    const customerRefunds = canReviewWallet ? runtime.refunds.listPendingCustomerRefunds(actor) : [];
-    const priceAdjustments = canReviewWallet ? runtime.refunds.listPendingPriceAdjustments(actor) : [];
-    const settlements = canReadWallet ? runtime.dailySettlements.list(actor)
-      .filter(item => ["pending_payment", "paid", "disputed"].includes(item.status)) : [];
-    const agentTickets = runtime.support.list(actor)
-      .filter(item => ["open", "in_progress", "waiting_agent"].includes(item.status))
-      .filter(item => !item.id.startsWith("case_"));
-    const invoiceApplications = permissions.has("*") || permissions.has("invoices.manage")
-      ? runtime.invoices.list(actor).filter(item => ["submitted", "processing"].includes(item.status)) : [];
+    const refundPage = canReviewWallet ? runtime.refunds.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
+    const settlementPage = canReadWallet ? runtime.dailySettlements.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
+    const ticketPage = runtime.support.pendingAgentPage(actor, 8);
+    const invoicePage = permissions.has("*") || permissions.has("invoices.manage")
+      ? runtime.invoices.pendingPage(actor, 8) : {data: [], meta: {total: 0}};
     return wire({data: {
-      counts: {tasks: taskPage.meta.total, refunds: customerRefunds.length + priceAdjustments.length,
-        settlements: settlements.length, tickets: agentTickets.length, invoices: invoiceApplications.length},
+      counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total,
+        settlements: settlementPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
       tasks: taskPage.data,
-      refunds: workspaceRefunds(runtime,[...customerRefunds, ...priceAdjustments]
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 8)),
-      settlements: settlements.slice(0, 8),
-      tickets: agentTickets.slice(0, 8),
-      invoices: invoiceApplications.slice(0, 8),
+      refunds: workspaceRefunds(runtime, refundPage.data),
+      settlements: settlementPage.data,
+      tickets: ticketPage.data,
+      invoices: invoicePage.data,
     }});
   });
   app.get("/workspace/api/finance/costs", async request => wire({data:runtime.costs.list(account(request))}));
