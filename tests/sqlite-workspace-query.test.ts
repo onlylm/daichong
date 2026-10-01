@@ -25,6 +25,17 @@ describe("SQLite workspace batch reads",()=>{
       const updated=plan(`SELECT payload FROM sandbox_records WHERE kind=? AND merchant_id=?
         ORDER BY json_extract(payload,'$.updatedAt') DESC,id DESC LIMIT 20 OFFSET 0`);
       expect(updated).toContain("records_tenant_updated_idx");
+
+      const businessWhere=`kind=? AND json_extract(payload,'$.archivedAt') IS NULL
+        AND json_extract(payload,'$.systemCase') IS NULL AND json_extract(payload,'$.apiApplication') IS NULL
+        AND json_extract(payload,'$.tierApplication') IS NULL AND json_extract(payload,'$.withdrawalApplication') IS NULL`;
+      const platformPlan=(sql:string)=>db.prepare("EXPLAIN QUERY PLAN "+sql).all("ops_ticket")
+        .map(row=>String((row as {detail:unknown}).detail)).join("\n");
+      expect(platformPlan(`SELECT COUNT(*) FROM sandbox_records WHERE ${businessWhere}`))
+        .toContain("COVERING INDEX records_ticket_business_flags_updated_idx");
+      expect(platformPlan(`SELECT payload FROM sandbox_records WHERE ${businessWhere}
+        ORDER BY json_extract(payload,'$.updatedAt') DESC,id DESC LIMIT 20 OFFSET 0`))
+        .toContain("records_ticket_business_flags_updated_idx");
     }finally{r.close();}
   });
 

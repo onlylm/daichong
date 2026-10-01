@@ -89,6 +89,10 @@ export class SqliteRepository implements Repository {
         WHERE kind='ops_ticket' AND json_extract(payload,'$.archivedAt') IS NULL
           AND json_extract(payload,'$.systemCase') IS NULL AND json_extract(payload,'$.apiApplication') IS NULL
           AND json_extract(payload,'$.tierApplication') IS NULL AND json_extract(payload,'$.withdrawalApplication') IS NULL;
+      CREATE INDEX IF NOT EXISTS records_ticket_business_flags_updated_idx
+        ON sandbox_records(kind,json_extract(payload,'$.archivedAt'),json_extract(payload,'$.systemCase'),
+          json_extract(payload,'$.apiApplication'),json_extract(payload,'$.tierApplication'),
+          json_extract(payload,'$.withdrawalApplication'),json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_updated_idx ON sandbox_records(kind,json_extract(payload,'$.updatedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_tenant_updated_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.updatedAt') DESC,id DESC);
