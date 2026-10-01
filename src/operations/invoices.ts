@@ -72,7 +72,7 @@ export class InvoiceService {
         version: 0, createdBy: actor.id, createdAt: now, updatedAt: now,
       };
       this.repository.saveOperations("invoice_application", value, true);
-      this.log(actor, "invoice.application.create", value.id);
+      this.log(actor, value.merchantId, "invoice.application.create", value.id);
       return value;
     });
   }
@@ -138,7 +138,7 @@ export class InvoiceService {
         remark: details.remark, status: "submitted", reviewNote: null, submittedAt: new Date(),
         version: current.version + 1, updatedAt: new Date()};
       this.repository.saveOperations("invoice_application", value);
-      this.log(actor, "invoice.application.resubmit", value.id);
+      this.log(actor, value.merchantId, "invoice.application.resubmit", value.id);
       return this.view(actor, value);
     });
   }
@@ -162,7 +162,7 @@ export class InvoiceService {
         issuedAt: input.action === "issued" ? now : current.issuedAt,
         version: current.version + 1, updatedAt: now};
       this.repository.saveOperations("invoice_application", value);
-      this.log(actor, "invoice.application." + input.action, value.id);
+      this.log(actor, value.merchantId, "invoice.application." + input.action, value.id);
       return this.view(actor, value);
     });
   }
@@ -279,8 +279,8 @@ export class InvoiceService {
       && existing.contactPhone === details.contactPhone && existing.remark === details.remark;
   }
 
-  private log(actor: Actor, action: string, id: string): void {
-    this.audit.record({merchantId: actor.merchantId, actorId: actor.id,
+  private log(actor: Actor, merchantId: string, action: string, id: string): void {
+    this.audit.record({merchantId, actorId: actor.id,
       actorType: isPlatform(actor) ? "platform_user" : "merchant_user", action,
       targetType: "invoice_application", targetId: id, requestId: randomUUID()});
   }
