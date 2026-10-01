@@ -93,6 +93,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_payout_reference_idx ON sandbox_records(kind,json_extract(payload,'$.payoutReference'));
       CREATE INDEX IF NOT EXISTS records_source_reference_idx ON sandbox_records(kind,json_extract(payload,'$.sourceReference'));
       CREATE INDEX IF NOT EXISTS records_trade_reference_idx ON sandbox_records(kind,json_extract(payload,'$.tradeCandidate.reference'));
+      CREATE INDEX IF NOT EXISTS records_webhook_lease_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.leaseUntil'));
     `);
   }
 
@@ -557,10 +558,11 @@ export class SqliteRepository implements Repository {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const now = new Date();
-      const due = this.listAll<WebhookDelivery>("webhook_delivery")
-        .filter((item) => (item.status === "pending" && item.nextAttemptAt <= now) || (item.status === "delivering" && item.leaseUntil !== null && item.leaseUntil <= now))
-        .sort((a, b) => a.nextAttemptAt.getTime() - b.nextAttemptAt.getTime())
-        .slice(0, limit);
+      const due=this.db.prepare(`SELECT payload FROM sandbox_records WHERE kind='webhook_delivery' AND (
+        (json_extract(payload,'$.status')='pending' AND json_extract(payload,'$.nextAttemptAt')<=?) OR
+        (json_extract(payload,'$.status')='delivering' AND json_extract(payload,'$.leaseUntil') IS NOT NULL AND json_extract(payload,'$.leaseUntil')<=?))
+        ORDER BY json_extract(payload,'$.nextAttemptAt') ASC,id ASC LIMIT ?`).all(now.toISOString(),now.toISOString(),Math.min(100,Math.max(1,limit)))
+        .map(row=>decode<WebhookDelivery>(String(row.payload)));
       const result: ClaimedWebhookDelivery[] = [];
       for (const item of due) {
         const delivery: WebhookDelivery = {...item, status: "delivering", leaseUntil, attemptCount: item.attemptCount + 1};

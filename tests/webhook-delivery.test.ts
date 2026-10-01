@@ -1,4 +1,5 @@
-import {describe, expect, it} from "vitest";
+import type {DatabaseSync} from "node:sqlite";
+import {describe, expect, it, vi} from "vitest";
 import {createRuntime} from "../src/bootstrap.js";
 import type {AppConfig} from "../src/config.js";
 import {verifyWebhook} from "../src/modules/webhook-signature.js";
@@ -26,6 +27,24 @@ describe("webhook delivery", () => {
     expect(delivery.headers.get("x-quefa-event")).toBe("webhook.test");
     expect(await worker.tick()).toBe(0);
     runtime.close();
+  });
+
+  it("claims only a bounded due batch from SQLite", () => {
+    const config = {...webhookConfig(), storageDriver: "sqlite" as const};
+    const runtime = createRuntime(config);
+    try {
+      const merchant = runtime.repository.findMerchantByPartner(config.demoPartnerId)!;
+      for (let index = 0; index < 10; index++) runtime.webhooks.emit(merchant.id, `test:webhook:bounded:${index}`, "webhook.test", merchant.id, {index});
+      const db=(runtime.repository as unknown as {db:DatabaseSync}).db,prepare=vi.spyOn(db,"prepare");
+      const claimed=runtime.repository.claimWebhookDeliveries(3,new Date(Date.now()+60_000));
+      expect(claimed).toHaveLength(3);
+      const select=prepare.mock.calls.map(call=>String(call[0])).find(sql=>sql.includes("kind='webhook_delivery'")&&sql.includes("nextAttemptAt"));
+      expect(select).toContain("LIMIT ?");
+      expect(select).toContain("leaseUntil");
+    } finally {
+      vi.restoreAllMocks();
+      runtime.close();
+    }
   });
 });
 
