@@ -476,8 +476,8 @@ export class SqliteRepository implements Repository {
   findDuePaymentOrder(provider:string,now:Date):Order|null {
     const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records p
       JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=p.merchant_id AND o.id=json_extract(p.payload,'$.orderId')
-      WHERE p.kind='payment_attempt' AND json_extract(p.payload,'$.provider')=? AND json_extract(p.payload,'$.status')='pending'
-      AND json_extract(o.payload,'$.paymentStatus')='pending'
+      WHERE p.kind='payment_attempt' AND json_extract(p.payload,'$.provider')=? AND json_extract(p.payload,'$.status') IN ('pending','paid')
+      AND json_extract(o.payload,'$.paymentStatus') IN ('pending','paid','partially_refunded')
       AND (json_extract(p.payload,'$.nextCheckAt') IS NULL OR json_extract(p.payload,'$.nextCheckAt')<=?)
       ORDER BY COALESCE(json_extract(p.payload,'$.nextCheckAt'),json_extract(p.payload,'$.createdAt')) ASC,p.id ASC LIMIT 1`).get(provider,now.toISOString());
     return row?decode<Order>(String(row.order_payload)):null;

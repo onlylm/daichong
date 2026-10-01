@@ -41,6 +41,25 @@ export class PaymentService {
     return this.repository.transaction(() => this.markPaidLocked(merchantId, orderId, input));
   }
 
+  markClosed(merchantId: string, orderId: string, provider: string): Order {
+    return this.repository.transaction(() => {
+      const order = this.repository.findOrder(merchantId, orderId);
+      if (!order) throw notFound("order");
+      const attempt = this.repository.findPaymentAttemptByOrder(merchantId, orderId);
+      if (!attempt || attempt.provider !== provider) throw new AppError(409, "payment_channel_mismatch", "不允许跨支付渠道关闭订单");
+      if (order.paymentStatus === "closed") return order;
+      if (order.paymentStatus !== "pending") return order;
+      assertPaymentTransition(order.paymentStatus, "closed");
+      const now = new Date(), closed = {...order, paymentStatus: "closed" as const, updatedAt: now};
+      this.repository.updateOrder(closed);
+      const {nextCheckAt: _nextCheckAt, ...closedAttempt} = attempt;
+      this.repository.updatePaymentAttempt({...closedAttempt, status: "closed", updatedAt: now});
+      this.webhooks.emit(merchantId, `${orderId}:order.closed`, "order.closed", orderId,
+        {event: "order.closed", order_id: orderId, merchant_order_no: order.merchantOrderNo});
+      return closed;
+    });
+  }
+
   private markPaidLocked(merchantId: string, orderId: string, input: {providerRef: string; receivedMinor: bigint; feeMinor?: bigint; channel?: "mock" | "alipay_page" | "dujiaopay"}): Order {
     const order = this.repository.findOrder(merchantId, orderId);
     if (!order) throw notFound("order");

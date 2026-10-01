@@ -514,7 +514,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const order = requireWorkspaceRechargeOrder(actor, runtime, request.params.id);
     const credential = normalizeRechargeCredential(rechargeCredentialSchema.parse(request.body));
     const result = await runtime.fulfillments.preflightPublic(order, credential, resolveAutoRechargeUpstreamCode(runtime, order));
-    return {data: {account_email: result.accountEmail}};
+    return {data: {account_email: result.accountEmail, current_plan: result.currentPlan, target_plan: result.targetPlan,
+      product_name: managedGptProduct(order.productCode)?.name ?? order.productCode}};
   });
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/recharge", async request => {
     const actor = account(request); requirePermission(actor, "orders.write");

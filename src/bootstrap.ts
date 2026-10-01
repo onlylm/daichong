@@ -130,6 +130,9 @@ export function createRuntime(config: AppConfig) {
     wallets.reconcileOrderEarnings(orderId);
     fulfillments.closeRefundedOrder(orderId);
   });
+  alipay?.setExternalRefundHandler((orderId, refundedMinor, providerReference) => {
+    refunds.syncProviderRefund(orderId, refundedMinor, providerReference);
+  });
   const settlements = new SettlementService(repository);
   const dailySettlements = new DailySettlementService(repository, audit);
   const accessControl = new AccessControlService(repository);

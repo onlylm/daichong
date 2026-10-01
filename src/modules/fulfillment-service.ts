@@ -45,7 +45,9 @@ export class FulfillmentService {
     return this.repository.transaction(() => this.reserveAndCreateCdk(order, voucher, upstreamCdkCode, credential));
   }
 
-  async preflightPublic(order: Order, credential: RechargeCredential, upstreamCdkCode?: string): Promise<{accountEmail: string}> {
+  async preflightPublic(order: Order, credential: RechargeCredential, upstreamCdkCode?: string): Promise<{
+    accountEmail: string; currentPlan: string | null; targetPlan: string | null;
+  }> {
     if (this.repository.findOrderInternal(order.id)?.archivedAt) throw new AppError(410, "order_archived", "该测试订单已归档，不能继续充值");
     if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
       throw new AppError(409, "order_not_paid", "只有已支付订单可以提交充值");
@@ -54,14 +56,14 @@ export class FulfillmentService {
       if ((order.fulfillmentMode ?? "direct") === "cdk") {
         if (!upstreamCdkCode) throw new AppError(409, "voucher_unavailable", "兑换码不可用");
         const result = await this.upstream.preflightCdk({upstreamCode: upstreamCdkCode, credential, deviceId: deviceId(`preflight:${order.id}`)});
-        return {accountEmail: result.accountEmail};
+        return result;
       }
       const result = await this.upstream.preflightDirect({
         product: order.upstreamProduct ?? "gpt",
         plan: order.upstreamPlan ?? "plus",
         credential,
       });
-      return {accountEmail: result.accountEmail};
+      return result;
     } catch (error) {
       if (error instanceof UpstreamRequestError) {
         const code = publicFailureCode(error);

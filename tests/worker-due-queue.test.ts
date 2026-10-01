@@ -54,6 +54,10 @@ describe("bounded payment worker queues",()=>{
     const repository=runtime.repository as Repository;
     expect(repository.findDueRefund?.("alipay_page",now)?.id).toBe("refund-due");
     expect(repository.findRefundInternal?.("refund-due")?.orderId).toBe(order.id);
+    runtime.payment.markPaid(order.merchantId,order.id,{channel:"alipay_page",providerRef:"2026100100000099",receivedMinor:order.saleAmountMinor});
+    const paidAttempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...paidAttempt,nextCheckAt:past});
+    expect(repository.findDuePaymentOrder?.("alipay_page",now)).toMatchObject({id:order.id,paymentStatus:"paid"});
     expect(full).not.toHaveBeenCalled();
   });
 });

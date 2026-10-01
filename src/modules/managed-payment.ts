@@ -22,6 +22,7 @@ export class ManagedPaymentProvider implements PaymentProvider {
   }
 }
 export class ManagedAlipayService {
+  private externalRefundHandler?: (orderId: string, refundedMinor: bigint, providerReference: string) => void;
   constructor(private readonly repo: Repository, private readonly settings: PaymentSettingsService, private readonly payment: PaymentService,
     private readonly base: string, private readonly provider: AlipayPagePaymentProvider, private readonly legacy: AlipayPaymentService | null = null) {}
   private service(id: string): AlipayPaymentService {
@@ -34,7 +35,12 @@ export class ManagedAlipayService {
     const r = this.settings.revision(attempt.paymentConfigId, "alipay_page"), keys = this.settings.secrets(r);
     const identity = {appId: r.details.appId!, sellerId: r.details.sellerId!};
     return new AlipayPaymentService(this.repo, this.payment, createAlipayClientFromKeys({...identity, privateKey: keys.privateKey!,
-      alipayPublicKey: keys.publicKey!, keyType: r.details.keyType as "PKCS1" | "PKCS8"}), identity, this.base, this.provider);
+      alipayPublicKey: keys.publicKey!, keyType: r.details.keyType as "PKCS1" | "PKCS8"}), identity, this.base, this.provider,
+      this.externalRefundHandler);
+  }
+  setExternalRefundHandler(handler: (orderId: string, refundedMinor: bigint, providerReference: string) => void): void {
+    this.externalRefundHandler = handler;
+    this.legacy?.setExternalRefundHandler(handler);
   }
   async precreate(id: string): Promise<string> {this.settings.assertOpen("alipay_page"); return this.service(id).precreate(id);}
   handleNotification(input: Record<string, string>): void {this.service(input.out_trade_no ?? "").handleNotification(input);}
@@ -47,7 +53,7 @@ export class ManagedAlipayService {
   }
   async reconcileOne(): Promise<void> {
     const now=new Date(),o=this.repo.findDuePaymentOrder?.("alipay_page",now)??this.repo.listOrdersInternal().find(order=>{
-      const attempt=this.repo.findPaymentAttemptByOrder(order.merchantId,order.id);return order.paymentStatus==="pending"&&attempt?.provider==="alipay_page"&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
+      const attempt=this.repo.findPaymentAttemptByOrder(order.merchantId,order.id);return ["pending","paid","partially_refunded"].includes(order.paymentStatus)&&attempt?.provider==="alipay_page"&&["pending","paid"].includes(attempt.status)&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
     });
     if (o) await this.reconcile(o.id);
   }

@@ -37,8 +37,8 @@ describe("recharge supplier adapter", () => {
   it("returns the account email from CDK preflight without redeeming", async () => {
     const requests: Array<{url: string; init: RequestInit}> = [];
     const replies = [
-      {code: 0, data: {redemption_token: "redeem_token"}},
-      {code: 0, data: {preflight_token: "pf_cdk", email: "buyer@example.com"}},
+      {code: 0, data: {redemption_token: "redeem_token", plan: "pro_5x"}},
+      {code: 0, data: {preflight_token: "pf_cdk", email: "buyer@example.com", currentPlan: "free"}},
     ];
     vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
       requests.push({url: String(input), init});
@@ -48,7 +48,7 @@ describe("recharge supplier adapter", () => {
     const result = await provider.preflightCdk({
       upstreamCode: "ZC-AAAA-BBBB-CCCC-DDDD", credential: {mode: "session", session: "private-session"}, deviceId: "quefa-device-001",
     });
-    expect(result).toEqual({accountEmail: "buyer@example.com"});
+    expect(result).toEqual({accountEmail: "buyer@example.com", currentPlan: "free", targetPlan: "pro_5x"});
     expect(requests.map((item) => item.url)).toEqual([
       "https://supplier.test/api/v1/cdk/preview",
       "https://supplier.test/api/v1/cdk/preflight",

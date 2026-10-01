@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {buildApp} from "../src/app.js";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
@@ -124,5 +124,33 @@ describe("public recharge link lifecycle", () => {
     }});
     expect(response.statusCode).toBe(410);
     expect(response.json().error.code).toBe("recharge_portal_closed");
+  });
+
+  it("previews the local CDK package before credentials and returns the current and target plans after preflight", async () => {
+    const created = await runtime.orders.create(tenant, {merchantOrderNo: randomUUID(), productCode: "chatgpt_plus_cdk_1m",
+      quantity: 1, saleAmount: "135.00", deliveryMode: "cdk"});
+    runtime.payment.markPaid(created.merchantId, created.id,
+      {providerRef: `test:${created.id}`, receivedMinor: created.saleAmountMinor});
+    const voucher = (await runtime.cdk.issueOne())!;
+    const upstreamPreflight = vi.spyOn(runtime.upstream, "preflightCdk");
+
+    const redeemPage = await app.inject({method: "GET", url: "/redeem"});
+    expect(redeemPage.body).toContain("兑换码对应套餐");
+    expect(redeemPage.body).toContain("当前套餐");
+    expect(redeemPage.body).toContain("本次兑换");
+    expect(redeemPage.body).toContain("addEventListener('paste'");
+
+    const preview = await app.inject({method: "POST", url: "/public/cdk/preview", payload: {code: voucher.publicCode}});
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().data).toMatchObject({product_code: "chatgpt_plus_cdk_1m", product_name: "ChatGPT Plus", target_plan: "plus"});
+    expect(upstreamPreflight).not.toHaveBeenCalled();
+
+    const preflight = await app.inject({method: "POST", url: "/public/cdk/preflight", payload: {
+      code: voucher.publicCode, credential: {mode: "session", session: "valid-session-for-plan-preview"},
+    }});
+    expect(preflight.statusCode).toBe(200);
+    expect(preflight.json().data).toMatchObject({account_email: "preview@example.com", current_plan: "free",
+      target_plan: "plus", product_name: "ChatGPT Plus"});
+    expect(upstreamPreflight).toHaveBeenCalledTimes(1);
   });
 });

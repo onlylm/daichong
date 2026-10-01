@@ -57,7 +57,8 @@ export class ZovoCardRechargeProvider implements RechargeUpstreamProvider {
     if ((input.product === "gpt" && !preflightToken) || stringOrNull(preflightData.quote_error)) {
       throw new UpstreamRequestError("upstream_quote_unavailable", true);
     }
-    return {accountEmail: requireAccountEmail(preflightData.email)};
+    return {accountEmail: requireAccountEmail(preflightData.email),
+      currentPlan: stringOrNull(preflightData.currentPlan) ?? stringOrNull(preflightData.current_plan), targetPlan: input.plan};
   }
 
   async preflightCdk(input: {upstreamCode: string; credential: RechargeCredential; deviceId: string}): Promise<PreflightResult> {
@@ -68,7 +69,9 @@ export class ZovoCardRechargeProvider implements RechargeUpstreamProvider {
     const preflight = await this.cdk("POST", "/preflight", {redemption_token: redemptionToken, credential: upstreamCredential(input.credential)}, headers);
     const preflightData = asObject(preflight.data);
     requireString(preflightData.preflight_token, "upstream_preflight_failed");
-    return {accountEmail: requireAccountEmail(preflightData.email)};
+    return {accountEmail: requireAccountEmail(preflightData.email),
+      currentPlan: stringOrNull(preflightData.currentPlan) ?? stringOrNull(preflightData.current_plan),
+      targetPlan: stringOrNull(previewData.plan)};
   }
 
   async submitCdk(input: {upstreamCode: string; credential: RechargeCredential; clientRequestId: string; deviceId: string; onSubmitting?: SubmissionCheckpoint}): Promise<UpstreamOrderState> {

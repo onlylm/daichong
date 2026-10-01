@@ -50,7 +50,12 @@ export class AlipayPaymentService {
     private readonly identity: {appId: string; sellerId: string},
     private readonly base: string,
     private readonly provider: AlipayPagePaymentProvider,
+    private externalRefundHandler?: (orderId: string, refundedMinor: bigint, providerReference: string) => void,
   ) {}
+
+  setExternalRefundHandler(handler: (orderId: string, refundedMinor: bigint, providerReference: string) => void): void {
+    this.externalRefundHandler = handler;
+  }
 
   async precreate(orderId: string): Promise<string> {
     const order = this.order(orderId);
@@ -84,8 +89,10 @@ export class AlipayPaymentService {
     const order = this.repository.transaction(() => {
       const current = this.order(orderId);
       const attempt = this.repository.findPaymentAttemptByOrder(current.merchantId, current.id)!;
-      if (current.paymentStatus !== "pending" || (attempt.nextCheckAt && attempt.nextCheckAt > new Date())) return null;
-      this.repository.updatePaymentAttempt({...attempt, nextCheckAt: new Date(Date.now() + 60_000), updatedAt: new Date()});
+      if (!["pending", "paid", "partially_refunded"].includes(current.paymentStatus)
+          || (attempt.nextCheckAt && attempt.nextCheckAt > new Date())) return null;
+      const interval = current.paymentStatus === "pending" ? 60_000 : 6 * 60 * 60_000;
+      this.repository.updatePaymentAttempt({...attempt, nextCheckAt: new Date(Date.now() + interval), updatedAt: new Date()});
       return current;
     });
     if (!order) return;
@@ -132,8 +139,8 @@ export class AlipayPaymentService {
   }
 
   async reconcileOne(): Promise<void> {
-    const now=new Date(),candidate=this.repository.findDuePaymentOrder?.("alipay_page",now)??this.repository.listOrdersInternal().filter(x=>x.paymentStatus==="pending").find(order=>{
-      const attempt=this.repository.findPaymentAttemptByOrder(order.merchantId,order.id);return attempt?.provider==="alipay_page"&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
+    const now=new Date(),candidate=this.repository.findDuePaymentOrder?.("alipay_page",now)??this.repository.listOrdersInternal().filter(x=>["pending","paid","partially_refunded"].includes(x.paymentStatus)).find(order=>{
+      const attempt=this.repository.findPaymentAttemptByOrder(order.merchantId,order.id);return attempt?.provider==="alipay_page"&&["pending","paid"].includes(attempt.status)&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
     });
     if (candidate) await this.reconcile(candidate.id);
   }
@@ -147,8 +154,10 @@ export class AlipayPaymentService {
   }
 
   private accept(order: Order, data: Record<string, string>): void {
+    const refunded = amountMinor(data.refund_amount);
+    const requiresTradeNo = ["TRADE_SUCCESS", "TRADE_FINISHED"].includes(data.trade_status ?? "") || refunded > 0n;
     if (data.out_trade_no !== order.id || amountMinor(data.total_amount) !== order.saleAmountMinor
-        || !/^\d{8,64}$/.test(data.trade_no ?? "")
+        || (requiresTradeNo && !/^\d{8,64}$/.test(data.trade_no ?? ""))
         || (data.seller_id !== undefined && data.seller_id !== this.identity.sellerId)
         || (data.app_id !== undefined && data.app_id !== this.identity.appId)) {
       throw new AppError(409, "payment_binding_mismatch", "支付交易与平台订单不匹配");
@@ -156,6 +165,15 @@ export class AlipayPaymentService {
     if (["TRADE_SUCCESS", "TRADE_FINISHED"].includes(data.trade_status ?? "")) {
       this.payment.markPaid(order.merchantId, order.id, {channel: "alipay_page", providerRef: data.trade_no!,
         receivedMinor: order.saleAmountMinor});
+      const currentAttempt = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id);
+      if (currentAttempt?.status === "paid" && !currentAttempt.nextCheckAt) {
+        this.repository.updatePaymentAttempt({...currentAttempt, nextCheckAt: new Date(Date.now() + 6 * 60 * 60_000), updatedAt: new Date()});
+      }
+    } else if (data.trade_status === "TRADE_CLOSED") {
+      this.payment.markClosed(order.merchantId, order.id, "alipay_page");
+    }
+    if (refunded > 0n) {
+      this.externalRefundHandler?.(order.id, refunded, `alipay-query:${data.trade_no}:${minorToMoney(refunded)}`);
     }
     // Browser return parameters and non-success provider statuses never mark paid.
   }

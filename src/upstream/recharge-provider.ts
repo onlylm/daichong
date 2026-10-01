@@ -11,6 +11,8 @@ export type RechargeCredential =
 
 export interface PreflightResult {
   accountEmail: string;
+  currentPlan: string | null;
+  targetPlan: string | null;
 }
 
 export interface UpstreamOrderState {
@@ -77,11 +79,11 @@ export class MockRechargeProvider implements RechargeUpstreamProvider {
   }
 
   async preflightDirect(input: {product: RechargeProduct; plan: string; credential: RechargeCredential}): Promise<PreflightResult> {
-    return mockPreflight(input.credential);
+    return mockPreflight(input.credential, input.plan);
   }
 
   async preflightCdk(_input: {upstreamCode: string; credential: RechargeCredential; deviceId: string}): Promise<PreflightResult> {
-    return mockPreflight(_input.credential);
+    return mockPreflight(_input.credential, "plus");
   }
 
   async issueCdk(input: {plan: string; idempotencyKey: string}): Promise<{id: string; code: string}> {
@@ -90,10 +92,10 @@ export class MockRechargeProvider implements RechargeUpstreamProvider {
   }
 }
 
-function mockPreflight(credential: RechargeCredential): PreflightResult {
-  if (credential.mode === "mailbox") return {accountEmail: credential.email};
+function mockPreflight(credential: RechargeCredential, targetPlan: string): PreflightResult {
+  if (credential.mode === "mailbox") return {accountEmail: credential.email, currentPlan: "free", targetPlan};
   if (JSON.stringify(credential).includes("simulate_failure")) throw new UpstreamRequestError("session_invalid", false, "账号凭据无效");
-  return {accountEmail: "preview@example.com"};
+  return {accountEmail: "preview@example.com", currentPlan: "free", targetPlan};
 }
 
 function mockState(clientRequestId: string, credential: RechargeCredential): UpstreamOrderState {
