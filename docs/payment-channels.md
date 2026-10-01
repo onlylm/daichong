@@ -7,7 +7,7 @@
 使用现有 HMAC 认证调用 GET /v1/payment-methods：
 
 ```json
-{"data":[{"code":"alipay","name":"支付宝"},{"code":"usdt","name":"USDT"}]}
+{"data":[{"code":"alipay","name":"支付宝"}]}
 ```
 
 只返回平台当前开放的方式。全部关闭或纯模拟模式可能返回空数组；余额采购不依赖此列表。
@@ -21,12 +21,12 @@
   "quantity":1,
   "sale_amount":"135.00",
   "collection_mode":"platform_collect",
-  "payment_channel":"usdt"
+  "payment_channel":"alipay"
 }
 ```
 
 POST /v1/orders，必须按现有规范携带签名和 Idempotency-Key。
-payment_channel 可选 alipay / usdt；省略时使用当前首个可用通道，支付宝优先。为了确定性，建议先查询并显式选择。
+payment_channel 当前只可选 alipay；省略时同样使用支付宝。平台不再接受新的 USDT 订单。
 sale_amount 始终为人民币元字符串，不能填 USDT 数量。旧接入继续把 `qr_payload` 视为 Quefa 付款链接，不能将它当作支付宝当面付二维码。
 
 如需买家全程留在代理商页面，可由平台按代理开通后端直出码能力。代理后端签名调用 `POST /v1/orders/{order_id}/payment-code`，请求体只能为 `{}`，平台返回实际 `payment_code` 及本地生成的 `qr_image_data_url`。金额、有效期和支付配置全部取原订单，不能在取码请求中覆盖。代理前端只请求自己的后端；不得把平台 API 密钥放进浏览器，也不得让买家浏览器请求平台或第三方绘码网站。该新接口不改变 `qr_payload` 的旧含义。

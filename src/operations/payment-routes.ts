@@ -3,9 +3,8 @@ import {z} from "zod";
 import type {Runtime} from "../bootstrap.js";
 import type {Actor} from "./model.js";
 import {paymentConfigInput, requirePaymentAdmin} from "../modules/payment-settings.js";
-import {queryRecords} from "../infra/record-query.js";
 
-const channel = z.enum(["alipay_page", "dujiaopay"]);
+const channel = z.literal("alipay_page");
 const action = z.object({channel, version: z.number().int().nonnegative()}).strict();
 export function registerPaymentSettingsRoutes(app: FastifyInstance, runtime: Runtime, actor: (request: FastifyRequest) => Actor): void {
   // Runs under the workspace session, password-change, same-origin and CSRF hook.
@@ -25,12 +24,7 @@ export function registerPaymentSettingsRoutes(app: FastifyInstance, runtime: Run
   });
   app.post("/workspace/api/payment-settings/disable", async request => {
     const user = actor(request); requirePaymentAdmin(user);
-    const body = z.object({channels: z.array(action).min(1).max(2)}).strict().parse(request.body);
+    const body = z.object({channels: z.array(action).length(1)}).strict().parse(request.body);
     return {data: runtime.paymentSettings.pauseMany(user, body.channels)};
-  });
-  app.get("/workspace/api/payment-reviews", async request => {
-    requirePaymentAdmin(actor(request));
-    return {data: queryRecords(runtime.repository,"crypto_payment",{filters:[{field:"failureCode",op:"not_null"}],orderBy:"updatedAt",direction:"desc",limit:200,count:false}).data
-      .map(p => ({orderId: p.orderId, state: p.state, reason: p.failureCode, updatedAt: p.updatedAt}))};
   });
 }

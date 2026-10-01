@@ -15,7 +15,6 @@ const lanes: Array<[string, () => unknown | Promise<unknown>]> = [
   ["retail-payment", () => runtime.alipay?.reconcileOne()],
   ["wallet-payment", () => runtime.walletAlipay?.reconcileOne()],
   ["invoice-payment", () => runtime.invoiceAlipay?.reconcileOne()],
-  ["usdt-payment", () => runtime.dujiaopay?.reconcileOne()],
   ["cdk-issuance", () => runtime.cdk.issueOne()],
   ["cdk-refund-cleanup", () => runtime.cdk.reconcileRefundedOne()],
   ["fulfillment", () => runtime.fulfillments.processOne()],

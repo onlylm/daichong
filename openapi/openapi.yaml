@@ -119,7 +119,7 @@ paths:
                       type: object
                       required: [code, name]
                       properties:
-                        code: {type: string, enum: [alipay, usdt]}
+                        code: {type: string, enum: [alipay]}
                         name: {type: string}
         default: {$ref: '#/components/responses/Error'}
   /v1/redemptions:
@@ -856,8 +856,8 @@ components:
         delivery_mode: {type: string, enum: [auto_recharge, cdk], description: auto_recharge 由代理商自有页面提交凭据并使用服务端 CDK；cdk 直接返回公开 QF 码。建议始终显式传值}
         payment_channel:
           type: string
-          enum: [alipay, usdt]
-          description: 仅平台代收可传。省略使用首个可用通道（支付宝优先）；下单后不可切换，余额采购不得填写。sale_amount 始终为人民币元。
+          enum: [alipay]
+          description: 仅平台代收可传；当前只支持支付宝。省略时使用支付宝；下单后不可切换，余额采购不得填写。sale_amount 始终为人民币元。
         merchant_order_no: {type: string, minLength: 1, maxLength: 64}
         product_code: {type: string, minLength: 1, maxLength: 64}
         quantity: {type: integer, minimum: 1}

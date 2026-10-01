@@ -12,7 +12,7 @@
 - TypeScript/Fastify API：租户鉴权、Nonce 防重放、幂等、商品、订单分页、支付抽象、履约、退款、台账、结算、Webhook Outbox、审计。
 - 可点击确认的模拟支付宝付款页，付款后由 Quefa 更新订单并产生 Webhook。
 - 可选平台支付宝电脑网站支付（密钥/RSA2）：收银台跳转、通知验签、主动查单；仅允许白名单限额实单联调。
-- 后台双支付配置（PAYMENT_PROVIDER=managed）：支付宝与 USDT/DujiaoPay 独立启用或关闭、全部关闭、凭据加密及订单绑定配置版本；USDT 精确金额收银台、持久化建单/回调/查单。操作与部署要求见 [后台支付配置](docs/20-payment-settings.md)。
+- 后台托管支付宝配置（PAYMENT_PROVIDER=managed）：支持草稿、密钥校验、启用/关闭、凭据加密及订单绑定配置版本；平台不再开放 USDT 新付款。操作与部署要求见 [后台支付配置](docs/20-payment-settings.md)。
 - 实单联调后台：充值逐笔批准、派发前取消、CDK 停用与结果未知锁定。详见 `docs/14-支付宝电脑网站支付与受控实单联调.md`。
 - Quefa 品牌充值页、`QF-` CDK 兑换页、充值状态轮询；供应商域名、订单号与原始卡密只存在于服务端。
 - 可切换的模拟/真实充值适配器，覆盖直充预检下单、CDK 签发兑换、轮询和签名回调。
@@ -36,7 +36,7 @@ npm run build
 
 启动联调环境可使用 `docker compose up --build`；另开终端执行 `npm run demo:partner`，然后打开 `http://127.0.0.1:3300`。详细步骤见 `docs/10-代理商沙箱联调指南.md`。
 
-`src/infra/sqlite-repository.ts` 支持当前单服务器低并发生产，API 与 Worker 共享持久化数据。`NODE_ENV=production` 与 `EXECUTION_MODE=production` 已具备严格启动校验；支付宝、DujiaoPay 和生产上游仍须在工作台分别保存、验证和启用。扩展为多节点、自动退款或更高财务并发前，应完成 PostgreSQL 仓储迁移、异机加密备份、KMS、渠道对账与固定出口网络。
+`src/infra/sqlite-repository.ts` 支持当前单服务器低并发生产，API 与 Worker 共享持久化数据。`NODE_ENV=production` 与 `EXECUTION_MODE=production` 已具备严格启动校验；支付宝和生产上游仍须在工作台分别保存、验证和启用。扩展为多节点、自动退款或更高财务并发前，应完成 PostgreSQL 仓储迁移、异机加密备份、KMS、渠道对账与固定出口网络。
 
 ## 目录
 

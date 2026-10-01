@@ -35,6 +35,29 @@ describe("default-open API and dual-mode spending", () => {
     expect(() => r.apiAccess.apply(owner, owner.merchantId!, "旧申请", "retired-flow")).toThrow("无需申请或预存");
   });
 
+  it("only exposes Alipay and rejects new USDT orders", async () => {
+    const methods = await request("GET", "/v1/payment-methods", undefined, "payment-methods");
+    expect(methods.statusCode).toBe(200);
+    expect(methods.json().data.every((item: {code: string}) => item.code === "alipay")).toBe(true);
+    const blocked = await request("POST", "/v1/orders", {...orderBody("usdt-disabled", "platform_collect"), payment_channel: "usdt"}, "usdt-disabled");
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().error.code).toBe("invalid_request");
+    const managedConfig = loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "memory", LOG_LEVEL: "silent", PAYMENT_PROVIDER: "managed"});
+    const managedRuntime = createRuntime(managedConfig);
+    managedConfig.executionMode = "controlled";
+    const managedApp = await buildApp(managedConfig, managedRuntime);
+    try {
+      const now = new Date();
+      managedRuntime.repository.saveOperations("payment_settings", {id: "alipay_page", merchantId: null, channel: "alipay_page",
+        version: 1, draftId: null, activeId: "pc-alipay", paused: false, updatedAt: now}, true);
+      managedRuntime.repository.saveOperations("payment_settings", {id: "dujiaopay", merchantId: null, channel: "dujiaopay",
+        version: 1, draftId: null, activeId: "pc-usdt-legacy", paused: false, updatedAt: now}, true);
+      expect(managedRuntime.paymentSettings.available()).toEqual(["alipay_page"]);
+      expect((await managedApp.inject({url: "/usdt-payments/nonexistent"})).statusCode).toBe(404);
+      expect((await managedApp.inject({method: "POST", url: "/internal/webhooks/dujiaopay/pc-usdt-legacy"})).statusCode).toBe(404);
+    } finally { await managedApp.close(); managedRuntime.close(); }
+  });
+
   it("forces platform collection at zero balance, then deducts the exact supply price after a verified deposit", async () => {
     const blocked = await request("POST", "/v1/orders", orderBody("zero-agent", "agent_collect"), "zero-agent");
     expect(blocked.statusCode).toBe(403); expect(blocked.json().error.code).toBe("collection_mode_denied");

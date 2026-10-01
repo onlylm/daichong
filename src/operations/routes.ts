@@ -283,7 +283,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         priceVersion: p.priceVersion};
     }),
       collectionModes: effectiveCollectionModes(runtime.repository, merchantId),
-      paymentMethods: runtime.paymentSettings.available().map(c => ({code: c === "alipay_page" ? "alipay" : "usdt", name: c === "alipay_page" ? "支付宝" : "USDT"}))};
+      paymentMethods: runtime.paymentSettings.available().filter(c => c === "alipay_page")
+        .map(() => ({code: "alipay", name: "支付宝"}))};
   });
   app.put<{Params: {productCode: string}}>("/workspace/api/products/:productCode", async request => {
     const actor = account(request); requirePermission(actor, "agents.manage");
@@ -500,7 +501,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const actor = account(request); requirePermission(actor, "orders.write");
     const input = z.object({merchantId: identifier.optional(), merchantOrderNo: requestKey, productCode: z.string().min(1).max(64),
       collectionMode: z.enum(["platform_collect", "agent_collect"]), deliveryMode: z.enum(["auto_recharge", "cdk"]).optional(),
-      paymentMethod: z.enum(["alipay", "usdt"]).optional(), saleAmount: money}).strict().parse(request.body);
+      paymentMethod: z.literal("alipay").optional(), saleAmount: money}).strict().parse(request.body);
     const merchantId = scope(actor, input.merchantId);
     const merchant = runtime.repository.findMerchantById(merchantId);
     if (!merchant || merchant.status !== "active") throw new AppError(403, "merchant_inactive", "代理商不可下单");
@@ -508,7 +509,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       ?? runtime.merchantService.createApp(merchantId, {appId: "quefa_web_portal", name: "Quefa 网页采购入口"}));
     if (portalApp.status !== "active") throw new AppError(403, "app_disabled", "网页采购入口已停用");
     const order = await runtime.orders.create({merchantId, partnerId: merchant.partnerId, appId: portalApp.id, keyId: "account:" + actor.id},
-      {...input, quantity: 1, paymentChannel: input.paymentMethod === "usdt" ? "dujiaopay" : input.paymentMethod === "alipay" ? "alipay_page" : undefined});
+      {...input, quantity: 1, paymentChannel: input.paymentMethod === "alipay" ? "alipay_page" : undefined});
     runtime.audit.record({merchantId, actorId: actor.id, actorType: isPlatform(actor) ? "platform_user" : "merchant_user",
       action: "order.web.create", targetType: "order", targetId: order.id, requestId: request.id});
     return {data: {id: order.id, collectionMode: order.collectionMode, paymentStatus: order.paymentStatus,

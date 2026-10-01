@@ -1,6 +1,6 @@
 # 生产部署
 
-当前单服务器、低订单量阶段使用 SQLite WAL 作为应用主存储，并保留已部署的 PostgreSQL 17 与 Redis 7.4 作为后续迁移基础。应用以 `NODE_ENV=production`、`EXECUTION_MODE=production` 运行；支付宝、DujiaoPay 和生产上游均由工作台分别配置、验证和启用，部署本身不产生交易。
+当前单服务器、低订单量阶段使用 SQLite WAL 作为应用主存储，并保留已部署的 PostgreSQL 17 与 Redis 7.4 作为后续迁移基础。应用以 `NODE_ENV=production`、`EXECUTION_MODE=production` 运行；支付宝和生产上游均由工作台分别配置、验证和启用，部署本身不产生交易。平台不开放 USDT 新交易。
 
 ## 安全边界
 

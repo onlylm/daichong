@@ -17,7 +17,6 @@ import {canResubmitFulfillment} from "./domain/recharge-policy.js";
 import type {OrderVisibilityField} from "./operations/model.js";
 import {registerPartnerRedemptionRoutes} from "./modules/partner-redemption-routes.js";
 import {registerWorkspacePage} from "./operations/workspace-page.js";
-import {registerUsdtRoutes} from "./modules/usdt-routes.js";
 import type {Repository} from "./infra/repository.js";
 import {publicWorkerHealth, readWorkerHealth} from "./worker/worker-health.js";
 import {paymentQrDataUrl} from "./modules/payment-qr.js";
@@ -29,7 +28,7 @@ const createOrderSchema = z.object({
   sale_amount: z.string(),
   collection_mode: z.enum(["platform_collect", "agent_collect"]).optional(),
   delivery_mode: z.enum(["auto_recharge", "cdk"]).optional(),
-  payment_channel: z.enum(["alipay", "usdt"]).optional(),
+  payment_channel: z.literal("alipay").optional(),
   notify_url: z.string().url().optional(),
   metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
 }).strict();
@@ -150,9 +149,8 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
   });
 
   app.get("/v1/products", async (request) => ({data: runtime.catalog.list(requireTenant(request).merchantId).map(publicProduct)}));
-  app.get("/v1/payment-methods", async () => ({data: runtime.paymentSettings.available().map(c => ({
-    code: c === "alipay_page" ? "alipay" : "usdt", name: c === "alipay_page" ? "支付宝" : "USDT",
-  }))}));
+  app.get("/v1/payment-methods", async () => ({data: runtime.paymentSettings.available()
+    .filter(channel => channel === "alipay_page").map(() => ({code: "alipay", name: "支付宝"}))}));
 
   app.get<{Querystring: {payment_status?: string; cursor?: string; limit?: string}}>("/v1/orders", async (request) => {
     const tenant = requireTenant(request);
@@ -192,7 +190,7 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
         saleAmount: input.sale_amount,
         collectionMode: input.collection_mode ?? "platform_collect",
         deliveryMode: input.delivery_mode,
-        paymentChannel: input.payment_channel === "usdt" ? "dujiaopay" : input.payment_channel === "alipay" ? "alipay_page" : undefined,
+        paymentChannel: input.payment_channel === "alipay" ? "alipay_page" : undefined,
         metadata: input.metadata ?? {},
         notifyUrl: input.notify_url,
       });
@@ -331,7 +329,6 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
   registerWorkspacePage(app);
   registerPartnerRedemptionRoutes(app, runtime);
   registerAlipayRoutes(app, runtime, config.publicBaseUrl);
-  registerUsdtRoutes(app, config, runtime);
   registerLiveTestAdminPage(app);
   registerOperationsRoutes(app, config, runtime);
   registerSupplierAdminRoutes(app, config, runtime);

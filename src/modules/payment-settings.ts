@@ -6,19 +6,13 @@ import type {Repository} from "../infra/repository.js";
 import {SensitivePayloadCipher} from "../infra/crypto.js";
 import type {Actor, PaymentChannel, PaymentRevision, PaymentSettings} from "../operations/model.js";
 import {AuditService} from "./audit-service.js";
-import {DujiaoClient, USDT_NETWORKS} from "./dujiaopay-client.js";
+import {DujiaoClient} from "./dujiaopay-client.js";
 import {LiveTestPolicy} from "./live-test-policy.js";
 
 const secret = z.string().trim().max(16000).default("");
-const identifier = z.string().trim().regex(/^[a-zA-Z0-9_-]{1,160}$/);
-export const paymentConfigInput = z.discriminatedUnion("channel", [
-  z.object({channel: z.literal("alipay_page"), version: z.number().int().nonnegative(),
-    appId: z.string().regex(/^\d{16}$/), sellerId: z.string().regex(/^\d{16}$/), keyType: z.enum(["PKCS1", "PKCS8"]),
-    privateKey: secret, publicKey: secret}).strict(),
-  z.object({channel: z.literal("dujiaopay"), version: z.number().int().nonnegative(),
-    merchantId: identifier, projectId: identifier, keyId: identifier, network: z.enum(["tron", "ethereum", "bsc", "solana"]),
-    apiSecret: secret, webhookSecret: secret}).strict(),
-]);
+export const paymentConfigInput = z.object({channel: z.literal("alipay_page"), version: z.number().int().nonnegative(),
+  appId: z.string().regex(/^\d{16}$/), sellerId: z.string().regex(/^\d{16}$/), keyType: z.enum(["PKCS1", "PKCS8"]),
+  privateKey: secret, publicKey: secret}).strict();
 export type PaymentConfigInput = z.input<typeof paymentConfigInput>;
 export function requirePaymentAdmin(actor: Actor): void {
   if (actor.role !== "platform_admin" || actor.merchantId !== null) throw new AppError(403, "permission_denied", "仅平台管理员可管理支付配置");
@@ -42,17 +36,17 @@ export class PaymentSettingsService {
   }
   list(actor: Actor) {
     requirePaymentAdmin(actor);
-    return {mode: this.config.paymentProvider ?? "mock", executionMode: this.config.executionMode, channels: (["alipay_page", "dujiaopay"] as const).map(channel => {
+    return {mode: this.config.paymentProvider ?? "mock", executionMode: this.config.executionMode, channels: (["alipay_page"] as const).map(channel => {
       const state = this.state(channel);
       const view = (id: string | null) => {
         if (!id) return null;
         const r = this.revision(id), check = this.repo.getOperations("payment_check", id);
         return {id: r.id, details: r.details, fingerprint: r.fingerprint, secretsConfigured: true, createdAt: r.createdAt,
           check: check ? {kind: check.kind, checkedAt: check.checkedAt} : null,
-          webhookUrl: this.config.publicBaseUrl + (r.channel === "dujiaopay" ? "/internal/webhooks/dujiaopay/" + r.id : "/internal/webhooks/alipay")};
+          webhookUrl: this.config.publicBaseUrl + "/internal/webhooks/alipay"};
       };
       return {...state, draft: view(state.draftId), active: view(state.activeId)};
-    }), networks: Object.entries(USDT_NETWORKS).map(([value, n]) => ({value, label: n.label}))};
+    })};
   }
   save(actor: Actor, raw: PaymentConfigInput) {
     requirePaymentAdmin(actor); this.safeStorage();
@@ -62,25 +56,16 @@ export class PaymentSettingsService {
       const oldId = state.draftId ?? state.activeId;
       const old = oldId ? this.revision(oldId) : null, oldSecrets = old ? this.secrets(old) : {};
       let details: Record<string, string>, credentials: Record<string, string>, fingerprint: string;
-      if (input.channel === "alipay_page") {
-        if (old && (old.details.appId !== input.appId || old.details.keyType !== input.keyType) && (!input.privateKey || !input.publicKey)) throw new AppError(422, "payment_keys_required", "切换应用或密钥格式时，请重新填写两份密钥");
-        const privateKey = input.privateKey || oldSecrets.privateKey || "", publicKey = input.publicKey || oldSecrets.publicKey || "";
-        try {
-          const a = createPrivateKey(pem(privateKey, input.keyType === "PKCS1" ? "RSA PRIVATE KEY" : "PRIVATE KEY"));
-          const b = createPublicKey(pem(publicKey, "PUBLIC KEY"));
-          if (a.asymmetricKeyType !== "rsa" || b.asymmetricKeyType !== "rsa" || (a.asymmetricKeyDetails?.modulusLength ?? 0) < 2048 || (b.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) throw new Error("rsa_key_required");
-          credentials = {privateKey: a.export({type: input.keyType === "PKCS1" ? "pkcs1" : "pkcs8", format: "pem"}).toString(), publicKey: b.export({type: "spki", format: "pem"}).toString()};
-          fingerprint = createHash("sha256").update(createPublicKey(a).export({type: "spki", format: "der"})).digest("hex");
-        } catch {throw new AppError(422, "invalid_payment_keys", "请填写有效的 RSA 密钥（至少 2048 位）；公钥须来自支付宝开放平台");}
-        details = {appId: input.appId, sellerId: input.sellerId, keyType: input.keyType};
-      } else {
-        const changed = old && ["merchantId", "projectId", "keyId"].some(k => old.details[k] !== input[k as "merchantId" | "projectId" | "keyId"]);
-        if (changed && (!input.apiSecret || !input.webhookSecret)) throw new AppError(422, "payment_keys_required", "切换项目或 Key ID 时，请重新填写 API 和回调密钥");
-        credentials = {apiSecret: input.apiSecret || oldSecrets.apiSecret || "", webhookSecret: input.webhookSecret || oldSecrets.webhookSecret || ""};
-        if (Object.values(credentials).some(v => v.length < 16 || v.length > 512)) throw new AppError(422, "invalid_payment_keys", "请分别填写 API 与回调密钥，不要填写钱包私钥或助记词");
-        details = {merchantId: input.merchantId, projectId: input.projectId, keyId: input.keyId, network: input.network, tokenId: USDT_NETWORKS[input.network].tokenId};
-        fingerprint = createHash("sha256").update(input.keyId).digest("hex");
-      }
+      if (old && (old.details.appId !== input.appId || old.details.keyType !== input.keyType) && (!input.privateKey || !input.publicKey)) throw new AppError(422, "payment_keys_required", "切换应用或密钥格式时，请重新填写两份密钥");
+      const privateKey = input.privateKey || oldSecrets.privateKey || "", publicKey = input.publicKey || oldSecrets.publicKey || "";
+      try {
+        const a = createPrivateKey(pem(privateKey, input.keyType === "PKCS1" ? "RSA PRIVATE KEY" : "PRIVATE KEY"));
+        const b = createPublicKey(pem(publicKey, "PUBLIC KEY"));
+        if (a.asymmetricKeyType !== "rsa" || b.asymmetricKeyType !== "rsa" || (a.asymmetricKeyDetails?.modulusLength ?? 0) < 2048 || (b.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) throw new Error("rsa_key_required");
+        credentials = {privateKey: a.export({type: input.keyType === "PKCS1" ? "pkcs1" : "pkcs8", format: "pem"}).toString(), publicKey: b.export({type: "spki", format: "pem"}).toString()};
+        fingerprint = createHash("sha256").update(createPublicKey(a).export({type: "spki", format: "der"})).digest("hex");
+      } catch {throw new AppError(422, "invalid_payment_keys", "请填写有效的 RSA 密钥（至少 2048 位）；公钥须来自支付宝开放平台");}
+      details = {appId: input.appId, sellerId: input.sellerId, keyType: input.keyType};
       const id = "pc_" + randomUUID().replaceAll("-", "");
       this.repo.saveOperations("payment_revision", {id, merchantId: null, channel: input.channel, details, fingerprint,
         encrypted: this.cipher.encrypt(credentials, "payment:" + id), createdAt: new Date()}, true);
@@ -118,7 +103,7 @@ export class PaymentSettingsService {
   pauseMany(actor: Actor, items: Array<{channel: PaymentChannel; version: number}>) {
     requirePaymentAdmin(actor);
     if (this.config.paymentProvider !== "managed") throw new AppError(409, "managed_payments_required", "部署尚未切换到后台管理支付模式，不能用此开关关闭文件模式");
-    if (items.length < 1 || items.length > 2 || new Set(items.map(x => x.channel)).size !== items.length) throw new AppError(422, "invalid_channels", "请选择要关闭的通道");
+    if (items.length !== 1 || items[0]?.channel !== "alipay_page") throw new AppError(422, "invalid_channels", "请选择支付宝通道");
     return this.repo.transaction(() => {
       const states = items.map(x => {const s = this.state(x.channel); this.version(s, x.version); return s;});
       for (const s of states) {
@@ -131,7 +116,8 @@ export class PaymentSettingsService {
   available(): PaymentChannel[] {
     if (this.config.executionMode === "disabled") return [];
     if (this.config.paymentProvider !== "managed") return this.config.paymentProvider === "alipay_page" ? ["alipay_page"] : [];
-    return (["alipay_page", "dujiaopay"] as const).filter(c => {const s = this.state(c); return !s.paused && !!s.activeId;});
+    const state = this.state("alipay_page");
+    return !state.paused && state.activeId ? ["alipay_page"] : [];
   }
   active(channel?: PaymentChannel): PaymentRevision {
     const chosen = channel ?? this.available()[0];
