@@ -46,6 +46,9 @@ describe("workspace history pagination", () => {
         payableMinor: 100n, currency: "CNY", payoutMethod: null, payoutReference: null, payoutEvidence: null,
         note: null, confirmedBy: null, version: 1, generatedAt: timestamp, paidAt: null,
         reconciledAt: index % 2 ? timestamp : null, updatedAt: timestamp}, true);
+      runtime.repository.appendAudit({id: `aud_page_${index}`, merchantId: merchant.id, actorType: "platform_user",
+        actorId: "history-admin", action: "history.pagination.test", targetType: "merchant", targetId: merchant.id,
+        requestId: `request-page-${index}`, createdAt: timestamp});
     }
     runtime.repository.saveOperations("ticket", {id: "tk_archived", merchantId: merchant.id, orderId: null,
       title: "已归档工单", category: "other", status: "open", archivedAt: new Date(), archiveReason: "测试清理",
@@ -55,22 +58,24 @@ describe("workspace history pagination", () => {
     const login = await loginPlatform(app, "history-admin", "test-history-password", "https://admin.tibo.ink");
     const headers = {origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!};
     const query = vi.spyOn(runtime.repository as unknown as {queryRecords: (...args: unknown[]) => unknown}, "queryRecords");
-    const [tickets, invoices, settlements] = await Promise.all([
+    const [tickets, invoices, settlements, activity] = await Promise.all([
       app.inject({method: "GET", url: `/workspace/api/tickets?merchantId=${merchant.id}&status=open&page=2&limit=3`, headers}),
       app.inject({method: "GET", url: `/workspace/api/invoices?merchantId=${merchant.id}&status=submitted&page=2&limit=3`, headers}),
       app.inject({method: "GET", url: `/workspace/api/daily-settlements?merchantId=${merchant.id}&status=pending_payment&page=2&limit=3`, headers}),
+      app.inject({method: "GET", url: `/workspace/api/agents/${merchant.id}/activity?page=2&limit=3`, headers}),
     ]);
 
-    expect([tickets.statusCode, invoices.statusCode, settlements.statusCode]).toEqual([200, 200, 200]);
+    expect([tickets.statusCode, invoices.statusCode, settlements.statusCode, activity.statusCode]).toEqual([200, 200, 200, 200]);
     expect(tickets.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
     expect(invoices.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
     expect(settlements.json()).toMatchObject({meta: {total: 7, page: 2, limit: 3, pages: 3}});
+    expect(activity.json()).toMatchObject({meta: {total: 13, page: 2, limit: 3, pages: 5}});
     expect(tickets.json().data).toHaveLength(3);
     expect(tickets.json().data.every((item: {status: string; merchantId: string}) => item.status === "open" && item.merchantId === merchant.id)).toBe(true);
     expect(tickets.json().data.some((item: {id: string}) => item.id === "tk_archived")).toBe(false);
     expect(invoices.json().data.every((item: {status: string}) => item.status === "submitted")).toBe(true);
     expect(settlements.json().data.every((item: {status: string}) => item.status === "pending_payment")).toBe(true);
-    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["ticket", "invoice_application", "daily_settlement"]));
+    expect(query.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining(["ticket", "invoice_application", "daily_settlement", "audit"]));
     expect(query.mock.calls.every(call => (call[1] as {limit: number}).limit === 3)).toBe(true);
   });
 

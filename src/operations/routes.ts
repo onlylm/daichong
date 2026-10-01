@@ -19,6 +19,7 @@ import {assertAdminWorkspaceHost, assertPartnerWorkspaceHost, assertWorkspaceRol
 import {effectiveCollectionModes} from "./agents.js";
 import {financeDrilldown, financeMetrics} from "./finance-drilldown.js";
 import {listGlobalWorkspaceProducts, saveGlobalWorkspaceProduct, seedGlobalProductCatalog} from "./global-product-catalog.js";
+import {queryRecords} from "../infra/record-query.js";
 
 const text = z.string().trim().min(1).max(5000);
 const identifier = z.string().min(1).max(160);
@@ -609,8 +610,10 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const actor = account(request); requirePermission(actor, "agents.read");
     const merchantId = scope(actor, request.params.id);
     if (!runtime.repository.findMerchantById(merchantId)) throw new AppError(404, "merchant_not_found", "代理商不存在");
-    return {data: runtime.repository.listAudit(merchantId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 100)};
+    const query = z.object({page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    return wire(queryRecords(runtime.repository, "audit", {merchantId, page: query.page, limit: query.limit,
+      orderBy: "createdAt", direction: "desc"}));
   });
   app.put<{Params: {id: string}}>("/workspace/api/agents/:id", async request => {
     const input = z.object({tier: z.string().min(1).max(32), collectionModes: z.array(z.enum(["platform_collect", "agent_collect"])).min(1).max(2),

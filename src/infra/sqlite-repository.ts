@@ -87,7 +87,7 @@ export class SqliteRepository implements Repository {
   }
 
   queryRecords<K extends keyof QueryRecords>(kind:K,q:RecordQuery={}):RecordPage<QueryRecords[K]> {
-    const domain=new Set(['order','fulfillment','cdk_voucher','refund','payment_attempt','outbox']);
+    const domain=new Set(['order','fulfillment','cdk_voucher','refund','payment_attempt','outbox','audit']);
     const storedKind=domain.has(kind)?kind:'ops_'+kind;
     const args:Array<string|number|null>=[storedKind],conditions=['kind=?'];
     const path=(field:string)=>{if(!/^[a-zA-Z][a-zA-Z0-9_.]*$/.test(field))throw new Error('invalid_query_field');return `json_extract(payload,'$.${field}')`;};

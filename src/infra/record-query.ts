@@ -1,8 +1,8 @@
 import type {Repository} from './repository.js';
-import type {Order, Fulfillment, CdkVoucher, Refund, PaymentAttempt, OutboxEvent} from '../domain/model.js';
+import type {Order, Fulfillment, CdkVoucher, Refund, PaymentAttempt, OutboxEvent, AuditLog} from '../domain/model.js';
 import type {OperationsRecords} from '../operations/model.js';
 
-export interface QueryRecords extends OperationsRecords { order:Order; fulfillment:Fulfillment; cdk_voucher:CdkVoucher; refund:Refund; payment_attempt:PaymentAttempt; outbox:OutboxEvent }
+export interface QueryRecords extends OperationsRecords { order:Order; fulfillment:Fulfillment; cdk_voucher:CdkVoucher; refund:Refund; payment_attempt:PaymentAttempt; outbox:OutboxEvent; audit:AuditLog }
 export interface RecordFilter {field:string;op?:'eq'|'in'|'lte'|'gte'|'gt'|'is_null';value?:string|number|boolean|null|Date|Array<string|number>}
 export interface RecordQuery {merchantId?:string;filters?:RecordFilter[];page?:number;limit?:number;orderBy?:string;direction?:'asc'|'desc';afterId?:string;count?:boolean}
 export interface RecordPage<T> {data:T[];meta:{total:number;page:number;limit:number;pages:number}}
@@ -15,7 +15,8 @@ export function queryRecords<K extends keyof QueryRecords>(repo:Repository,kind:
     cdk_voucher:()=>repo.listOrdersInternal().flatMap(o=>repo.findCdkVoucherByOrder(o.id)??[]),
     refund:()=>repo.listOrdersInternal().flatMap(o=>repo.listRefundsForOrder(o.merchantId,o.id)),
     payment_attempt:()=>repo.listOrdersInternal().flatMap(o=>repo.findPaymentAttemptByOrder(o.merchantId,o.id)??[]),
-    outbox:()=>repo.listMerchants().flatMap(m=>repo.listOutbox(m.id))};
+    outbox:()=>repo.listMerchants().flatMap(m=>repo.listOutbox(m.id)),
+    audit:()=>q.merchantId?repo.listAudit(q.merchantId):repo.listMerchants().flatMap(m=>repo.listAudit(m.id))};
   const values=(domain[kind]?.()??repo.listOperations(kind as keyof OperationsRecords,q.merchantId)) as QueryRecords[K][];
   const field=(v:unknown,path:string):unknown=>path.split('.').reduce((o,k)=>(o as Record<string,unknown>)?.[k],v);
   const scalar=(v:unknown):any=>v instanceof Date?v.toISOString():v;
