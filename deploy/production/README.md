@@ -60,4 +60,23 @@ sudo sh deploy/production/verify-backup-restore.sh /opt/recharge-platform/curren
 
 该命令只读原快照，恢复副本位于系统临时目录并在核验后删除。它证明快照可读取和逻辑一致，不代表已经完成异机灾备，也不会自动切换生产数据库。
 
+## 候选版本生产副本演练
+
+发布前还应让候选镜像在断网容器内启动一份生产快照的临时恢复库。输入必须是 SQLite Backup API 生成的一致性快照，禁止把正在运行的 `production.sqlite` 直接传入。候选镜像包含只读入口 `scripts/verify-production-snapshot.mjs`，示例：
+
+```sh
+audit_dir="$(mktemp -d)"
+install -o 1000 -g 1000 -m 0400 /opt/recharge-platform/backups/production-app-<time>.sqlite "$audit_dir/source.sqlite"
+docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+  --env-file /opt/recharge-platform/config/production.env \
+  -e AUDIT_ISOLATED_SNAPSHOT=true \
+  -v "$audit_dir/source.sqlite:/audit/source.sqlite:ro" \
+  <candidate-image> node scripts/verify-production-snapshot.mjs /audit/source.sqlite
+rm -rf "$audit_dir"
+```
+
+工具会再次恢复到容器 `/tmp`，只在该临时库上运行候选初始化，并注入检查 API 就绪、开发者中心及 OpenAPI。订单、支付、履约、CDK、退款、账本、钱包、每日核算、开票、成本、通知等关键记录的稳定摘要在启动前后必须完全相同；未列入允许集合的任何启动写入都会使演练失败。输出只含文件名、摘要、分类计数、状态和发生迁移的记录类型，不含订单内容或凭据。演练结束后还会复核输入文件摘要，并清理临时库。
+
+必须保存候选镜像摘要、快照摘要、开始/结束时间、命令退出状态及脱敏 JSON 报告。代码回归通过不等于生产快照已经演练；只有在服务器实际执行成功后才能更新上线证据。详细边界见 `docs/95-隔离生产数据库副本迁移演练.md`。
+
 扩展到多 API/Worker 节点、明显提高并发或启用更复杂的自动财务处理前，必须迁移 PostgreSQL Repository；不能让多个主机直接共享 SQLite 文件。

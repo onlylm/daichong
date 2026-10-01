@@ -12,6 +12,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY scripts/verify-production-snapshot.mjs ./scripts/verify-production-snapshot.mjs
 COPY docs/partner-integration.md ./docs/partner-integration.md
 COPY docs/redemption-guide.md ./docs/redemption-guide.md
 COPY docs/23-代理商自有品牌商城与自动直充接入指南.md ./docs/23-代理商自有品牌商城与自动直充接入指南.md
