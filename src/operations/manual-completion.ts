@@ -4,6 +4,7 @@ import type {Repository} from "../infra/repository.js";
 import {queryRecords} from "../infra/record-query.js";
 import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 import {minorToMoney} from "../domain/money.js";
+import {hasConfirmedOrderPayment} from "../domain/payment-confirmation.js";
 import type {Actor, ManualCompletion} from "./model.js";
 import type {FulfillmentService} from "../modules/fulfillment-service.js";
 import type {CostAccountingService} from "./cost-accounting.js";
@@ -16,6 +17,8 @@ export function manualCompletionBlock(repo: Repository, order: Order): string | 
   if (!["paid", "partially_refunded"].includes(order.paymentStatus) || order.ordinaryRefundedMinor > 0n)
     return "订单未支付或已有普通退款";
   if (!order.paidAt) return "订单付款时间尚未确认，不能登记人工完成";
+  if (!hasConfirmedOrderPayment(order, repo.findPaymentAttemptByOrder(order.merchantId, order.id)))
+    return "订单收款记录尚未一致确认，不能登记人工完成";
   if (repo.getOperations("manual_completion", order.id)) return "该订单已登记人工完成";
   if (repo.listRefundsForOrder(order.merchantId, order.id).some(value => ["requested", "approved", "processing"].includes(value.status))
       || hasUnreconciledProviderRefund(repo, order.merchantId, order.id)) return "订单存在待处理退款或渠道退款差异";

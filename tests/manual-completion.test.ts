@@ -87,6 +87,24 @@ for(const driver of ["memory","sqlite"] as const)describe(`manual recharge compl
     expect(runtime.repository.getOperations("wallet_credit",order.id)).toBeNull();
   });
 
+  it("requires matching confirmed collection evidence, not just the order's paid label",async()=>{
+    const {tenant,order,task}=await setup();
+    runtime.fulfillments.applyUpstreamEvent(task.id,state("failed_precharge"));
+    const attempt=runtime.repository.findPaymentAttemptByOrder(tenant.merchantId,order.id)!,proof=input();
+    runtime.repository.updatePaymentAttempt({...attempt,status:"pending"});
+    expect(()=>runtime.manualCompletions.record(admin,order.id,proof,"req-unconfirmed"))
+      .toThrow("收款记录尚未一致确认");
+    runtime.repository.updatePaymentAttempt({...attempt,receivedMinor:order.saleAmountMinor-1n});
+    expect(()=>runtime.manualCompletions.record(admin,order.id,proof,"req-underpaid"))
+      .toThrow("收款记录尚未一致确认");
+    runtime.repository.updatePaymentAttempt({...attempt,providerRef:"unrelated-payment"});
+    expect(()=>runtime.manualCompletions.record(admin,order.id,proof,"req-other-payment"))
+      .toThrow("收款记录尚未一致确认");
+    expect(runtime.repository.listFulfillments(tenant.merchantId,order.id)).toHaveLength(1);
+    runtime.repository.updatePaymentAttempt(attempt);
+    expect(runtime.manualCompletions.record(admin,order.id,proof,"req-confirmed").orderId).toBe(order.id);
+  });
+
   it("blocks channel refund discrepancies and reused external proof across orders",async()=>{
     const {tenant,order,task}=await setup();
     runtime.fulfillments.applyUpstreamEvent(task.id,state("declined"));

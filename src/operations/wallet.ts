@@ -10,6 +10,7 @@ import type {Actor, WalletDeposit, WalletEntry, WalletWithdrawal} from "./model.
 import {queryRecords} from '../infra/record-query.js';
 import {hasUnreconciledProviderRefundForReleasedEarnings} from "../domain/provider-refund-review.js";
 import {findPayoutReferenceUsage, normalizePayoutReference} from "../domain/payout-reference.js";
+import {hasConfirmedOrderPayment} from "../domain/payment-confirmation.js";
 
 export class WalletService {
   constructor(private readonly repository: Repository, private readonly audit: AuditService, private readonly webhooks: WebhookService) {}
@@ -387,6 +388,7 @@ export class WalletService {
     const order = this.repository.findOrderInternal(orderId);
     if (!order || !this.eligibleEarning(order) || order.settlementId) return false;
     if (this.repository.getOperations("wallet_credit", orderId)) return false;
+    if (!hasConfirmedOrderPayment(order, this.repository.findPaymentAttemptByOrder(order.merchantId, order.id))) return false;
     if (this.repository.listRefundsForOrder(order.merchantId, orderId).some(r => ["requested", "approved", "processing"].includes(r.status))) return false;
     const amount = positive(merchantMargin(order));
     if (amount <= 0n) return false;
@@ -484,6 +486,7 @@ export class WalletService {
     if(this.repository.pendingEarningOrders)return this.repository.pendingEarningOrders(merchantId);
     return this.repository.listOrders(merchantId)
       .filter((order) => this.eligibleEarning(order) && !this.repository.getOperations("wallet_credit", order.id) && positive(merchantMargin(order)) > 0n)
+      .filter((order) => hasConfirmedOrderPayment(order, this.repository.findPaymentAttemptByOrder(order.merchantId, order.id)))
       .sort((a, b) => (b.paidAt ?? b.createdAt).getTime() - (a.paidAt ?? a.createdAt).getTime());
   }
 

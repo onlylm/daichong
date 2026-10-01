@@ -239,7 +239,12 @@ export class SqliteRepository implements Repository {
       AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0
       AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded','refunded')
       AND NOT EXISTS(SELECT 1 FROM sandbox_records c WHERE c.kind='ops_wallet_credit' AND c.id=o.id)
-      AND EXISTS(SELECT 1 FROM sandbox_records p WHERE p.kind='payment_attempt' AND p.merchant_id=o.merchant_id AND json_extract(p.payload,'$.orderId')=o.id AND json_extract(p.payload,'$.provider') IN ('alipay_page','dujiaopay'))
+      AND EXISTS(SELECT 1 FROM sandbox_records p WHERE p.kind='payment_attempt' AND p.merchant_id=o.merchant_id
+        AND json_extract(p.payload,'$.orderId')=o.id AND json_extract(p.payload,'$.provider') IN ('alipay_page','dujiaopay')
+        AND json_extract(p.payload,'$.status')='paid' AND json_extract(p.payload,'$.paidAt') IS NOT NULL
+        AND json_extract(p.payload,'$.providerRef')=json_extract(o.payload,'$.paymentProviderRef')
+        AND CAST(COALESCE(json_extract(p.payload,'$.receivedMinor.__bigint'),'-1') AS INTEGER)
+          =CAST(json_extract(o.payload,'$.saleAmountMinor.__bigint') AS INTEGER))
       AND EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded' AND COALESCE(json_extract(f.payload,'$.upstreamProvider'),'mock')!='mock')
       GROUP BY o.merchant_id`).all() as Array<Record<string,unknown>>;
     const byMerchant=new Map<string,{merchantId:string;procurement:bigint;earnings:bigint;frozen:bigint;pendingEarning:bigint;lastEntryAt:Date|null}>();
