@@ -108,9 +108,15 @@ export class DailySettlementService {
   pendingPage(actor: Actor, limit = 8) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部待核算单");
-    const page = queryRecords(this.repository, "daily_settlement", {filters: [{field: "status", op: "in", value: ["pending_payment", "paid", "disputed"]}],
-      page: 1, limit, orderBy: "updatedAt", direction: "desc"});
-    return {...page, data: this.mapStatements(page.data)};
+    const statuses = ["pending_payment", "paid", "disputed"], summary = queryRecords(this.repository, "daily_settlement", {
+      filters: [{field: "status", op: "in", value: statuses}], page: 1, limit: 1, orderBy: "updatedAt", direction: "asc"});
+    const disputed = queryRecords(this.repository, "daily_settlement", {filters: [{field: "status", value: "disputed"}],
+      page: 1, limit, orderBy: "updatedAt", direction: "asc"}).data;
+    const remaining = Math.max(0, limit - disputed.length), ordinary = remaining ? queryRecords(this.repository, "daily_settlement", {
+      filters: [{field: "status", op: "in", value: ["pending_payment", "paid"]}], page: 1, limit: remaining,
+      orderBy: "updatedAt", direction: "asc"}).data : [];
+    return {data: this.mapStatements([...disputed, ...ordinary]), meta: {...summary.meta, limit,
+      pages: Math.max(1, Math.ceil(summary.meta.total / limit))}};
   }
 
   confirmPaid(actor: Actor, id: string, input: {method: "alipay" | "bank" | "other"; reference: string; evidence?: string | undefined; note?: string | undefined}) {

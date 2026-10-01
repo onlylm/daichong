@@ -95,6 +95,20 @@ export class WalletService {
     return {...result, data: result.data.map(item => ({...item, amount: minorToMoney(item.amountMinor),
       merchantName: merchants.get(item.merchantId)?.name ?? "", partnerId: merchants.get(item.merchantId)?.partnerId ?? ""}))};
   }
+  pendingWithdrawalsPage(actor: Actor, limit = 8) {
+    requirePermission(actor, "wallet.review");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部待处理提现");
+    const summary = queryRecords(this.repository, "wallet_withdrawal", {filters: [{field: "status", op: "in", value: ["requested", "approved"]}],
+      page: 1, limit: 1, orderBy: "createdAt", direction: "asc"});
+    const requested = queryRecords(this.repository, "wallet_withdrawal", {filters: [{field: "status", value: "requested"}],
+      page: 1, limit, orderBy: "createdAt", direction: "asc"}).data;
+    const remaining = Math.max(0, limit - requested.length), approved = remaining ? queryRecords(this.repository, "wallet_withdrawal", {
+      filters: [{field: "status", value: "approved"}], page: 1, limit: remaining, orderBy: "createdAt", direction: "asc"}).data : [];
+    const merchants = new Map(this.repository.listMerchants().map(item => [item.id, item]));
+    return {data: [...requested, ...approved].map(item => ({...item, amount: minorToMoney(item.amountMinor),
+      merchantName: merchants.get(item.merchantId)?.name ?? "", partnerId: merchants.get(item.merchantId)?.partnerId ?? ""})),
+      meta: {...summary.meta, limit, pages: Math.max(1, Math.ceil(summary.meta.total / limit))}};
+  }
   adminOverview(actor: Actor) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权执行此操作");

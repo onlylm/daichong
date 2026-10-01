@@ -102,7 +102,7 @@ export class InvoiceService {
     requirePermission(actor, "invoices.manage");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看待开票队列");
     const page = queryRecords(this.repository, "invoice_application", {filters: [{field: "status", op: "in", value: ["submitted", "processing"]}],
-      page: 1, limit, orderBy: "updatedAt", direction: "desc"});
+      page: 1, limit, orderBy: "updatedAt", direction: "asc"});
     return {...page, data: page.data.map(item => this.view(actor, item))};
   }
 

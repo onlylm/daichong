@@ -120,7 +120,7 @@ export class RefundReconciliationService {
   page(actor:Actor,page=1,limit=20,status:"reviewing"|"resolved"|"all"="reviewing"){
     requirePermission(actor,"wallet.review");
     if(!isPlatform(actor))throw new AppError(403,"permission_denied","仅平台财务可查看退款对账异常");
-    return queryRecords(this.repository,"refund_reconciliation",{page,limit,orderBy:"lastCheckedAt",direction:"desc",
+    return queryRecords(this.repository,"refund_reconciliation",{page,limit,orderBy:status==="reviewing"?"firstDetectedAt":"lastCheckedAt",direction:status==="reviewing"?"asc":"desc",
       ...(status==="all"?{}:{filters:[{field:"status",value:status}]})});
   }
 

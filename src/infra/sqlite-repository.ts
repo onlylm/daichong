@@ -266,7 +266,7 @@ export class SqliteRepository implements Repository {
     return rows.map(r=>({cursor:Number(r.rowid),event:decode<OutboxEvent>(String(r.payload))}));
   }
 
-  queryWorkspaceOrders(merchantIds:string[],q:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string;includeSupplierTrace?:boolean}) {
+  queryWorkspaceOrders(merchantIds:string[],q:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;createdFrom?:string;createdTo?:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string;includeSupplierTrace?:boolean}) {
     const empty={orders:[] as Order[],fulfillments:[] as Fulfillment[],vouchers:[] as CdkVoucher[],meta:{total:0,page:1,limit:q.limit,pages:1,paidCount:0,paidSaleMinor:0n,todayPaidCount:0,todayPaidSaleMinor:0n}};
     if(!merchantIds.length)return empty;
     const args:Array<string|number>=[...merchantIds],conditions=[`o.kind='order'`,`o.merchant_id IN (${merchantIds.map(()=>'?').join(',')})`];
@@ -277,7 +277,11 @@ export class SqliteRepository implements Repository {
       LEFT JOIN sandbox_records v ON v.kind='cdk_voucher' AND v.merchant_id=o.merchant_id AND json_extract(v.payload,'$.orderId')=o.id`;
     if(q.productCodes?.length){conditions.push(`${j('o','productCode')} IN (${q.productCodes.map(()=>'?').join(',')})`);args.push(...q.productCodes);}
     const pay=j('o','paymentStatus'),status=j('f','status');
-    if(q.paidFrom&&q.paidTo){conditions.push(`${pay} IN ('paid','partially_refunded','refunded') AND COALESCE(${j('o','liveTest')},0)=0 AND ${j('o','paidAt')}>=? AND ${j('o','paidAt')}<?`);args.push(q.paidFrom,q.paidTo);}
+    if(q.createdFrom){conditions.push(`${j('o','createdAt')}>=?`);args.push(q.createdFrom);}
+    if(q.createdTo){conditions.push(`${j('o','createdAt')}<?`);args.push(q.createdTo);}
+    if(q.paidFrom||q.paidTo)conditions.push(`${pay} IN ('paid','partially_refunded','refunded') AND COALESCE(${j('o','liveTest')},0)=0`);
+    if(q.paidFrom){conditions.push(`${j('o','paidAt')}>=?`);args.push(q.paidFrom);}
+    if(q.paidTo){conditions.push(`${j('o','paidAt')}<?`);args.push(q.paidTo);}
     if(q.collectionMode){conditions.push(`COALESCE(${j('o','collectionMode')},'platform_collect')=?`);args.push(q.collectionMode);}
     if(q.financeMetric==='refunds')conditions.push(`CAST(COALESCE(${j('o','ordinaryRefundedMinor.__bigint')},'0') AS INTEGER)+CAST(COALESCE(${j('o','priceAdjustmentRefundedMinor.__bigint')},'0') AS INTEGER)>0`);
     if(q.financeMetric==='margin')conditions.push(`CAST(${j('o','saleAmountMinor.__bigint')} AS INTEGER)-CAST(${j('o','supplyAmountMinor.__bigint')} AS INTEGER)-CAST(COALESCE(${j('o','ordinaryRefundedMinor.__bigint')},'0') AS INTEGER)>0`);

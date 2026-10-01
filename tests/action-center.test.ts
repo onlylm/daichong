@@ -89,8 +89,8 @@ describe("platform action center", () => {
     }});
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json().data.checks).toMatchObject({
-      payment: {status: "healthy", label: "支付宝已启用", scope: "configuration"},
-      upstream: {status: "healthy", label: "供应连接已验证", checkedAt: now, scope: "configuration"},
+      payment: {status: "healthy", label: "配置就绪 · 未实时探测", scope: "configuration"},
+      upstream: {status: "healthy", label: "配置就绪 · 非实时状态", checkedAt: now, scope: "configuration"},
       backup: {status: "undetected", label: "未检测", scope: "restore_rehearsal"},
     });
   });
@@ -177,6 +177,25 @@ describe("platform action center", () => {
     expect(response.statusCode,response.body).toBe(200);
     expect(response.json().data.counts.tasks).toBe(55);
     expect(response.json().data.tasks).toHaveLength(4);
+  });
+
+  it("selects the highest-impact oldest refunds without taking the newest fifty first",async()=>{
+    const merchant=runtime.repository.listMerchants()[0]!,base=new Date("2026-01-01T00:00:00.000Z");
+    for(let index=0;index<55;index++)runtime.repository.insertRefund({id:`refund_old_${index}`,merchantId:merchant.id,
+      orderId:`missing-refund-order-${index}`,merchantRefundNo:`old-refund-${index}`,type:"partial",amountMinor:100n,
+      status:"requested",reason:"待审核退款",failureCode:null,providerRefundNo:null,
+      createdAt:new Date(base.getTime()+index*1000),refundedAt:null});
+    runtime.repository.insertRefund({id:"refund_failed_newer",merchantId:merchant.id,orderId:"missing-refund-order-failed",
+      merchantRefundNo:"failed-refund",type:"partial",amountMinor:100n,status:"failed",reason:"失败退款",
+      failureCode:"provider_error",providerRefundNo:null,createdAt:new Date(base.getTime()+100_000),refundedAt:null});
+    const login=await loginPlatform(app,"action-admin","test-action-center-password","https://admin.tibo.ink");
+    const response=await app.inject({method:"GET",url:"/workspace/api/action-center",headers:{origin:"https://admin.tibo.ink",
+      cookie:String(login.headers["set-cookie"]).split(";")[0]!}});
+    expect(response.statusCode,response.body).toBe(200);
+    expect(response.json().data.counts.refunds).toBe(56);
+    expect(response.json().data.refunds.map((item:{id:string})=>item.id)).toEqual([
+      "refund_failed_newer","refund_old_0","refund_old_1","refund_old_2",
+    ]);
   });
 
   it("keeps healthy modules available when one action-center query fails",async()=>{

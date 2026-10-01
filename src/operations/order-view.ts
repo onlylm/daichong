@@ -185,7 +185,7 @@ export function listWorkspaceOrders(
   merchantIds: string[],
   merchantNames: Map<string, string>,
   visibilityFor: (merchantId: string) => OrderVisibilityField[],
-  query: {productCode?: string; search?: string; status?: string; page: number; limit: number},
+  query: {productCode?: string; search?: string; status?: string; createdFrom?: string; createdTo?: string; paidFrom?: string; paidTo?: string; page: number; limit: number},
 ): {data: WorkspaceOrderRow[]; meta: WorkspaceOrderListMeta} {
   const search = query.search?.trim().toLowerCase() ?? "";
   if (repository.queryWorkspaceOrders) {
@@ -209,6 +209,10 @@ export function listWorkspaceOrders(
   const voucherFor = (o: Order) => batch ? vouchers.get(o.id) ?? null : repository.findCdkVoucherByOrder(o.id);
   const orders = (batch?.orders ?? merchantIds.flatMap(merchantId => repository.listOrders(merchantId)))
     .filter(order => !order.archivedAt)
+    .filter(order => !query.createdFrom || order.createdAt.toISOString() >= query.createdFrom)
+    .filter(order => !query.createdTo || order.createdAt.toISOString() < query.createdTo)
+    .filter(order => !query.paidFrom || !!order.paidAt && order.paidAt.toISOString() >= query.paidFrom)
+    .filter(order => !query.paidTo || !!order.paidAt && order.paidAt.toISOString() < query.paidTo)
     .filter(order => matchesProductFilter(order.productCode, query.productCode))
     .filter(order => {
       const status = query.status ?? "all";

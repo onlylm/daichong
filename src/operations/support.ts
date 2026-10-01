@@ -153,7 +153,7 @@ export class SupportService {
       {field: "archivedAt", op: "is_null"}, {field: "systemCase", op: "is_null"},
       {field:"apiApplication",op:"is_null"},{field:"tierApplication",op:"is_null"},{field:"withdrawalApplication",op:"is_null"},
       {field: "status", op: "in", value: ["open", "in_progress", "waiting_agent"]},
-    ], page: 1, limit, orderBy: "updatedAt", direction: "desc"});
+    ], page: 1, limit, orderBy: "updatedAt", direction: "asc"});
     return {...page, data: page.data.map(ticket => this.view(actor, ticket))};
   }
   get(actor: Actor, id: string) {

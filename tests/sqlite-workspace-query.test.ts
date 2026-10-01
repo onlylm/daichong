@@ -55,6 +55,29 @@ describe("SQLite workspace batch reads",()=>{
     }finally{vi.restoreAllMocks();r.close();}
   });
 
+  it("filters workspace orders by independent Shanghai created and paid date ranges",async()=>{
+    const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
+    try{
+      publishTestRechargeProduct(r);
+      const binding=r.repository.findCredential(cfg.demoPartnerId,cfg.demoKeyId)!,tenant={merchantId:binding.merchant.id,
+        appId:binding.app.id,keyId:binding.key.keyId,partnerId:binding.merchant.partnerId};
+      const base=await r.orders.create(tenant,{merchantOrderNo:"DATE-BASE",productCode:"chatgpt_plus_cdk_1m",quantity:1,saleAmount:"135.00"});
+      r.repository.updateOrder({...base,createdAt:new Date("2026-09-28T00:00:00.000Z")});
+      const first={...base,id:"date-order-first",merchantOrderNo:"DATE-FIRST",paymentStatus:"paid" as const,
+        createdAt:new Date("2026-09-29T16:00:00.000Z"),paidAt:new Date("2026-09-30T03:00:00.000Z")};
+      const second={...base,id:"date-order-second",merchantOrderNo:"DATE-SECOND",paymentStatus:"paid" as const,
+        createdAt:new Date("2026-09-30T16:00:00.000Z"),paidAt:new Date("2026-10-01T03:00:00.000Z")};
+      r.repository.insertOrder(first);r.repository.insertOrder(second);
+      const names=new Map([[base.merchantId,"测试代理"]]),actor={id:"owner",role:"agent_owner" as const,merchantId:base.merchantId};
+      const created=listWorkspaceOrders(r.repository,actor,[base.merchantId],names,()=>[],{page:1,limit:20,
+        createdFrom:"2026-09-30T16:00:00.000Z",createdTo:"2026-10-01T16:00:00.000Z"});
+      const paid=listWorkspaceOrders(r.repository,actor,[base.merchantId],names,()=>[],{page:1,limit:20,
+        paidFrom:"2026-09-29T16:00:00.000Z",paidTo:"2026-09-30T16:00:00.000Z"});
+      expect(created.data.map(item=>item.id)).toEqual(["date-order-second"]);
+      expect(paid.data.map(item=>item.id)).toEqual(["date-order-first"]);
+    }finally{r.close();}
+  });
+
   it("keeps wallet overview and notification queues at a fixed query count",()=>{
     const cfg=loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}),r=createRuntime(cfg);
     try{

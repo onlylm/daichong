@@ -45,6 +45,10 @@ const invoiceDetailsInput = z.object({
   remark: z.string().trim().max(500).nullable().optional(),
 });
 const receipt = z.string().trim().regex(/^[a-zA-Z0-9:_.-]{6,120}$/).transform(s => s.toLowerCase());
+const calendarDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
+  const [year, month, day] = value.split("-").map(Number), parsed = new Date(Date.UTC(year!, month! - 1, day!));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month! - 1 && parsed.getUTCDate() === day;
+}, "日期无效");
 const ticketInput = z.object({merchantId: identifier.optional(), orderId: identifier.nullable().default(null), title: z.string().trim().min(1).max(120),
   category: z.enum(["payment", "cdk", "recharge", "refund", "wallet", "other"]), body: text}).strict();
 const announcementInput = z.object({
@@ -149,48 +153,37 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       catch{moduleStatus[name]={available:false,updatedAt:null,error:"暂时无法读取"};return fallback;}};
     const unavailable=<T>(name:string,fallback:T):T=>{moduleStatus[name]={available:false,updatedAt:null,error:"权限不可用"};return fallback;};
     const emptyPage={data:[],meta:{total:null}} as {data:any[];meta:{total:number|null}};
-    const taskPage=read("tasks",()=>runtime.notifications.tasksPage(actor,1,50),emptyPage);
-    const refundPage=canReviewWallet?read("refunds",()=>runtime.refunds.pendingPage(actor,50),emptyPage):unavailable("refunds",emptyPage);
-    const refundReviewPage=canReviewWallet?read("refundReviews",()=>runtime.refundReconciliations.page(actor,1,50,"reviewing"),emptyPage)
+    const taskPage=read("tasks",()=>runtime.notifications.tasksPage(actor,1,4),emptyPage);
+    const refundPage=canReviewWallet?read("refunds",()=>runtime.refunds.pendingPage(actor,4),emptyPage):unavailable("refunds",emptyPage);
+    const refundReviewPage=canReviewWallet?read("refundReviews",()=>runtime.refundReconciliations.page(actor,1,4,"reviewing"),emptyPage)
       :unavailable("refundReviews",emptyPage);
-    const settlementPage=canReadWallet?read("settlements",()=>runtime.dailySettlements.pendingPage(actor,50),emptyPage)
+    const settlementPage=canReadWallet?read("settlements",()=>runtime.dailySettlements.pendingPage(actor,4),emptyPage)
       :unavailable("settlements",emptyPage);
-    const withdrawalPage=canReviewWallet?read("withdrawals",()=>runtime.wallets.withdrawalsPage(actor,{status:"actionable",page:1,limit:50}),emptyPage)
+    const withdrawalPage=canReviewWallet?read("withdrawals",()=>runtime.wallets.pendingWithdrawalsPage(actor,4),emptyPage)
       :unavailable("withdrawals",emptyPage);
-    const ticketPage=read("tickets",()=>runtime.support.pendingAgentPage(actor,50),emptyPage);
+    const ticketPage=read("tickets",()=>runtime.support.pendingAgentPage(actor,4),emptyPage);
     const invoicePage=permissions.has("*")||permissions.has("invoices.manage")
-      ?read("invoices",()=>runtime.invoices.pendingPage(actor,50),emptyPage):unavailable("invoices",emptyPage);
+      ?read("invoices",()=>runtime.invoices.pendingPage(actor,4),emptyPage):unavailable("invoices",emptyPage);
     const processingPage=read("processing",()=>queryRecords(runtime.repository,"fulfillment",{filters:[
       {field:"status",op:"in",value:["queued","running"]},{field:"createdAt",op:"gt",value:new Date(now.getTime()-600_000)}],
-      page:1,limit:50,orderBy:"createdAt",direction:"asc"}),emptyPage);
+      page:1,limit:4,orderBy:"createdAt",direction:"asc"}),emptyPage);
     type ConfigurationCheck={status:"undetected"|"missing"|"degraded"|"healthy";label:string;checkedAt:string|null;scope:"configuration"};
     const undetectedCheck:ConfigurationCheck={status:"undetected",label:"未检测",checkedAt:null,scope:"configuration"};
     const paymentCheck=read<ConfigurationCheck>("payment",()=>{
-      const enabled=runtime.paymentSettings.available().includes("alipay_page");
-      return {status:enabled?"healthy":"missing",label:enabled?"支付宝已启用":"支付宝未启用",checkedAt:null,scope:"configuration"};
+      const state=runtime.repository.getOperations("payment_settings","alipay_page"),enabled=runtime.paymentSettings.available().includes("alipay_page");
+      return {status:enabled?"healthy":"missing",label:enabled?"配置就绪 · 未实时探测":"支付宝未启用",checkedAt:state?.updatedAt?.toISOString()??null,scope:"configuration"};
     },undetectedCheck);
     const upstreamCheck=read<ConfigurationCheck>("upstream",()=>{
       const connection=runtime.supplierManagement.getConnection(),tested=connection.last_test_status==="succeeded",synced=!!connection.last_plan_sync_at;
       const status=!connection.enabled?"missing":tested&&synced?"healthy":"degraded";
-      const label=!connection.enabled?"供应连接未启用":connection.last_test_status==="failed"?"最近连通测试失败":!tested?"供应连接待验证":!synced?"上游套餐待同步":"供应连接已验证";
+      const label=!connection.enabled?"供应连接未启用":connection.last_test_status==="failed"?"最近连通测试失败":!tested?"供应连接待验证":!synced?"上游套餐待同步":"配置就绪 · 非实时状态";
       return {status,label,checkedAt:connection.last_test_at??connection.updated_at,scope:"configuration"};
     },undetectedCheck);
     const backupCheck=read("backup",()=>readBackupRestoreCheck(config.backupHealthReportPath,config.backupRestoreMaxAgeMs,now),
       {status:"undetected" as const,label:"未检测",checkedAt:null,scope:"restore_rehearsal" as const});
     const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
-    const rank=(status:string,urgent:string[])=>urgent.includes(status)?0:1;
-    const oldest=(value:{createdAt?:Date|string;firstDetectedAt?:Date|string;updatedAt?:Date|string})=>{
-      const timestamp=value.firstDetectedAt??value.createdAt??value.updatedAt??now;
-      return timestamp instanceof Date?timestamp.getTime():new Date(timestamp).getTime();
-    };
-    const top=<T>(values:T[],score:(value:T)=>number)=>[...values].sort((a,b)=>score(a)-score(b)).slice(0,4);
-    const tasks=top(taskPage.data,item=>(item.priority==="urgent"?0:1)*10**15+oldest(item));
-    const refunds=top(refundPage.data,item=>rank(item.status,["failed"])*10**15+oldest(item));
-    const refundReviews=top(refundReviewPage.data,item=>oldest(item));
-    const settlements=top(settlementPage.data,item=>rank(item.status,["disputed"])*10**15+oldest(item));
-    const withdrawals=top(withdrawalPage.data,item=>rank(item.status,["requested"])*10**15+oldest(item));
-    const tickets=top(ticketPage.data,item=>oldest(item));
-    const invoices=top(invoicePage.data,item=>oldest(item));
+    const tasks=taskPage.data,refunds=refundPage.data,refundReviews=refundReviewPage.data,settlements=settlementPage.data,
+      withdrawals=withdrawalPage.data,tickets=ticketPage.data,invoices=invoicePage.data;
     moduleStatus.worker={available:true,updatedAt:now.toISOString(),error:null};
     return wire({data: {
       generatedAt:now.toISOString(),moduleStatus,
@@ -311,17 +304,23 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const actor = account(request); requirePermission(actor, "agents.manage");
     throw new AppError(410, "global_catalog_required", "商品已改为全局统一管理，请在商品管理中修改");
   });
-  app.get<{Querystring: {merchantId?: string; productCode?: string; search?: string; status?: string; page?: string; limit?: string}}>("/workspace/api/orders", async request => {
+  app.get<{Querystring: {merchantId?: string; productCode?: string; search?: string; status?: string; createdFrom?: string; createdTo?: string; paidFrom?: string; paidTo?: string; page?: string; limit?: string}}>("/workspace/api/orders", async request => {
     const actor = account(request); requirePermission(actor, "orders.read");
     const query = z.object({
       merchantId: z.string().optional(),
       productCode: z.string().min(1).max(64).optional(),
       search: z.string().min(1).max(120).optional(),
+      createdFrom: calendarDay.optional(), createdTo: calendarDay.optional(),
+      paidFrom: calendarDay.optional(), paidTo: calendarDay.optional(),
       status: z.enum(["all", "pending", "paid", "running", "succeeded", "failed", "refunded"]).default("all"),
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(50).default(15),
     }).parse(request.query);
     const merchantIds = orderMerchantIds(actor, runtime.repository, query.merchantId);
+    if (query.createdFrom && query.createdTo && query.createdFrom > query.createdTo) throw new AppError(422, "invalid_created_date_range", "下单开始日期不能晚于结束日期");
+    if (query.paidFrom && query.paidTo && query.paidFrom > query.paidTo) throw new AppError(422, "invalid_paid_date_range", "付款开始日期不能晚于结束日期");
+    const start = (day: string) => new Date(day + "T00:00:00+08:00").toISOString();
+    const after = (day: string) => new Date(new Date(day + "T00:00:00+08:00").getTime() + 86_400_000).toISOString();
     const merchantNames = new Map(runtime.repository.listMerchants().map(merchant => [merchant.id, merchant.name]));
     const listed = listWorkspaceOrders(runtime.repository, actor, merchantIds, merchantNames,
       merchantId => runtime.agents.profile(merchantId).orderVisibility ?? [], {
@@ -330,6 +329,10 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         status: query.status,
         ...(query.productCode ? {productCode: query.productCode} : {}),
         ...(query.search ? {search: query.search} : {}),
+        ...(query.createdFrom ? {createdFrom: start(query.createdFrom)} : {}),
+        ...(query.createdTo ? {createdTo: after(query.createdTo)} : {}),
+        ...(query.paidFrom ? {paidFrom: start(query.paidFrom)} : {}),
+        ...(query.paidTo ? {paidTo: after(query.paidTo)} : {}),
       });
     return wire(listed);
   });

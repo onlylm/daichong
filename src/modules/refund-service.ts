@@ -201,8 +201,14 @@ export class RefundService {
   pendingPage(actor: Actor, limit = 8) {
     requirePermission(actor, "wallet.review");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看退款队列");
-    return queryRecords(this.repository, "refund", {filters: [{field: "status", op: "in", value: ["requested", "processing", "failed"]}],
-      page: 1, limit, orderBy: "createdAt", direction: "desc"});
+    const statuses = ["requested", "processing", "failed"], summary = queryRecords(this.repository, "refund", {
+      filters: [{field: "status", op: "in", value: statuses}], page: 1, limit: 1, orderBy: "createdAt", direction: "asc"});
+    const failed = queryRecords(this.repository, "refund", {filters: [{field: "status", value: "failed"}], page: 1, limit,
+      orderBy: "createdAt", direction: "asc"}).data;
+    const remaining = Math.max(0, limit - failed.length), ordinary = remaining ? queryRecords(this.repository, "refund", {
+      filters: [{field: "status", op: "in", value: ["requested", "processing"]}], page: 1, limit: remaining,
+      orderBy: "createdAt", direction: "asc"}).data : [];
+    return {data: [...failed, ...ordinary], meta: {...summary.meta, limit, pages: Math.max(1, Math.ceil(summary.meta.total / limit))}};
   }
 
   /**
