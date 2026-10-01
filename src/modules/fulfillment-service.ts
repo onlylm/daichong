@@ -11,6 +11,7 @@ import {LiveTestPolicy} from "./live-test-policy.js";
 import {partnerFulfillmentMessage, partnerFulfillmentSnapshot, partnerProgressStage, safeResultMessage} from "./fulfillment-public.js";
 import {latestFulfillmentOf, orderSyncMark} from "../domain/order-sync-mark.js";
 import {canResubmitFulfillment, isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 interface QueuedPayload {
   credential: RechargeCredential;
@@ -51,6 +52,9 @@ export class FulfillmentService {
     if (this.repository.findOrderInternal(order.id)?.archivedAt) throw new AppError(410, "order_archived", "该测试订单已归档，不能继续充值");
     if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
       throw new AppError(409, "order_not_paid", "只有已支付订单可以提交充值");
+    }
+    if (hasUnreconciledProviderRefund(this.repository, order.merchantId, order.id)) {
+      throw new AppError(409, "provider_refund_review", "支付宝退款差异正在核对，充值入口暂时锁定");
     }
     try {
       if ((order.fulfillmentMode ?? "direct") === "cdk") {
@@ -99,6 +103,7 @@ export class FulfillmentService {
     const attempts = this.repository.listFulfillments(value.merchantId, value.orderId);
     if (latestFulfillmentOf(attempts)?.id !== value.id || attempts.some(task => ["queued", "running", "succeeded"].includes(task.status))) return false;
     if (this.repository.listRefundsForOrder(value.merchantId, value.orderId).some(refund => ["requested", "approved", "processing"].includes(refund.status))) return false;
+    if (hasUnreconciledProviderRefund(this.repository, value.merchantId, value.orderId)) return false;
     if (value.voucherId) {
       const voucher = this.repository.findCdkVoucherByOrder(value.orderId);
       if (!voucher || voucher.id !== value.voucherId || voucher.status !== "unused" || !voucher.upstreamCodePayload.ciphertext) return false;
@@ -121,6 +126,7 @@ export class FulfillmentService {
       const due = this.repository.listProcessableFulfillments(20, now)
         .find((item) => {
           if (item.leaseUntil && item.leaseUntil > now) return false;
+          if (hasUnreconciledProviderRefund(this.repository, item.merchantId, item.orderId)) return false;
           if (item.status !== "queued" || !this.livePolicy) return true;
           const order = this.repository.findOrderInternal(item.orderId);
           return !!order && this.livePolicy.canFulfill(order)
@@ -208,6 +214,9 @@ export class FulfillmentService {
       if (this.repository.listRefundsForOrder(merchantId, task.orderId).some(refund => ["requested", "approved", "processing"].includes(refund.status))) {
         throw new AppError(409, "refund_pending", "订单已进入退款流程，请核对原退款单");
       }
+      if (hasUnreconciledProviderRefund(this.repository, merchantId, task.orderId)) {
+        throw new AppError(409, "provider_refund_review", "支付宝退款差异正在核对，暂不能处理充值任务");
+      }
       if (task.status === "queued") return this.cancelQueued(merchantId, task.id, action, reason);
       if (!isConfirmedUnsuccessfulFulfillment(task)) {
         throw new AppError(409, "recharge_result_unconfirmed", "任务已派发或结果尚未确认；须先确认上游取消或明确失败，不能本地强制取消后退款或重提");
@@ -241,6 +250,9 @@ export class FulfillmentService {
     if (order.ordinaryRefundedMinor > 0n) throw new AppError(409, "order_refunded", "已发生普通退款的订单不可提交充值");
     if (refunds.some((item) => ["requested", "approved", "processing"].includes(item.status))) {
       throw new AppError(409, "refund_pending", "订单已进入退款流程");
+    }
+    if (hasUnreconciledProviderRefund(this.repository, order.merchantId, order.id)) {
+      throw new AppError(409, "provider_refund_review", "支付宝退款差异正在核对，暂不能提交充值");
     }
     const previous = this.repository.listFulfillments(order.merchantId, order.id);
     if (previous.some((item) => ["queued", "running", "succeeded"].includes(item.status))) {
@@ -290,7 +302,11 @@ export class FulfillmentService {
     const onSubmitting = (lookupToken: string | null) => this.repository.transaction(() => {
       const latest = this.repository.findFulfillment(current.merchantId, current.id)!;
       if (isTerminal(latest.status) || latest.leaseToken !== current.leaseToken) throw new Error("submission_superseded");
-      if (this.repository.findOrderInternal(current.orderId)?.paymentStatus === "refunded") throw new Error("refunded_submission_blocked");
+      const latestOrder = this.repository.findOrderInternal(current.orderId);
+      if (latestOrder?.paymentStatus === "refunded") throw new Error("refunded_submission_blocked");
+      if (latestOrder && hasUnreconciledProviderRefund(this.repository, latestOrder.merchantId, latestOrder.id)) {
+        throw new Error("provider_refund_review_submission_blocked");
+      }
       this.saveProgress({
         ...latest, status: "running", upstreamProvider: this.upstream.name, upstreamStatus: "submission_pending",
         message: "正在提交充值，请勿重复提交",

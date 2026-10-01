@@ -129,6 +129,9 @@ export function createRuntime(config: AppConfig) {
   const refunds = new RefundService(repository, ledger, webhooks, refundExecutor, orderId => {
     wallets.reconcileOrderEarnings(orderId);
     fulfillments.closeRefundedOrder(orderId);
+  }, {
+    discrepancy: input => notifications.openProviderRefundDiscrepancy(input),
+    recorded: input => notifications.resolveProviderRefundDiscrepancies(input),
   });
   alipay?.setExternalRefundHandler((orderId, refundedMinor, providerReference) => {
     refunds.syncProviderRefund(orderId, refundedMinor, providerReference);

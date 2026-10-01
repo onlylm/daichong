@@ -22,7 +22,7 @@ export class NotificationService {
         const order=ticket.orderId?orders.get(ticket.orderId)??null:null,task=order?tasks.get(order.id)??null:null;
         return {key:ticket.systemCase?.issueKey??ticket.id,orderId:ticket.orderId,merchantId:ticket.merchantId,kind:ticket.category,
           message:ticket.title,ticketId:ticket.id,status:ticket.status,
-          retryAllowed:Boolean(order&&order.paymentStatus==="paid"&&order.ordinaryRefundedMinor===0n&&task&&canResubmitFulfillment(task)),
+          retryAllowed:Boolean(ticket.category==="recharge"&&order&&order.paymentStatus==="paid"&&order.ordinaryRefundedMinor===0n&&task&&canResubmitFulfillment(task)),
           priority:ticket.priority??"normal",dueAt:ticket.dueAt??null,overdue:Boolean(ticket.dueAt&&ticket.dueAt.getTime()<=Date.now()),createdAt:ticket.createdAt};
       })};
     }
@@ -35,7 +35,7 @@ export class NotificationService {
       const task = order ? latestFulfillmentOf(this.repo.listFulfillments(order.merchantId, order.id)) : null;
       return {key:ticket.systemCase?.issueKey ?? ticket.id, orderId:ticket.orderId, merchantId:ticket.merchantId,
         kind:ticket.category, message:ticket.title, ticketId:ticket.id, status:ticket.status,
-        retryAllowed:Boolean(order && order.paymentStatus==="paid" && order.ordinaryRefundedMinor===0n && task && canResubmitFulfillment(task)),
+        retryAllowed:Boolean(ticket.category==="recharge" && order && order.paymentStatus==="paid" && order.ordinaryRefundedMinor===0n && task && canResubmitFulfillment(task)),
         priority:ticket.priority??"normal", dueAt:ticket.dueAt??null,
         overdue:Boolean(ticket.dueAt && ticket.dueAt.getTime()<=Date.now()), createdAt:ticket.createdAt};
     })};
@@ -94,8 +94,55 @@ export class NotificationService {
       }
     });
   }
+
+  /**
+   * Aggregate Alipay trade queries contain only a cumulative refunded amount.
+   * They cannot prove which local refund request (or refund type) was executed.
+   * Keep that ambiguity as an operations case instead of mutating the ledger.
+   */
+  openProviderRefundDiscrepancy(input: {merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string}) {
+    const key=this.providerRefundIssueKey(input.orderId,input.reportedMinor),id=this.caseId(key);
+    const existing=this.repo.getOperations("ticket",id);
+    if(existing){
+      if(["open","in_progress","waiting_agent"].includes(existing.status))return;
+      const {archivedAt:_archivedAt,archiveReason:_archiveReason,archivedBy:_archivedBy,...unarchived}=existing;
+      const reopened:Ticket={...unarchived,status:"in_progress",priority:"urgent",
+        dueAt:new Date(Date.now()+30*60_000),version:existing.version+1,publicVersion:existing.publicVersion+1,
+        updatedAt:new Date()};
+      this.repo.saveOperations("ticket",reopened);
+      this.note(reopened,"渠道累计退款仍未由准确退款凭证覆盖，本工单已自动重新打开；请勿手动关闭后继续履约。");
+      return;
+    }
+    const now=new Date(),ticket:Ticket={id,merchantId:input.merchantId,orderId:input.orderId,category:"refund",
+      title:"支付宝退款累计与本地账本不一致，等待平台核对",status:"in_progress",assigneeId:null,version:1,publicVersion:1,
+      createdBy:"system",systemCase:{issueKey:key,entityId:"provider-refund:"+input.orderId},priority:"urgent",
+      dueAt:new Date(now.getTime()+30*60_000),createdAt:now,updatedAt:now};
+    this.repo.saveOperations("ticket",ticket,true);
+    this.note(ticket,"渠道退款存在未精确绑定的差异，平台正在按退款请求号核对；请勿重复发起退款。");
+    const fingerprint=createHash("sha256").update(input.providerReference).digest("hex").slice(0,16);
+    this.repo.saveOperations("ticket_message",{id:ticket.id+":internal:1",merchantId:ticket.merchantId,ticketId:ticket.id,
+      actorId:"system",author:"platform",internal:true,body:`渠道累计 ${input.reportedMinor} 分；本地已入账 ${input.recordedMinor} 分；差额 ${input.reportedMinor-input.recordedMinor} 分；渠道引用指纹 ${fingerprint}。须按 out_request_no 与渠道查询结果核对，禁止仅凭金额归类。`,createdAt:now},true);
+  }
+
+  /** Resolve only discrepancy cases whose reported cumulative amount is now fully represented locally. */
+  resolveProviderRefundDiscrepancies(input:{merchantId:string;orderId:string;recordedMinor:bigint}) {
+    const cases=queryRecords(this.repo,"ticket",{merchantId:input.merchantId,limit:100,count:false,
+      filters:[{field:"orderId",value:input.orderId},{field:"category",value:"refund"},{field:"createdBy",value:"system"},
+        {field:"status",op:"in",value:["open","in_progress","waiting_agent"]}]}).data;
+    for(const ticket of cases){
+      const key=ticket.systemCase?.issueKey??"",prefix="refund-reconcile:"+input.orderId+":";
+      if(!key.startsWith(prefix))continue;
+      const reportedText=key.slice(prefix.length);
+      if(!/^\d+$/.test(reportedText))continue;
+      const reported=BigInt(reportedText);
+      if(reported<=input.recordedMinor)this.updateCase(ticket,{status:"resolved"},"本地退款账务已按准确凭证补齐，本次渠道差异已关闭；历史核对记录保留。");
+    }
+  }
+
+  private providerRefundIssueKey(orderId:string,reportedMinor:bigint){return `refund-reconcile:${orderId}:${reportedMinor}`;}
+  private caseId(key:string){return "case_"+createHash("sha256").update(key).digest("hex").slice(0,32);}
   private openCase(issue: Issue) {
-    const id="case_"+createHash("sha256").update(issue.key).digest("hex").slice(0,32);
+    const id=this.caseId(issue.key);
     if (this.repo.getOperations("ticket",id)) return;
     const now=new Date();
     const ticket:Ticket={id,merchantId:issue.merchantId,orderId:issue.orderId,category:issue.kind,title:issue.message,

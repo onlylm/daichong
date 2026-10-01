@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Order, Refund, RefundType, TenantContext } from "../domain/model.js";
 import type { Repository } from "../infra/repository.js";
 import { AppError, notFound } from "../domain/errors.js";
@@ -18,6 +18,11 @@ export type RefundExecutor = {
   query?(orderId: string, refund: Refund): Promise<{status: "succeeded"; providerRefundNo: string} | {status: "not_confirmed"}>;
 };
 
+export type ProviderRefundObserver = {
+  discrepancy(input:{merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string}):void;
+  recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint}):void;
+};
+
 export class RefundService {
   constructor(
     private readonly repository: Repository,
@@ -25,6 +30,7 @@ export class RefundService {
     private readonly webhooks: WebhookService,
     private readonly executor?: RefundExecutor,
     private readonly onFinancialChange?: (orderId: string) => void,
+    private readonly providerRefundObserver?: ProviderRefundObserver,
   ) {}
 
   request(tenant: TenantContext, orderId: string, input: {merchantRefundNo: string; type: RefundType; amount: string; reason: string}): Refund {
@@ -246,27 +252,26 @@ export class RefundService {
     });
   }
 
-  /** Reconcile the cumulative refund amount reported by the bound payment provider. */
+  /**
+   * Reconcile provider facts under one write transaction. An aggregate trade
+   * query never completes a refund because it has no exact out_request_no.
+   * Exact completion happens only through reconcileOne/queryRefund; aggregate
+   * deltas become review cases and leave the financial ledger unchanged.
+   */
   syncProviderRefund(orderId: string, providerRefundedMinor: bigint, providerReference: string): Refund | null {
     if (providerRefundedMinor <= 0n) return null;
-    const order = this.repository.findOrderInternal(orderId);
-    if (!order || order.collectionMode !== "platform_collect") return null;
-    const reported = providerRefundedMinor > order.saleAmountMinor ? order.saleAmountMinor : providerRefundedMinor;
-    const recorded = order.ordinaryRefundedMinor + order.priceAdjustmentRefundedMinor;
-    if (reported <= recorded) return null;
-    const active = this.repository.listRefundsForOrder(order.merchantId, order.id)
-      .filter(item => ["requested", "approved", "processing", "failed"].includes(item.status));
-    if (active.length === 1 && recorded + active[0]!.amountMinor === reported) {
-      return this.repository.transaction(() => this.completeLocked(order.merchantId, active[0]!.id, providerReference));
-    }
-    // Multiple active local refunds are ambiguous at aggregate-trade level. Their
-    // own refund-query worker has the request numbers needed for exact matching.
-    if (active.length) return null;
-    const delta = reported - recorded;
-    const key = createHash("sha256").update(`${order.id}:${reported}:${providerReference}`).digest("hex").slice(0, 40);
-    return this.recordExternalCustomerRefund({id: "system:payment-reconcile", role: "platform_admin", merchantId: null}, order.id, {
-      amount: minorToMoney(delta), reason: "支付宝查单发现渠道侧已退款，系统自动补登并关闭履约入口",
-      requestKey: key, providerRefundNo: providerReference, confirmAlreadyRefundedAtChannel: true,
+    return this.repository.transaction(() => {
+      const order = this.repository.findOrderInternal(orderId);
+      if (!order || order.collectionMode !== "platform_collect") return null;
+      const reported = providerRefundedMinor > order.saleAmountMinor ? order.saleAmountMinor : providerRefundedMinor;
+      const recorded = order.ordinaryRefundedMinor + order.priceAdjustmentRefundedMinor;
+      if (reported <= recorded) {
+        this.providerRefundObserver?.recorded({merchantId:order.merchantId,orderId:order.id,recordedMinor:recorded});
+        return null;
+      }
+      this.providerRefundObserver?.discrepancy({merchantId:order.merchantId,orderId:order.id,
+        reportedMinor:reported,recordedMinor:recorded,providerReference});
+      return null;
     });
   }
 
@@ -441,6 +446,7 @@ export class RefundService {
     assertPaymentTransition(order.paymentStatus, nextPaymentStatus);
     updated.paymentStatus = nextPaymentStatus;
     this.repository.updateOrder(updated);
+    this.providerRefundObserver?.recorded({merchantId,orderId:order.id,recordedMinor:totalRefunded});
     const attempt = this.repository.findPaymentAttemptByOrder(merchantId, order.id);
     if (attempt && nextPaymentStatus === "refunded") {
       const {nextCheckAt: _nextCheckAt, ...refundedAttempt} = attempt;

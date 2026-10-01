@@ -375,6 +375,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       confirmAlreadyRefundedAtChannel: true,
       ...(input.amount ? {amount: input.amount} : {}),
     });
+    runtime.audit.record({merchantId:refund.merchantId,actorId:actor.id,actorType:"platform_user",
+      action:"refund.external.record",targetType:"refund",targetId:refund.id,requestId:request.id});
     runtime.wallets.reconcileMerchantEarnings(refund.merchantId);
     return wire({data: workspaceRefund(runtime, refund)});
   });

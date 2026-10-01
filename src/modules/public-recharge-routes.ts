@@ -9,6 +9,7 @@ import {partnerFulfillmentMessage, publicFulfillmentResult, rechargeProgressView
 import {resolveAutoRechargeUpstreamCode} from "../operations/workspace-recharge.js";
 import {CDK_PUBLIC_CODE_PATTERN} from "./cdk-code.js";
 import {minorToMoney} from "../domain/money.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 const credentialSchema = z.discriminatedUnion("mode", [
   z.object({mode: z.literal("session"), session: z.string().min(1).max(32_000)}).strict(),
@@ -187,6 +188,9 @@ function rechargeOrderAccess(runtime: Runtime, order: Order): PortalAccess {
   if (runtime.repository.listRefundsForOrder(order.merchantId, order.id)
       .some(refund => ["requested", "approved", "processing"].includes(refund.status))) {
     return {order, state: "closed", message: "订单正在退款处理中，充值入口已锁定。"};
+  }
+  if (hasUnreconciledProviderRefund(runtime.repository, order.merchantId, order.id)) {
+    return {order, state: "review", message: "支付宝退款差异正在核对，充值入口暂时锁定。"};
   }
   if (order.paymentStatus === "pending") return {order, state: "waiting_payment", message: "订单尚未支付，请完成付款后刷新本页。"};
   const latest = runtime.repository.listFulfillments(order.merchantId, order.id).at(-1) ?? null;

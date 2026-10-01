@@ -9,6 +9,7 @@ import {AppError} from "../domain/errors.js";
 import {LiveTestPolicy} from "./live-test-policy.js";
 import {createPublicCdkCode, normalizeCdkPrefix, normalizeCdkTemplate} from "./cdk-code.js";
 import {isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 export class CdkService {
   constructor(
@@ -72,6 +73,7 @@ export class CdkService {
       && ["paid", "partially_refunded"].includes(item.paymentStatus)
       && item.ordinaryRefundedMinor === 0n
       && !this.repository.listRefundsForOrder(item.merchantId, item.id).some((refund) => ["requested", "approved", "processing"].includes(refund.status))
+      && !hasUnreconciledProviderRefund(this.repository, item.merchantId, item.id)
       && (() => {
         const voucher = this.repository.findCdkVoucherByOrder(item.id);
         return !voucher || (voucher.status === "issuing" && (voucher.nextAttemptAt ?? voucher.createdAt) <= now);
