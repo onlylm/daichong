@@ -36,6 +36,14 @@ sudo sh deploy/backup-prelaunch.sh
 sudo sh deploy/production/healthcheck.sh
 ```
 
-`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份；PostgreSQL 备份和恢复演练继续保留，为后续仓储迁移做准备。上线真实收款前仍须增加异机加密备份和外部告警。
+`backup-prelaunch.sh` 会自动选择 `production.sqlite`，旧文件名仅为兼容现有 systemd 服务。每天执行 SQLite 一致性备份并保存 SHA-256 清单；`quefa-restore-test.timer` 每周把最新快照恢复到隔离临时库，对比结构摘要、逻辑摘要、记录总数、分类数量、JSON 与外键，报告保存在快照旁且不会替换实时账本。未来 PostgreSQL 演练保留在 `verify-postgres-backup-restore.sh`，不能用它代替当前 SQLite 主账本的恢复验证。上线真实收款前仍须增加异机加密备份、缩短 RPO 并接入外部告警。
+
+手工验证指定快照：
+
+```sh
+sudo sh deploy/production/verify-backup-restore.sh /opt/recharge-platform/current /opt/recharge-platform/backups/production-app-<time>.sqlite
+```
+
+该命令只读原快照，恢复副本位于系统临时目录并在核验后删除。它证明快照可读取和逻辑一致，不代表已经完成异机灾备，也不会自动切换生产数据库。
 
 扩展到多 API/Worker 节点、明显提高并发或启用更复杂的自动财务处理前，必须迁移 PostgreSQL Repository；不能让多个主机直接共享 SQLite 文件。

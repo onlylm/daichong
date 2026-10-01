@@ -1,7 +1,6 @@
 [Unit]
-Description=Verify the latest Quefa PostgreSQL backup by restoring it
-After=docker.service quefa-backup.service
-Requires=docker.service
+Description=Verify the latest Quefa SQLite backup by isolated restore
+After=quefa-backup.service
 
 [Service]
 Type=oneshot

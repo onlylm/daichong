@@ -1,39 +1,26 @@
 #!/bin/sh
+# Verify the current SQLite application ledger by restoring a backup into an isolated temporary database.
 set -eu
+umask 077
 
 base="/opt/recharge-platform"
 project="${1:-$base/current}"
-backup="${2:-}"
+snapshot="${2:-}"
 
-if [ -z "$backup" ]; then
-  backup="$(find "$base/production-backups" -maxdepth 1 -type f -name 'quefa-*.dump' -printf '%T@ %p\n' \
+if [ -z "$snapshot" ]; then
+  snapshot="$(find "$base/backups" -maxdepth 1 -type f -name 'production-app-*.sqlite' -printf '%T@ %p\n' \
     | sort -nr | head -n 1 | cut -d' ' -f2-)"
 fi
-if [ -z "$backup" ] || [ ! -s "$backup" ]; then
-  printf '%s\n' 'No non-empty production backup was found.' >&2
+if [ -z "$snapshot" ] || [ ! -s "$snapshot" ]; then
+  printf '%s\n' 'No non-empty SQLite application backup was found.' >&2
   exit 1
 fi
+test -f "$project/dist/cli/verify-sqlite-backup.js"
 
-test_db="quefa_restore_$(date -u +%Y%m%d%H%M%S)"
-cd "$project"
-
-drop_test_database() {
-  docker compose -f compose.production.infra.yaml exec -T postgres \
-    sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_owner_password)"; dropdb --if-exists --username quefa_owner "$1"' sh "$test_db" >/dev/null 2>&1 || true
-}
-trap drop_test_database EXIT HUP INT TERM
-
-docker compose -f compose.production.infra.yaml exec -T postgres \
-  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_owner_password)"; createdb --username quefa_owner "$1"' sh "$test_db"
-
-docker compose -f compose.production.infra.yaml exec -T postgres \
-  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_owner_password)"; exec pg_restore --exit-on-error --no-owner --username quefa_owner --dbname "$1"' sh "$test_db" < "$backup"
-
-migration_count="$(docker compose -f compose.production.infra.yaml exec -T postgres \
-  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_owner_password)"; exec psql --username quefa_owner --dbname "$1" --tuples-only --no-align --set ON_ERROR_STOP=1 --command="SELECT count(*) FROM schema_migrations"' sh "$test_db")"
-if [ "$migration_count" != "5" ]; then
-  printf '%s\n' "Restore verification failed: migration_count=$migration_count" >&2
-  exit 1
+if [ -f "$snapshot.sha256" ]; then
+  sha256sum -c "$snapshot.sha256"
 fi
-
-printf '%s\n' "restore_test=ok migration_count=$migration_count"
+report="$snapshot.restore-report.json"
+node "$project/dist/cli/verify-sqlite-backup.js" "$snapshot" --report "$report"
+chmod 600 "$report"
+printf '%s\n' "sqlite_restore_test=ok backup=$snapshot report=$report"

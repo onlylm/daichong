@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "bench:pagination": "npm run build && node scripts/benchmark-history-pagination.mjs",
+    "backup:verify": "node --env-file-if-exists=.env dist/cli/verify-sqlite-backup.js",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run build && node scripts/check-workspace-js.mjs"
   },

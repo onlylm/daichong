@@ -1,5 +1,5 @@
 [Unit]
-Description=Quefa local application and PostgreSQL backup
+Description=Quefa SQLite application and future PostgreSQL backups
 After=docker.service
 Requires=docker.service
 
