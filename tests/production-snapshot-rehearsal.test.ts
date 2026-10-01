@@ -89,6 +89,7 @@ function productionEnvironment(fixture: {dataKey: string}, liveDatabase: string)
     SQLITE_PATH: liveDatabase,
     LOG_LEVEL: "silent",
     TRUST_PROXY: "true",
+    TRUSTED_PROXY_CIDRS: "127.0.0.0/8,172.16.0.0/12",
     ENABLE_SANDBOX_ROUTES: "false",
     PUBLIC_BASE_URL: "https://tibo.test",
     ADMIN_BASE_URL: "https://admin.tibo.test",

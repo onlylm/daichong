@@ -24,6 +24,7 @@ tibo.ink {
 	respond @blocked 404
 
 	reverse_proxy 127.0.0.1:3200 {
+		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto https
 	}
 }
@@ -39,6 +40,7 @@ api.tibo.ink {
 	respond @private 404
 
 	reverse_proxy 127.0.0.1:3200 {
+		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto https
 	}
 }
@@ -54,6 +56,7 @@ admin.tibo.ink {
 		# 独立后台域名只暴露工作台页面与其同源接口，不暴露开放 API、回调或健康检查。
 		@workspace path /workspace*
 		reverse_proxy @workspace 127.0.0.1:3200 {
+			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto https
 		}
 

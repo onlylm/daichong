@@ -89,7 +89,9 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
         censor: "[REDACTED]",
       },
     },
-    trustProxy: config.trustProxy,
+    // Never trust arbitrary X-Forwarded-* headers. Forwarded client IPs are
+    // honored only when the immediate peer matches the configured edge proxy.
+    trustProxy: config.trustProxy ? config.trustedProxyCidrs : false,
     bodyLimit: 64 * 1024,
   });
 

@@ -47,6 +47,7 @@ trap restore_previous_release EXIT HUP INT TERM
 replace_env PUBLIC_BASE_URL https://tibo.ink
 replace_env ADMIN_BASE_URL https://admin.tibo.ink
 replace_env TRUST_PROXY true
+replace_env TRUSTED_PROXY_CIDRS 127.0.0.0/8,::1/128,172.16.0.0/12
 replace_env PAYMENT_PROVIDER mock
 replace_env FULFILLMENT_PROVIDER mock
 replace_env LIVE_TEST_ENABLED false

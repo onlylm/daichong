@@ -7,7 +7,7 @@ import type {Order, PaymentAttempt, SupplierConnection} from "../src/domain/mode
 function productionConfig() {
   return loadConfig({
     NODE_ENV: "production", EXECUTION_MODE: "production", STORAGE_DRIVER: "sqlite", SQLITE_PATH: "./data/production.sqlite",
-    TRUST_PROXY: "true", ENABLE_SANDBOX_ROUTES: "false", PUBLIC_BASE_URL: "https://quefa.test", ADMIN_BASE_URL: "https://admin.quefa.test",
+    TRUST_PROXY: "true", TRUSTED_PROXY_CIDRS: "127.0.0.0/8,172.16.0.0/12", ENABLE_SANDBOX_ROUTES: "false", PUBLIC_BASE_URL: "https://quefa.test", ADMIN_BASE_URL: "https://admin.quefa.test",
     PAYMENT_PROVIDER: "managed", FULFILLMENT_PROVIDER: "zovocard", PLATFORM_ADMIN_TOKEN: "production-admin-token-at-least-32-characters",
     PORTAL_TOKEN_SECRET: "production-portal-token-at-least-32-characters", DEMO_CLIENT_SECRET: "production-demo-secret-at-least-32-characters",
     DATA_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
@@ -49,5 +49,14 @@ describe("production execution policy", () => {
 
   it("rejects production execution outside a hardened production runtime", () => {
     expect(() => loadConfig({NODE_ENV: "development", EXECUTION_MODE: "production"})).toThrow("NODE_ENV=production");
+  });
+
+  it("rejects production when forwarded headers have no explicit trusted proxy range", () => {
+    expect(() => loadConfig({
+      NODE_ENV: "production", STORAGE_DRIVER: "sqlite", SQLITE_PATH: "./data/production.sqlite", TRUST_PROXY: "true",
+      ENABLE_SANDBOX_ROUTES: "false", PUBLIC_BASE_URL: "https://quefa.test", ADMIN_BASE_URL: "https://admin.quefa.test",
+      PLATFORM_ADMIN_TOKEN: "production-admin-token-at-least-32-characters", PORTAL_TOKEN_SECRET: "production-portal-token-at-least-32-characters",
+      DEMO_CLIENT_SECRET: "production-demo-secret-at-least-32-characters", DATA_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
+    })).toThrow("TRUSTED_PROXY_CIDRS");
   });
 });

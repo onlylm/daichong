@@ -18,12 +18,14 @@ function checkRelease(snapshot:unknown,start=Date.parse("2026-10-01T10:00:00.000
 
 describe("production health monitoring",()=>{
   it("fails on worker health and keeps detailed probes off public hosts",()=>{
-    const script=read("deploy/production/healthcheck.sh"),caddy=read("deploy/production/Caddyfile");
+    const script=read("deploy/production/healthcheck.sh"),caddy=read("deploy/production/Caddyfile"),deploy=read("deploy/production/deploy-production-candidate.sh");
     expect(script).toContain("http://127.0.0.1:3200/health/worker");
     expect(script).toContain("quefa-app-worker-1");
     expect(script).toContain("expect_status 404 https://tibo.ink/health/worker");
     expect(caddy).toMatch(/@blocked path[^\n]*\/health\*/);
     expect(caddy).toMatch(/@private path[^\n]*\/health\*/);
+    expect(caddy.match(/header_up X-Forwarded-For \{remote_host\}/g)).toHaveLength(3);
+    expect(deploy).toContain("replace_env TRUSTED_PROXY_CIDRS 127.0.0.0/8,::1/128,172.16.0.0/12");
   });
 
   it("routes failed health, backup and restore checks to a sanitized OnFailure notifier",()=>{

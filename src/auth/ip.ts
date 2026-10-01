@@ -8,6 +8,7 @@ export function normalizeIpRules(rules: readonly string[]): string[] {
     try {
       if (rule.includes("/")) {
         const [network, prefix] = ipaddr.parseCIDR(rule);
+        if (prefix === 0) throw new Error("allow_all_cidr");
         if (network.kind() === "ipv6" && "isIPv4MappedAddress" in network && network.isIPv4MappedAddress()) {
           throw new Error("mapped_ipv4_cidr");
         }
@@ -23,7 +24,10 @@ export function normalizeIpRules(rules: readonly string[]): string[] {
 }
 
 export function ipAllowed(remoteIp: string, rules: readonly string[]): boolean {
-  if (rules.length === 0) return true;
+  // This helper is only called after enforcement is explicitly enabled. A
+  // damaged or partially migrated record must fail closed instead of silently
+  // reopening access.
+  if (rules.length === 0) return false;
   let address: ipaddr.IPv4 | ipaddr.IPv6;
   try {
     address = ipaddr.process(remoteIp);

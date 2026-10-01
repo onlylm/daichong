@@ -52,6 +52,7 @@ replace_env EXECUTION_MODE production
 replace_env PUBLIC_BASE_URL https://tibo.ink
 replace_env ADMIN_BASE_URL https://admin.tibo.ink
 replace_env TRUST_PROXY true
+replace_env TRUSTED_PROXY_CIDRS 127.0.0.0/8,::1/128,172.16.0.0/12
 replace_env STORAGE_DRIVER sqlite
 replace_env SQLITE_PATH /app/data/production.sqlite
 replace_env BACKUP_HEALTH_REPORT_PATH /app/health/sqlite-restore-health.json

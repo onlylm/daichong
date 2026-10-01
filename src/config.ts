@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {dirname, join} from "node:path";
+import {normalizeIpRules} from "./auth/ip.js";
 
 const booleanText = z.enum(["true", "false"]).transform((value) => value === "true");
 const optionalUrl = z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional());
@@ -12,6 +13,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3200),
   LOG_LEVEL: z.string().default("info"),
   TRUST_PROXY: booleanText.default(false),
+  TRUSTED_PROXY_CIDRS: z.string().default(""),
   ENABLE_SANDBOX_ROUTES: booleanText.default(false),
   SANDBOX_ADMIN_TOKEN: z.string().min(16).default("replace-local-sandbox-token"),
   PLATFORM_ADMIN_TOKEN: z.string().min(32).default("replace-platform-admin-token-at-least-32-chars"),
@@ -63,6 +65,7 @@ export type AppConfig = {
   port: number;
   logLevel: string;
   trustProxy: boolean;
+  trustedProxyCidrs: string[];
   enableSandboxRoutes: boolean;
   sandboxAdminToken: string;
   platformAdminToken: string;
@@ -94,6 +97,12 @@ export type AppConfig = {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = schema.parse(env);
+  let trustedProxyCidrs: string[];
+  try {
+    trustedProxyCidrs = normalizeIpRules(parsed.TRUSTED_PROXY_CIDRS.split(","));
+  } catch {
+    throw new Error("TRUSTED_PROXY_CIDRS 只允许 IPv4、IPv6 或 CIDR，以逗号分隔");
+  }
   const executionMode = parsed.EXECUTION_MODE ?? (parsed.LIVE_TEST_ENABLED ? "controlled" : "disabled");
   if (parsed.PAYMENT_PROVIDER !== "mock" && /alipay|\*/i.test(env.NODE_DEBUG ?? "")) {
     throw new Error("真实支付禁止开启支付宝 SDK 调试日志，避免记录签名请求与交易数据");
@@ -109,6 +118,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (!parsed.TRUST_PROXY || parsed.ENABLE_SANDBOX_ROUTES || publicUrl.protocol !== "https:" || adminUrl.protocol !== "https:") {
       throw new Error("生产环境必须启用可信反向代理、HTTPS，并关闭沙箱路由");
     }
+    if (trustedProxyCidrs.length === 0) throw new Error("生产环境必须显式配置 TRUSTED_PROXY_CIDRS，禁止无条件信任转发头");
     if ([parsed.PLATFORM_ADMIN_TOKEN, parsed.PORTAL_TOKEN_SECRET, parsed.DEMO_CLIENT_SECRET].some(value => value.startsWith("replace-"))
         || dataEncryptionKey.equals(Buffer.alloc(32))) throw new Error("生产环境必须更换全部默认密钥");
   }
@@ -129,6 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: parsed.PORT,
     logLevel: parsed.LOG_LEVEL,
     trustProxy: parsed.TRUST_PROXY,
+    trustedProxyCidrs,
     enableSandboxRoutes: parsed.ENABLE_SANDBOX_ROUTES,
     sandboxAdminToken: parsed.SANDBOX_ADMIN_TOKEN,
     platformAdminToken: parsed.PLATFORM_ADMIN_TOKEN,

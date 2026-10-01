@@ -7,6 +7,7 @@
 - 公网主站仅开放开发文档、代理 API、支付/兑换页和外部回调；主域名拒绝 `/workspace`、`/internal/admin`、`/sandbox` 与健康检查。
 - 管理后台只在 `admin.tibo.ink/workspace` 开放，使用独立账号、强制首次改密和 TOTP MFA；后台域名不提供 `/v1`、支付页或回调。
 - 应用只绑定宿主机 `127.0.0.1:3200`，由 Caddy 终止 HTTPS。
+- 应用只信任 `TRUSTED_PROXY_CIDRS` 中的反向代理来源；Caddy 会覆盖而不是透传来访者自带的 `X-Forwarded-For`。发布脚本按当前“宿主机 Caddy → Docker 回环端口”拓扑写入回环与 Docker bridge 私网，拓扑变化时必须先改为实际代理网段，禁止配置 `0.0.0.0/0` 或 `::/0`。
 - 生产 SQLite、环境文件和备份仅服务器受限账号可访问；加密主密钥不得进入数据库备份、镜像、源码、聊天或工单。
 - 生产启动时不会创建演示商户；从预发布复制的数据会撤销演示密钥、停用演示应用并暂停演示商户。
 - 开放 API 按 API Key 分读写固定窗口限流，默认每分钟读取 600 次、写入 120 次；可通过 `API_RATE_LIMIT_READ_PER_MINUTE` 和 `API_RATE_LIMIT_WRITE_PER_MINUTE` 调整。计数存于主账本数据库并由所有 API 进程共享，不能用单进程内存限流替代。

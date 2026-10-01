@@ -67,7 +67,7 @@ describe("webhook delivery", () => {
 
 function webhookConfig(): AppConfig {
   return {
-    nodeEnv: "test", executionMode: "disabled", host: "127.0.0.1", port: 3200, logLevel: "silent", trustProxy: false,
+    nodeEnv: "test", executionMode: "disabled", host: "127.0.0.1", port: 3200, logLevel: "silent", trustProxy: false, trustedProxyCidrs: [],
     enableSandboxRoutes: true, registrationEnabled: false, sandboxAdminToken: "local-sandbox-token-for-tests", demoPartnerId: "pt_webhook",
     platformAdminToken: "test-platform-admin-token-at-least-32-chars",
     demoKeyId: "key_webhook_01", demoClientSecret: "webhook-secret-must-be-at-least-32-characters",

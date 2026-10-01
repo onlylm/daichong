@@ -269,7 +269,7 @@ function adminHeaders(config: AppConfig): Record<string, string> {
 
 function adminConfig(): AppConfig {
   return {
-    nodeEnv: "test", executionMode: "disabled", host: "127.0.0.1", port: 3200, logLevel: "silent", trustProxy: false,
+    nodeEnv: "test", executionMode: "disabled", host: "127.0.0.1", port: 3200, logLevel: "silent", trustProxy: false, trustedProxyCidrs: [],
     enableSandboxRoutes: true, registrationEnabled: false, sandboxAdminToken: "local-sandbox-token-for-tests", platformAdminToken: "test-platform-admin-token-at-least-32-chars",
     demoPartnerId: "pt_admin", demoKeyId: "key_admin_01", demoClientSecret: "admin-secret-must-be-at-least-32-characters",
     dataEncryptionKey: Buffer.alloc(32, 4), keyEncryptionKeyId: "test-key-v1", publicBaseUrl: "http://127.0.0.1:3200",
