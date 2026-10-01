@@ -128,6 +128,16 @@ export class DailySettlementService {
         {field:"id",op:"ne",value:id}],limit:1,count:false}).data.length>0;
       const duplicateWithdrawal = queryRecords(this.repository,"wallet_withdrawal",{filters:[{field:"payoutReference",value:reference}],limit:1,count:false}).data.length>0;
       if (duplicateStatement || duplicateWithdrawal) throw new AppError(409, "payout_reference_used", "该付款流水号已使用");
+      const refundPending=this.repository.hasPendingRefundForReleasedEarnings?.(current.merchantId)
+        ??current.orderIds.some(orderId=>this.repository.listRefundsForOrder(current.merchantId,orderId)
+          .some(refund=>["requested","approved","processing"].includes(refund.status)));
+      if(refundPending)throw new AppError(409,"settlement_refund_pending","代理收益关联订单仍有退款待确认，暂不能登记打款");
+      const currentStatementEarnings=this.repository.walletCreditTotalForOrders?.(current.merchantId,current.orderIds)
+        ??this.repository.listOperations("wallet_credit",current.merchantId)
+          .filter(credit=>current.orderIds.includes(credit.orderId)).reduce((sum,credit)=>sum+credit.recognizedMinor,0n);
+      if(currentStatementEarnings!==current.agentEarningsMinor){
+        throw new AppError(409,"settlement_amount_changed","核算单内订单收益已因退款或纠偏变化，请作废本单并在下一核算周期重新生成");
+      }
       const earnings = this.repository.walletTotals?.(current.merchantId).earnings
         ??this.repository.listOperations("wallet_entry", current.merchantId).reduce((sum, entry) => sum + entry.earningsDelta, 0n);
       if (earnings < current.payableMinor) throw new AppError(409, "settlement_balance_changed", "代理收益余额已变化，当前不足以确认该核算单；请取消本单并按新余额处理");

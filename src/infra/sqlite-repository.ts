@@ -429,6 +429,19 @@ export class SqliteRepository implements Repository {
     return result;
   }
 
+  walletCreditTotalForOrders(merchantId:string,orderIds:readonly string[]):bigint {
+    let total=0n;
+    for(let offset=0;offset<orderIds.length;offset+=400){
+      const ids=orderIds.slice(offset,offset+400);
+      if(!ids.length)continue;
+      const row=this.db.prepare(`SELECT COALESCE(SUM(CAST(json_extract(payload,'$.recognizedMinor.__bigint') AS INTEGER)),0) AS total
+        FROM sandbox_records WHERE kind='ops_wallet_credit' AND merchant_id=?
+        AND json_extract(payload,'$.orderId') IN (${ids.map(()=>'?').join(',')})`).get(merchantId,...ids) as {total:number|string};
+      total+=BigInt(row.total);
+    }
+    return total;
+  }
+
   earningReversalCandidates(merchantId:string,onlyOrderId?:string) {
     const sale=`CAST(COALESCE(json_extract(o.payload,'$.saleAmountMinor.__bigint'),'0') AS INTEGER)`,refund=`CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)`,
       supply=`CAST(COALESCE(json_extract(o.payload,'$.supplyAmountMinor.__bigint'),'0') AS INTEGER)`,recognized=`CAST(COALESCE(json_extract(c.payload,'$.recognizedMinor.__bigint'),'0') AS INTEGER)`;

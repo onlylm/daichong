@@ -91,6 +91,37 @@ describe("2026-10-01 agent policy", () => {
     expect(runtime.dailySettlements.reconcile(admin, statement.id, "代理确认到账，金额流水一致").status).toBe("reconciled");
   });
 
+  it("blocks payout when a pending refund can still reduce released earnings", async () => {
+    const order=await seedSettlementEarning(runtime,"pending-refund");
+    runtime.dailySettlements.generate("2026-09-30");
+    const statement=runtime.dailySettlements.list(admin).find(item=>item.merchantId===order.merchantId)!;
+    runtime.repository.insertRefund({id:"ref_pending_settlement",merchantId:order.merchantId,orderId:order.id,
+      merchantRefundNo:"pending-settlement-refund",type:"partial",amountMinor:1_000n,status:"requested",reason:"等待渠道确认",
+      failureCode:null,createdAt:new Date(),refundedAt:null});
+    expect(()=>runtime.dailySettlements.confirmPaid(admin,statement.id,
+      {method:"alipay",reference:"202610010101",evidence:"支付宝付款凭证已归档"})).toThrow("退款待确认");
+    expect(runtime.repository.getOperations("daily_settlement",statement.id)?.status).toBe("pending_payment");
+    expect(runtime.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
+  });
+
+  it("does not let unrelated new earnings hide a stale settlement after commission reversal", async () => {
+    const order=await seedSettlementEarning(runtime,"stale-commission");
+    runtime.dailySettlements.generate("2026-09-30");
+    const statement=runtime.dailySettlements.list(admin).find(item=>item.merchantId===order.merchantId)!;
+    const credit=runtime.repository.getOperations("wallet_credit",order.id)!;
+    runtime.repository.saveOperations("wallet_credit",{...credit,recognizedMinor:1_500n});
+    runtime.repository.saveOperations("wallet_entry",{id:"earning_reversal:test",merchantId:order.merchantId,kind:"earning_reversal",
+      procurementDelta:0n,earningsDelta:-1_000n,frozenDelta:0n,reference:order.id,actorId:"system",createdAt:new Date()},true);
+    runtime.repository.saveOperations("wallet_entry",{id:"earning:later-order",merchantId:order.merchantId,kind:"earning_release",
+      procurementDelta:0n,earningsDelta:2_000n,frozenDelta:0n,reference:"later-order",actorId:"system",createdAt:new Date()},true);
+    expect(runtime.repository.listOperations("wallet_entry",order.merchantId)
+      .reduce((sum,entry)=>sum+entry.earningsDelta,0n)).toBe(3_500n);
+    expect(()=>runtime.dailySettlements.confirmPaid(admin,statement.id,
+      {method:"bank",reference:"202610010102",evidence:"银行付款凭证已归档"})).toThrow("收益已因退款或纠偏变化");
+    expect(runtime.repository.getOperations("daily_settlement",statement.id)?.status).toBe("pending_payment");
+    expect(runtime.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
+  });
+
   it("builds SQLite settlement candidates and balances without per-order historical scans",async()=>{
     const sqlite=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
     try{
@@ -118,6 +149,33 @@ describe("2026-10-01 agent policy", () => {
       expect(statement).toMatchObject({orderIds:[created.id],agentEarningsMinor:2_500n,payableMinor:2_500n,platformProfitMinor:200n});
       expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();expect(fulfillments).not.toHaveBeenCalled();
       expect((sqlite.repository as Repository).listDailySettlementCandidates?.(new Date("2026-10-01T14:00:00.000Z"))).toEqual([]);
+      expect(sqlite.dailySettlements.confirmPaid(admin,String(statement.id),
+        {method:"alipay",reference:"202610010201",evidence:"支付宝付款凭证已归档"})).toMatchObject({status:"paid"});
+      expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();expect(fulfillments).not.toHaveBeenCalled();
     }finally{vi.restoreAllMocks();sqlite.close();}
   });
 });
+
+async function seedSettlementEarning(runtime:Runtime,suffix:string){
+  const credential=runtime.repository.findCredential("pt_demo_a","key_demo_a_01")!;
+  const tenant={merchantId:credential.merchant.id,partnerId:credential.merchant.partnerId,
+    appId:credential.app.appId,keyId:credential.key.keyId};
+  const created=await runtime.orders.create(tenant,{merchantOrderNo:"settlement-"+suffix,productCode:"chatgpt_plus_cdk_1m",
+    quantity:1,saleAmount:"135.00",collectionMode:"platform_collect"});
+  const at=new Date("2026-09-30T12:00:00.000Z");
+  runtime.repository.updateOrder({...created,paymentStatus:"paid",paymentProviderRef:"ali_"+suffix,
+    paymentReceivedMinor:created.saleAmountMinor,paymentFeeMinor:0n,paidAt:at,createdAt:at,updatedAt:at});
+  const attempt=runtime.repository.findPaymentAttemptByOrder(created.merchantId,created.id)!;
+  runtime.repository.updatePaymentAttempt({...attempt,status:"paid",providerRef:"ali_"+suffix,
+    receivedMinor:created.saleAmountMinor,feeMinor:0n,paidAt:at,createdAt:at,updatedAt:at});
+  runtime.repository.insertFulfillment({id:"ful_"+suffix,merchantId:created.merchantId,orderId:created.id,attemptNo:1,status:"succeeded",
+    failureCode:null,message:null,accountEmailMasked:null,sessionPayload:{ciphertext:null,iv:null,authTag:null,keyVersion:"test",clearedAt:null},mode:"cdk",
+    voucherId:null,upstreamProvider:"zovocard",upstreamOrderId:"up_"+suffix,upstreamClientRequestId:"req_"+suffix,
+    upstreamLookupToken:null,upstreamStatus:"completed",upstreamStage:"completed",upstreamQuoteMinor:1576,upstreamCurrency:"USD",
+    nextCheckAt:at,createdAt:at,finishedAt:at});
+  runtime.repository.saveOperations("wallet_credit",{id:created.id,merchantId:created.merchantId,
+    orderId:created.id,recognizedMinor:2_500n,createdAt:at},true);
+  runtime.repository.saveOperations("wallet_entry",{id:"earning:"+created.id,merchantId:created.merchantId,kind:"earning_release",
+    procurementDelta:0n,earningsDelta:2_500n,frozenDelta:0n,reference:created.id,actorId:"system",createdAt:at},true);
+  return created;
+}

@@ -81,6 +81,13 @@ export class MemoryRepository implements Repository {
   private readonly audit: AuditLog[] = [];
   private readonly sequences = new Map<string, bigint>();
 
+  walletCreditTotalForOrders(merchantId: string, orderIds: readonly string[]): bigint {
+    return orderIds.reduce((sum, orderId) => {
+      const credit = this.getOperations("wallet_credit", orderId);
+      return sum + (credit?.merchantId === merchantId ? credit.recognizedMinor : 0n);
+    }, 0n);
+  }
+
   allocatePublicOrderNo(): string {
     const current = this.sequences.get("public_order_no") ?? 0n;
     const next = current + 1n;
