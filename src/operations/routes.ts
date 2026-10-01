@@ -309,11 +309,13 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
           && ["paid", "partially_refunded"].includes(order.paymentStatus)},
     });
   });
-  app.get<{Querystring: {merchantId?: string; status?: string}}>("/workspace/api/invoices", async request => {
+  app.get<{Querystring: {merchantId?: string; status?: string; page?: string; limit?: string}}>("/workspace/api/invoices", async request => {
     const actor = account(request); requirePermission(actor, "invoices.read");
-    const query = z.object({merchantId: z.string().optional(), status: z.enum(["all", "awaiting_payment", "submitted", "processing", "needs_correction", "issued"]).default("all")}).parse(request.query);
-    const data = runtime.invoices.list(actor, query.merchantId).filter(item => query.status === "all" || item.status === query.status);
-    return wire({data});
+    const query = z.object({merchantId: z.string().optional(), status: z.enum(["all", "awaiting_payment", "submitted", "processing", "needs_correction", "issued"]).default("all"),
+      page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const {merchantId: requestedMerchantId, ...pageQuery} = query;
+    const merchantId = requestedMerchantId && requestedMerchantId !== "all" ? requestedMerchantId : undefined;
+    return wire(runtime.invoices.page(actor, {...pageQuery, ...(merchantId ? {merchantId} : {})}));
   });
   app.get<{Params: {id: string}}>("/workspace/api/invoices/:id", async request => wire({data: runtime.invoices.get(account(request), request.params.id)}));
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/invoices", async request => {
@@ -653,7 +655,14 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       ...(level.productSupplyPrices !== undefined ? {productSupplyPrices: level.productSupplyPrices} : {}),
     }))})});
   });
-  app.get("/workspace/api/tickets", async request => ({data: runtime.support.list(account(request))}));
+  app.get("/workspace/api/tickets", async request => {
+    const actor = account(request);
+    const query = z.object({merchantId: z.string().optional(), status: z.enum(["all", "open", "in_progress", "waiting_agent", "resolved", "closed"]).default("all"),
+      page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const {merchantId: requestedMerchantId, ...pageQuery} = query;
+    const merchantId = requestedMerchantId && requestedMerchantId !== "all" ? requestedMerchantId : undefined;
+    return wire(runtime.support.page(actor, {...pageQuery, ...(merchantId ? {merchantId} : {})}));
+  });
   app.get("/workspace/api/api-access/overview", async request => ({data: runtime.apiAccess.adminOverview(account(request))}));
   app.get<{Querystring: {merchantId?: string}}>("/workspace/api/api-access", async request => {
     const actor = account(request); return wire({data: runtime.apiAccess.summary(actor, scope(actor, request.query.merchantId))});
@@ -739,9 +748,11 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.get("/workspace/api/daily-settlements", async request => {
     const actor = account(request);
-    const query = z.object({merchantId: z.string().optional()}).parse(request.query);
-    const merchantId = query.merchantId && query.merchantId !== "all" ? scope(actor, query.merchantId) : undefined;
-    return wire({data: runtime.dailySettlements.list(actor, merchantId)});
+    const query = z.object({merchantId: z.string().optional(), status: z.enum(["all", "pending_payment", "paid", "reconciled", "no_payable", "disputed", "voided"]).default("all"),
+      page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20)}).parse(request.query);
+    const {merchantId: requestedMerchantId, ...pageQuery} = query;
+    const merchantId = requestedMerchantId && requestedMerchantId !== "all" ? requestedMerchantId : undefined;
+    return wire(runtime.dailySettlements.page(actor, {...pageQuery, ...(merchantId ? {merchantId} : {})}));
   });
   app.post<{Params: {id: string}}>("/workspace/api/daily-settlements/:id/pay", async request => {
     const input = z.object({method: z.enum(["alipay", "bank", "other"]), reference: z.string().trim().min(6).max(120),

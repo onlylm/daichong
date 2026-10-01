@@ -85,6 +85,18 @@ export class InvoiceService {
       .map(item => this.view(actor, item));
   }
 
+  page(actor: Actor, input: {merchantId?: string; status?: InvoiceApplication["status"] | "all"; page: number; limit: number}) {
+    requirePermission(actor, "invoices.read");
+    const scopedMerchant = isPlatform(actor) ? input.merchantId : actor.merchantId ?? undefined;
+    if (input.merchantId) requireTenantScope(actor, input.merchantId);
+    const result = queryRecords(this.repository, "invoice_application", {
+      ...(scopedMerchant ? {merchantId: scopedMerchant} : {}),
+      filters: input.status && input.status !== "all" ? [{field: "status", value: input.status}] : [],
+      page: input.page, limit: input.limit, orderBy: "updatedAt", direction: "desc",
+    });
+    return {...result, data: result.data.map(item => this.view(actor, item))};
+  }
+
   pendingPage(actor: Actor, limit = 8) {
     requirePermission(actor, "invoices.manage");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看待开票队列");

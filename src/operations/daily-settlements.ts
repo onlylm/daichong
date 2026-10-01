@@ -89,6 +89,18 @@ export class DailySettlementService {
     );
   }
 
+  page(actor: Actor, input: {merchantId?: string; status?: DailySettlementStatement["status"] | "all"; page: number; limit: number}) {
+    requirePermission(actor, "wallet.read");
+    const scoped = isPlatform(actor) ? input.merchantId : actor.merchantId ?? undefined;
+    if (input.merchantId) requireTenantScope(actor, input.merchantId);
+    const result = queryRecords(this.repository, "daily_settlement", {
+      ...(scoped ? {merchantId: scoped} : {}),
+      filters: input.status && input.status !== "all" ? [{field: "status", value: input.status}] : [],
+      page: input.page, limit: input.limit, orderBy: "updatedAt", direction: "desc",
+    });
+    return {...result, data: this.mapStatements(result.data)};
+  }
+
   pendingPage(actor: Actor, limit = 8) {
     requirePermission(actor, "wallet.read");
     if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "仅平台可查看全部待核算单");
