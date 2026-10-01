@@ -7,6 +7,7 @@ import {managedGptProduct} from "../modules/gpt-products.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, DailySettlementStatement, WalletEntry} from "./model.js";
 import {queryRecords} from "../infra/record-query.js";
+import {hasUnreconciledProviderRefundForReleasedEarnings} from "../domain/provider-refund-review.js";
 
 const DAY = 86_400_000;
 
@@ -136,6 +137,9 @@ export class DailySettlementService {
         ??current.orderIds.some(orderId=>this.repository.listRefundsForOrder(current.merchantId,orderId)
           .some(refund=>["requested","approved","processing"].includes(refund.status)));
       if(refundPending)throw new AppError(409,"settlement_refund_pending","代理收益关联订单仍有退款待确认，暂不能登记打款");
+      if(hasUnreconciledProviderRefundForReleasedEarnings(this.repository,current.merchantId,current.orderIds)){
+        throw new AppError(409,"settlement_refund_reconciliation_pending","核算单关联订单存在渠道退款差异，核实前不能登记打款");
+      }
       const currentStatementEarnings=this.repository.walletCreditTotalForOrders?.(current.merchantId,current.orderIds)
         ??this.repository.listOperations("wallet_credit",current.merchantId)
           .filter(credit=>current.orderIds.includes(credit.orderId)).reduce((sum,credit)=>sum+credit.recognizedMinor,0n);

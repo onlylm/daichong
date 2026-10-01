@@ -2,6 +2,7 @@ import {afterEach, beforeEach, describe, expect, it} from "vitest";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import type {Actor} from "../src/operations/model.js";
+import {publishTestRechargeProduct} from "./fixtures/recharge-catalog.js";
 
 const admin: Actor = {id: "wallet-admin", role: "platform_admin", merchantId: null};
 
@@ -12,6 +13,7 @@ describe("wallet transactional consistency", () => {
 
   beforeEach(() => {
     runtime = createRuntime(loadConfig({NODE_ENV: "test", STORAGE_DRIVER: "memory", LOG_LEVEL: "silent"}));
+    publishTestRechargeProduct(runtime);
     merchantId = runtime.repository.findMerchantByPartner("pt_demo_a")!.id;
     owner = {id: "wallet-owner", role: "agent_owner", merchantId};
     runtime.repository.saveOperations("wallet_entry", {id: "wallet-earnings-seed", merchantId, kind: "earning_release",
@@ -71,5 +73,52 @@ describe("wallet transactional consistency", () => {
       reason: "补登已核实的采购款", requestKey: "manual-adjustment-001", expectedBalance: "110.00"})).toThrow("调整编号已用于不同请求");
     expect(() => runtime.wallets.adjustBalance(admin, merchantId, {account: "procurement", direction: "debit", amount: "10.00",
       reason: "核减采购余额测试", requestKey: "manual-adjustment-002", expectedBalance: "0.00"})).toThrow("余额已变动");
+  });
+
+  it("freezes transfer and withdrawal while released earnings have a provider refund discrepancy", async () => {
+    const credential = runtime.repository.findCredential("pt_demo_a", "key_demo_a_01")!;
+    const order = await runtime.orders.create({merchantId: credential.merchant.id, partnerId: credential.merchant.partnerId,
+      appId: credential.app.appId, keyId: credential.key.keyId}, {merchantOrderNo: "wallet-provider-refund-difference",
+      productCode: "chatgpt_plus_cdk_1m", quantity: 1, saleAmount: "135.00", collectionMode: "platform_collect"});
+    const paidAt = new Date();
+    runtime.repository.updateOrder({...order, paymentStatus: "paid", paymentProviderRef: "ali-wallet-difference",
+      paymentReceivedMinor: order.saleAmountMinor, paymentFeeMinor: 0n, paidAt, updatedAt: paidAt});
+    const payment = runtime.repository.findPaymentAttemptByOrder(merchantId, order.id)!;
+    runtime.repository.updatePaymentAttempt({...payment, provider: "alipay_page", status: "paid", providerRef: "ali-wallet-difference",
+      receivedMinor: order.saleAmountMinor, feeMinor: 0n, paidAt, updatedAt: paidAt});
+    runtime.repository.insertFulfillment({id: "ful-wallet-provider-refund-difference", merchantId, orderId: order.id, attemptNo: 1,
+      status: "succeeded", failureCode: null, message: null, accountEmailMasked: null,
+      sessionPayload: {ciphertext: null, iv: null, authTag: null, keyVersion: "test", clearedAt: null}, mode: "cdk",
+      voucherId: null, upstreamProvider: "zovocard", upstreamOrderId: "up-wallet-difference",
+      upstreamClientRequestId: "req-wallet-difference", upstreamLookupToken: null, upstreamStatus: "completed",
+      upstreamStage: "completed", upstreamQuoteMinor: 1576, upstreamCurrency: "USD", nextCheckAt: paidAt,
+      createdAt: paidAt, finishedAt: paidAt});
+    const orderId = order.id;
+    runtime.repository.saveOperations("wallet_credit", {id: orderId, merchantId, orderId, recognizedMinor: 5_000n,
+      createdAt: new Date()}, true);
+    runtime.repository.saveOperations("refund_reconciliation", {id: "refund-reconciliation:" + orderId, merchantId, orderId,
+      provider: "alipay_page", status: "reviewing", reportedMinor: 2_000n, recordedMinor: 0n, differenceMinor: 2_000n,
+      providerReferenceFingerprint: "provider-refund-difference", legacyTicketIds: [], version: 1,
+      firstDetectedAt: new Date(), lastCheckedAt: new Date(), resolvedAt: null}, true);
+
+    expect(() => runtime.wallets.transfer(owner, merchantId, "10.00", "blocked-transfer"))
+      .toThrow("渠道退款差异尚未核实");
+    expect(() => runtime.wallets.requestWithdrawal(owner, merchantId, "10.00", "blocked-withdrawal",
+      {method: "alipay", account: "agent@example.com", name: "测试代理"})).toThrow("渠道退款差异尚未核实");
+    expect(runtime.repository.getOperations("wallet_entry", "transfer:" + merchantId + ":blocked-transfer")).toBeNull();
+    expect(runtime.repository.getOperations("wallet_withdrawal", merchantId + ":blocked-withdrawal")).toBeNull();
+
+    const review = runtime.repository.getOperations("refund_reconciliation", "refund-reconciliation:" + orderId)!;
+    runtime.repository.saveOperations("refund_reconciliation", {...review, status: "resolved", differenceMinor: 0n,
+      resolvedAt: new Date(), version: 2, lastCheckedAt: new Date()});
+    runtime.wallets.transfer(owner, merchantId, "10.00", "released-transfer");
+    const withdrawal = runtime.wallets.requestWithdrawal(owner, merchantId, "10.00", "released-withdrawal",
+      {method: "alipay", account: "agent@example.com", name: "测试代理"});
+    expect(runtime.wallets.reviewWithdrawal(admin, withdrawal.id, "approve", "").status).toBe("approved");
+    runtime.repository.saveOperations("refund_reconciliation", {...review, status: "reviewing", differenceMinor: 2_000n,
+      resolvedAt: null, version: 3, lastCheckedAt: new Date()});
+    expect(() => runtime.wallets.reviewWithdrawal(admin, withdrawal.id, "paid", "PAYMENT-REFUND-DIFFERENCE"))
+      .toThrow("渠道退款差异尚未核实");
+    expect(runtime.repository.getOperations("wallet_entry", "withdraw_paid:" + withdrawal.id)).toBeNull();
   });
 });

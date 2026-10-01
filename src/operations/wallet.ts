@@ -8,6 +8,7 @@ import {WebhookService} from "../modules/webhook-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, WalletDeposit, WalletEntry, WalletWithdrawal} from "./model.js";
 import {queryRecords} from '../infra/record-query.js';
+import {hasUnreconciledProviderRefundForReleasedEarnings} from "../domain/provider-refund-review.js";
 
 export class WalletService {
   constructor(private readonly repository: Repository, private readonly audit: AuditService, private readonly webhooks: WebhookService) {}
@@ -516,10 +517,11 @@ export class WalletService {
   private assertNoPendingRefund(merchantId: string): void {
     if(this.repository.hasPendingRefundForReleasedEarnings){
       if(this.repository.hasPendingRefundForReleasedEarnings(merchantId))throw new AppError(409,"earnings_refund_pending","已释放收益的订单有退款待确认，暂不能划转或提现");
-      return;
-    }
-    if (this.repository.listOperations("wallet_credit", merchantId).some(c => this.repository.listRefundsForOrder(merchantId, c.orderId)
+    } else if (this.repository.listOperations("wallet_credit", merchantId).some(c => this.repository.listRefundsForOrder(merchantId, c.orderId)
       .some(r => ["requested", "approved", "processing"].includes(r.status)))) throw new AppError(409, "earnings_refund_pending", "已释放收益的订单有退款待确认，暂不能划转或提现");
+    if (hasUnreconciledProviderRefundForReleasedEarnings(this.repository, merchantId)) {
+      throw new AppError(409, "earnings_refund_reconciliation_pending", "渠道退款差异尚未核实，相关收益暂不能划转或提现");
+    }
   }
   private entry(merchantId: string, id: string, kind: WalletEntry["kind"], procurementDelta: bigint, earningsDelta: bigint, frozenDelta: bigint, reference: string, actorId: string) {
     this.repository.saveOperations("wallet_entry", {id, merchantId, kind, procurementDelta, earningsDelta, frozenDelta, reference, actorId, createdAt: new Date()}, true);

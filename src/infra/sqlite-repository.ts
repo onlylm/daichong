@@ -481,6 +481,26 @@ export class SqliteRepository implements Repository {
     return false;
   }
 
+  hasUnreconciledProviderRefundForReleasedEarnings(merchantId:string,orderIds?:readonly string[]) {
+    const unique=orderIds?[...new Set(orderIds)].filter(Boolean):null;
+    if(unique&&!unique.length)return false;
+    const reviewing=`json_extract(rr.payload,'$.status')='reviewing'
+      AND CAST(COALESCE(json_extract(rr.payload,'$.differenceMinor.__bigint'),'0') AS INTEGER)>0
+      AND EXISTS(SELECT 1 FROM sandbox_records c WHERE c.kind='ops_wallet_credit' AND c.merchant_id=rr.merchant_id
+        AND json_extract(c.payload,'$.orderId')=json_extract(rr.payload,'$.orderId')
+        AND CAST(COALESCE(json_extract(c.payload,'$.recognizedMinor.__bigint'),'0') AS INTEGER)>0)`;
+    if(!unique)return !!this.db.prepare(`SELECT 1 FROM sandbox_records rr WHERE rr.kind='ops_refund_reconciliation'
+      AND rr.merchant_id=? AND ${reviewing} LIMIT 1`).get(merchantId);
+    for(let offset=0;offset<unique.length;offset+=400){
+      const ids=unique.slice(offset,offset+400),placeholders=ids.map(()=>'?').join(',');
+      const pending=this.db.prepare(`SELECT 1 FROM sandbox_records rr WHERE rr.kind='ops_refund_reconciliation'
+        AND rr.merchant_id=? AND json_extract(rr.payload,'$.orderId') IN (${placeholders})
+        AND ${reviewing} LIMIT 1`).get(merchantId,...ids);
+      if(pending)return true;
+    }
+    return false;
+  }
+
   creditedDepositTotal(merchantId:string) {
     const row=this.db.prepare(`SELECT CAST(COALESCE(SUM(CAST(json_extract(payload,'$.amountMinor.__bigint') AS INTEGER)),0) AS TEXT) AS total
       FROM sandbox_records WHERE kind='ops_wallet_deposit' AND merchant_id=? AND json_extract(payload,'$.status')='credited'`).get(merchantId)!;

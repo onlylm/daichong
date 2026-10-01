@@ -108,6 +108,20 @@ describe("2026-10-01 agent policy", () => {
     expect(runtime.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
   });
 
+  it("blocks payout while a statement order has an unresolved provider refund difference", async () => {
+    const order=await seedSettlementEarning(runtime,"provider-refund-difference");
+    runtime.dailySettlements.generate("2026-09-30");
+    const statement=runtime.dailySettlements.list(admin).find(item=>item.merchantId===order.merchantId)!;
+    runtime.repository.saveOperations("refund_reconciliation",{id:"refund-reconciliation:"+order.id,merchantId:order.merchantId,
+      orderId:order.id,provider:"alipay_page",status:"reviewing",reportedMinor:1_000n,recordedMinor:0n,differenceMinor:1_000n,
+      providerReferenceFingerprint:"settlement-provider-refund-difference",legacyTicketIds:[],version:1,
+      firstDetectedAt:new Date(),lastCheckedAt:new Date(),resolvedAt:null},true);
+    expect(()=>runtime.dailySettlements.confirmPaid(admin,statement.id,
+      {method:"alipay",reference:"202610010151",evidence:"支付宝付款凭证已归档"})).toThrow("渠道退款差异");
+    expect(runtime.repository.getOperations("daily_settlement",statement.id)?.status).toBe("pending_payment");
+    expect(runtime.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
+  });
+
   it("does not let unrelated new earnings hide a stale settlement after commission reversal", async () => {
     const order=await seedSettlementEarning(runtime,"stale-commission");
     runtime.dailySettlements.generate("2026-09-30");
@@ -160,6 +174,15 @@ describe("2026-10-01 agent policy", () => {
       expect(()=>sqlite.dailySettlements.confirmPaid(admin,String(statement.id),
         {method:"alipay",reference:"202610010201",evidence:"支付宝付款凭证已归档"})).toThrow("退款待确认");
       sqlite.repository.updateRefund({...pendingRefund,status:"cancelled"});
+      const difference={id:"refund-reconciliation:"+created.id,merchantId:created.merchantId,orderId:created.id,
+        provider:"alipay_page" as const,status:"reviewing" as const,reportedMinor:100n,recordedMinor:0n,differenceMinor:100n,
+        providerReferenceFingerprint:"sqlite-provider-refund-difference",legacyTicketIds:[],version:1,
+        firstDetectedAt:new Date(),lastCheckedAt:new Date(),resolvedAt:null};
+      sqlite.repository.saveOperations("refund_reconciliation",difference,true);
+      expect(()=>sqlite.dailySettlements.confirmPaid(admin,String(statement.id),
+        {method:"alipay",reference:"202610010201",evidence:"支付宝付款凭证已归档"})).toThrow("渠道退款差异");
+      sqlite.repository.saveOperations("refund_reconciliation",{...difference,status:"resolved",differenceMinor:0n,
+        version:2,resolvedAt:new Date(),lastCheckedAt:new Date()});
       expect(sqlite.dailySettlements.confirmPaid(admin,String(statement.id),
         {method:"alipay",reference:"202610010201",evidence:"支付宝付款凭证已归档"})).toMatchObject({status:"paid"});
       expect(fullOperations).not.toHaveBeenCalled();expect(orders).not.toHaveBeenCalled();expect(payments).not.toHaveBeenCalled();expect(fulfillments).not.toHaveBeenCalled();
@@ -177,6 +200,10 @@ describe("2026-10-01 agent policy", () => {
       sqlite.repository.insertRefund({id:"ref_unrelated_settlement",merchantId:unrelated.merchantId,orderId:unrelated.id,
         merchantRefundNo:"unrelated-settlement-refund",type:"partial",amountMinor:100n,status:"requested",reason:"无关订单退款待确认",
         failureCode:null,createdAt:new Date(),refundedAt:null});
+      sqlite.repository.saveOperations("refund_reconciliation",{id:"refund-reconciliation:"+unrelated.id,merchantId:unrelated.merchantId,
+        orderId:unrelated.id,provider:"alipay_page",status:"reviewing",reportedMinor:100n,recordedMinor:0n,differenceMinor:100n,
+        providerReferenceFingerprint:"unrelated-provider-refund-difference",legacyTicketIds:[],version:1,
+        firstDetectedAt:new Date(),lastCheckedAt:new Date(),resolvedAt:null},true);
       expect(sqlite.dailySettlements.confirmPaid(admin,String(statement.id),
         {method:"bank",reference:"202610010301",evidence:"银行付款凭证已归档"})).toMatchObject({status:"paid"});
     }finally{sqlite.close();}
