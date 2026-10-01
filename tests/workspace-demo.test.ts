@@ -19,7 +19,7 @@ describe("workspace and standalone redemption delivery", () => {
       expect(page.statusCode).toBe(200); expect(page.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
       expect(page.body).toContain("login-form"); expect(page.body).not.toContain("/workspace/assets/app.js");
       const appPage = await app.inject({url: "/workspace/app"});
-      expect(appPage.statusCode).toBe(200); expect(appPage.body).toContain("/workspace/assets/app.js");
+      expect(appPage.statusCode).toBe(200); expect(appPage.body).toMatch(/\/workspace\/assets\/app\.[a-f0-9]{16}\.js/);
       expect(page.body).not.toContain("passwordHash");
       const script = await app.inject({url: "/workspace/assets/app.js"});
       expect(script.statusCode).toBe(200);

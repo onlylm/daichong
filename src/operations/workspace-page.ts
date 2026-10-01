@@ -5,21 +5,29 @@ import {financeWorkspaceJs} from "./finance-ui.js";
 import {brandFaviconLinks, registerBrandAssets} from "./brand-assets.js";
 import {registerDeveloperPortal} from "./developer-portal.js";
 import {registerWorkspaceGate} from "./workspace-gate.js";
-import {staticAsset} from "../infra/static-asset.js";
+import {contentAddressedAssetPath, staticAsset} from "../infra/static-asset.js";
 
-const WORKSPACE_ASSET_VERSION = "20261001-cdk-template-v5";
+const WORKSPACE_JS_TOKEN = "__WORKSPACE_JS_ASSET__";
+const WORKSPACE_CSS_TOKEN = "__WORKSPACE_CSS_ASSET__";
 
 export function registerWorkspacePage(app: FastifyInstance): void {
   registerBrandAssets(app);
   registerDeveloperPortal(app);
   registerWorkspaceGate(app);
+  const jsAssetPath = contentAddressedAssetPath("/workspace/assets/app", "js", workspaceJs);
+  const cssAssetPath = contentAddressedAssetPath("/workspace/assets/app", "css", workspaceCss);
+  const appHtml = workspaceAppHtml.replace(WORKSPACE_JS_TOKEN, jsAssetPath).replace(WORKSPACE_CSS_TOKEN, cssAssetPath);
   const appCsp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
   app.get("/workspace/app", async (_request, reply) => reply.type("text/html; charset=utf-8")
     .header("cache-control", "no-store").header("referrer-policy", "no-referrer")
     .header("content-security-policy", appCsp)
-    .header("x-content-type-options", "nosniff").send(workspaceAppHtml));
-  app.get("/workspace/assets/app.js", staticAsset(workspaceJs,"application/javascript; charset=utf-8"));
-  app.get("/workspace/assets/app.css", staticAsset(workspaceCss,"text/css; charset=utf-8"));
+    .header("x-content-type-options", "nosniff").send(appHtml));
+  app.get(jsAssetPath, staticAsset(workspaceJs,"application/javascript; charset=utf-8"));
+  app.get(cssAssetPath, staticAsset(workspaceCss,"text/css; charset=utf-8"));
+  // Compatibility routes are deliberately revalidated. New HTML never references them,
+  // so a browser that cached an older immutable bundle moves to the new hash URL.
+  app.get("/workspace/assets/app.js", staticAsset(workspaceJs,"application/javascript; charset=utf-8","public, max-age=0, must-revalidate"));
+  app.get("/workspace/assets/app.css", staticAsset(workspaceCss,"text/css; charset=utf-8","public, max-age=0, must-revalidate"));
   app.get("/developers/redemption.md", staticAsset(readFileSync(new URL("../../docs/redemption-guide.md", import.meta.url), "utf8"),"text/plain; charset=utf-8","public, max-age=300"));
   app.get("/developers/integration.md", staticAsset(readFileSync(new URL("../../docs/partner-integration.md", import.meta.url), "utf8"),"text/plain; charset=utf-8","public, max-age=300"));
   app.get("/developers/partner-guide.md", staticAsset(readFileSync(new URL("../../docs/23-代理商自有品牌商城与自动直充接入指南.md", import.meta.url), "utf8"),"text/plain; charset=utf-8","public, max-age=300"));
@@ -28,7 +36,7 @@ export function registerWorkspacePage(app: FastifyInstance): void {
 }
 
 export const workspaceAppHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quefa · 工作台</title>${brandFaviconLinks}<link rel="stylesheet" href="/workspace/assets/app.css?v=${WORKSPACE_ASSET_VERSION}"><script src="/workspace/assets/app.js?v=${WORKSPACE_ASSET_VERSION}" defer></script></head>
+<title>Quefa · 工作台</title>${brandFaviconLinks}<link rel="stylesheet" href="${WORKSPACE_CSS_TOKEN}"><script src="${WORKSPACE_JS_TOKEN}" defer></script></head>
 <body><script>setTimeout(function(){if(document.querySelector(".boot-shell")){var c=document.querySelector("#content");if(c){c.className="";c.innerHTML='<p class="error">页面加载超时，请 <a href="'+location.href+'">刷新</a> 重试。</p>';c.removeAttribute("aria-busy");}}},22000);</script><div id="app"><div class="shell boot-shell"><aside class="rail" aria-hidden="true"><div class="rail-head"><div class="brand brand-inline"><span class="brand-mark-wrap" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="quefa-q-boot" x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse"><stop stop-color="#10243d"/><stop offset=".52" stop-color="#173f71"/><stop offset="1" stop-color="#246bfd"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#quefa-q-boot)"/><circle cx="24" cy="8" r="2" fill="#75d6f3"/><path d="M10.5 16a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0" stroke="#fff" stroke-width="2.25" stroke-linecap="round"/><path d="M19.5 19.5 23.5 23.5" stroke="#75d6f3" stroke-width="2.25" stroke-linecap="round"/></svg></span><span class="brand-text">Quefa</span></div></div><nav class="boot-nav" aria-hidden="true"><div class="nav-skeleton"></div><div class="nav-skeleton"></div><div class="nav-skeleton"></div><div class="nav-skeleton"></div></nav></aside><main class="main"><header class="topbar topbar-compact" aria-hidden="true"><div class="topbar-context"><small class="topbar-kicker">工作台</small><strong class="topbar-page">概览</strong></div></header><div id="content" class="initial-loading" aria-busy="true" aria-label="页面内容"><div class="skeleton-title"></div><div class="skeleton-subtitle"></div><div class="skeleton-grid"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div></div></main></div></div><div id="notice" role="status" aria-live="polite"></div></body></html>`;
 
 export const workspaceCss = `
