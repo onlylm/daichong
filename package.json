@@ -17,13 +17,14 @@
     "start:worker": "node --env-file-if-exists=.env dist/worker.js",
     "demo:partner": "node --env-file-if-exists=.env examples/partner-demo/server.mjs",
     "sandbox:provision": "node --env-file-if-exists=.env dist/cli/provision-sandbox-agent.js",
+    "check:repo": "node scripts/check-repository-hygiene.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "bench:pagination": "npm run build && node scripts/benchmark-history-pagination.mjs",
     "snapshot:rehearse": "npm run build && node scripts/verify-production-snapshot.mjs",
     "backup:verify": "node --env-file-if-exists=.env dist/cli/verify-sqlite-backup.js",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && node scripts/check-workspace-js.mjs"
+    "check": "npm run check:repo && npm run typecheck && npm test && npm run build && node scripts/check-workspace-js.mjs"
   },
   "dependencies": {
     "alipay-sdk": "4.14.0",
