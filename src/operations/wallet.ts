@@ -404,11 +404,16 @@ export class WalletService {
   }
   reviewWithdrawal(actor: Actor, id: string, action: "approve" | "reject" | "paid", reference: string): WalletWithdrawal {
     requirePermission(actor, "wallet.review");
-    if (action === "paid") reference = reference.trim().toLowerCase();
+    reference = action === "paid" ? reference.trim().toLowerCase() : reference.trim();
+    if (action === "reject" && (reference.length < 4 || reference.length > 120)) {
+      throw new AppError(422, "withdrawal_reject_reason_required", "请填写 4–120 字提现驳回原因");
+    }
     return this.repository.transaction(() => {
       const current = this.repository.getOperations("wallet_withdrawal", id);
       if (!current) throw new AppError(404, "withdrawal_not_found", "提现申请不存在");
       this.reconcileEarnings(current.merchantId);
+      if (current.status === "approved" && action === "approve") return current;
+      if (current.status === "rejected" && action === "reject" && current.reason === reference) return current;
       if (current.status === "paid" && action === "paid" && current.payoutReference === reference) return current;
       if (!["requested", "approved"].includes(current.status)) throw new AppError(409, "withdrawal_final", "提现申请已终结");
       if (action !== "reject") this.assertNoPendingRefund(current.merchantId);

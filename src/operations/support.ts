@@ -95,10 +95,13 @@ export class SupportService {
       const ticket = queryRecords(this.repository,"ticket",{merchantId:withdrawal.merchantId,
         filters:[{field:"withdrawalApplication.withdrawalId",value:withdrawal.id}],limit:1,count:false}).data[0];
       if (!ticket?.withdrawalApplication) return;
-      const now = new Date();
       const status = withdrawal.status === "paid" || withdrawal.status === "rejected" ? "resolved" as const
         : withdrawal.status === "approved" ? "in_progress" as const
         : ticket.status;
+      const storedReason=ticket.withdrawalApplication.reviewReason??null;
+      const targetReason=withdrawal.status === "rejected" ? reviewReason : storedReason;
+      if(ticket.status===status&&ticket.withdrawalApplication.status===withdrawal.status&&storedReason===targetReason)return;
+      const now = new Date();
       const updated: Ticket = {
         ...ticket,
         status,
@@ -108,7 +111,7 @@ export class SupportService {
         withdrawalApplication: {
           ...ticket.withdrawalApplication,
           status: withdrawal.status,
-          reviewReason: reviewReason ?? ticket.withdrawalApplication.reviewReason,
+          reviewReason: targetReason,
         },
       };
       this.repository.saveOperations("ticket", updated);
