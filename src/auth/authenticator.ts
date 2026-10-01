@@ -81,7 +81,10 @@ export class ApiAuthenticator {
     if (credential.key.status === "revoked" || credential.key.notBefore > this.now() || (credential.key.expiresAt && credential.key.expiresAt <= this.now())) {
       throw new AppError(401, "invalid_signature", "签名无效");
     }
-    const ipAllowlistEnabled = credential.app.ipAllowlistEnabled ?? credential.app.allowedIps.length > 0;
+    // Rollout is compatibility-open: historical applications may already carry
+    // staged IP rules but do not have the explicit enforcement flag yet. Only an
+    // administrator/agent opt-in may turn those rules into an access boundary.
+    const ipAllowlistEnabled = credential.app.ipAllowlistEnabled === true;
     if (ipAllowlistEnabled && !ipAllowed(request.ip, credential.app.allowedIps)) {
       throw new AppError(403, "ip_not_allowed", "来源 IP 不在白名单");
     }

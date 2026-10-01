@@ -94,6 +94,16 @@ describe("default-open API and dual-mode spending", () => {
     expect((await request("GET", "/v1/products", undefined, "open-source", config.demoClientSecret,
       config.demoKeyId, "198.51.100.90")).statusCode).toBe(200);
 
+    // A pre-rollout record may already contain staged rules but no explicit
+    // enforcement flag. It must remain compatibility-open until the owner opts in.
+    const stored = r.repository.listApps(owner.merchantId!).find(item => item.id === demo.id)!;
+    const {ipAllowlistEnabled: _legacyFlag, ...legacyApp} = stored;
+    r.repository.saveApp({...legacyApp, allowedIps: ["198.51.100.10"]});
+    expect(r.apiAccess.summary(owner, owner.merchantId!).apps.find(item => item.id === demo.id))
+      .toMatchObject({ipAllowlistEnabled: false, allowedIps: ["198.51.100.10"]});
+    expect((await request("GET", "/v1/products", undefined, "legacy-open-source", config.demoClientSecret,
+      config.demoKeyId, "198.51.100.90")).statusCode).toBe(200);
+
     const protectedApp = r.apiAccess.configureIpAllowlist(owner, owner.merchantId!, demo.id, true,
       ["198.51.100.10", "2001:db8::/48", "198.51.100.10"], demo.configVersion);
     expect(protectedApp).toMatchObject({ipAllowlistEnabled: true,

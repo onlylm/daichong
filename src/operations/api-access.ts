@@ -49,7 +49,7 @@ export class ApiAccessService {
       })),
       apps: this.repository.listApps(merchantId).filter(a => a.appId !== "quefa_web_portal").map(a => ({
         id: a.id, appId: a.appId, name: a.name, status: a.status, allowedIps: a.allowedIps,
-        ipAllowlistEnabled: a.ipAllowlistEnabled ?? a.allowedIps.length > 0, configVersion: a.configVersion ?? 1,
+        ipAllowlistEnabled: a.ipAllowlistEnabled === true, configVersion: a.configVersion ?? 1,
       })),
       webhooks: this.repository.listWebhookEndpoints(merchantId).map(e => ({id: e.id, url: e.url, status: e.status}))};
   }
