@@ -217,6 +217,7 @@ export function listWorkspaceOrders(
       if (status === "running") return task?.status === "queued" || task?.status === "running";
       if (status === "succeeded") return task?.status === "succeeded";
       if (status === "failed") return task?.status === "failed" || voucherFor(order)?.status === "failed";
+      if (status === "refunded") return order.paymentStatus === "refunded";
       return true;
     })
     .filter(order => {

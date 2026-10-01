@@ -222,6 +222,7 @@ export class SqliteRepository implements Repository {
     if(q.status==='running')conditions.push(`${status} IN ('queued','running')`);
     if(q.status==='succeeded')conditions.push(`${status}='succeeded'`);
     if(q.status==='failed')conditions.push(`(${status}='failed' OR ${j('v','status')}='failed')`);
+    if(q.status==='refunded')conditions.push(`${pay}='refunded'`);
     if(q.search?.trim()){
       const needle=q.search.trim().toLowerCase(),fields=['o.id',j('o','merchantOrderNo'),j('o','voucherCode'),j('v','publicCode'),j('v','upstreamCdkId'),j('f','upstreamOrderId'),j('f','accountEmailMasked')];
       const search=fields.map(x=>`instr(lower(COALESCE(${x},'')),?)>0`);args.push(...fields.map(()=>needle));

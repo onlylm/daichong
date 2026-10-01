@@ -98,4 +98,15 @@ describe("listWorkspaceOrders", () => {
       {search: "other@example.com", page: 1, limit: 10});
     expect(miss.data).toHaveLength(0);
   });
+
+  it("filters fully refunded orders into their own workspace queue", () => {
+    const repository = new MemoryRepository();
+    repository.saveMerchant({id: "m1", partnerId: "p1", name: "代理 A", status: "active"});
+    repository.insertOrder({...sampleOrder("paid"), id: "ord_paid", merchantId: "m1", merchantOrderNo: "PAID"});
+    repository.insertOrder({...sampleOrder("refunded"), id: "ord_refunded", merchantId: "m1", merchantOrderNo: "REFUNDED"});
+    const actor = {id: "admin", merchantId: null, role: "platform_admin" as const};
+    const result = listWorkspaceOrders(repository, actor, ["m1"], new Map([["m1", "代理 A"]]), () => [],
+      {status: "refunded", page: 1, limit: 10});
+    expect(result.data.map(item => item.id)).toEqual(["ord_refunded"]);
+  });
 });
