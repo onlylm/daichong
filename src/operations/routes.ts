@@ -12,7 +12,7 @@ import {registerPaymentSettingsRoutes} from "./payment-routes.js";
 import {registerSupplierWorkspaceRoutes} from "./supplier-routes.js";
 import {managedGptProduct, managedGptProducts} from "../modules/gpt-products.js";
 import {partnerFulfillmentDetails, partnerFulfillmentMessage} from "../modules/fulfillment-public.js";
-import {listWorkspaceOrders, platformOrderTrace, workspaceOrderDetail, workspacePayUrl} from "./order-view.js";
+import {listWorkspaceOrders, platformOrderTrace, workspaceOrderAudit, workspaceOrderDetail, workspacePayUrl} from "./order-view.js";
 import {requireWorkspaceRechargeOrder, resolveAutoRechargeUpstreamCode, workspaceSubmitRecharge} from "./workspace-recharge.js";
 
 import {assertAdminWorkspaceHost, assertPartnerWorkspaceHost, assertWorkspaceRoleHost, resolveWorkspaceHost} from "./workspace-host.js";
@@ -313,6 +313,16 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         canApplyInvoice: !isPlatform(actor) && (permissions.has("*") || permissions.has("invoices.write"))
           && ["paid", "partially_refunded"].includes(order.paymentStatus)},
     });
+  });
+  app.get<{Params: {id: string}; Querystring: {page?: string; limit?: string}}>("/workspace/api/orders/:id/audit", async request => {
+    const actor = account(request);
+    requirePermission(actor, "orders.read");
+    if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看平台操作审计");
+    const query = z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(50).default(20),
+    }).parse(request.query);
+    return wire(workspaceOrderAudit(runtime.repository, actor, request.params.id, query.page, query.limit));
   });
   app.get<{Querystring: {merchantId?: string; status?: string; page?: string; limit?: string}}>("/workspace/api/invoices", async request => {
     const actor = account(request); requirePermission(actor, "invoices.read");

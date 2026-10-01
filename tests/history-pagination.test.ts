@@ -80,6 +80,39 @@ describe("workspace history pagination", () => {
     expect(query.mock.calls.every(call => (call[1] as {limit: number}).limit === 3)).toBe(true);
   });
 
+  it("keeps order polling lightweight and loads the selected order audit only on demand", async () => {
+    publishTestRechargeProduct(runtime);
+    const credential = runtime.repository.findCredential(config.demoPartnerId, config.demoKeyId)!;
+    const tenant = {merchantId: credential.merchant.id, appId: credential.app.id, keyId: credential.key.keyId,
+      partnerId: credential.merchant.partnerId};
+    const order = await runtime.orders.create(tenant, {merchantOrderNo: "AUDIT-LAZY-ORDER", productCode: "chatgpt_plus_cdk_1m",
+      quantity: 1, saleAmount: "135.00"});
+    const base = Date.parse("2026-10-01T10:00:00.000Z");
+    for (let index = 0; index < 45; index++) runtime.repository.appendAudit({id: `order_audit_${String(index).padStart(2, "0")}`,
+      merchantId: order.merchantId, actorType: "platform_user", actorId: "history-admin", action: `order.audit.${index}`,
+      targetType: "order", targetId: order.id, requestId: `order-audit-request-${index}`, createdAt: new Date(base + index * 1_000)});
+    for (let index = 0; index < 8; index++) runtime.repository.appendAudit({id: `unrelated_audit_${index}`,
+      merchantId: order.merchantId, actorType: "platform_user", actorId: "history-admin", action: "order.audit.unrelated",
+      targetType: "order", targetId: `other-order-${index}`, requestId: `unrelated-request-${index}`, createdAt: new Date(base)});
+
+    const login = await loginPlatform(app, "history-admin", "test-history-password", "https://admin.tibo.ink");
+    const headers = {origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!};
+    const query = vi.spyOn(runtime.repository as unknown as {queryRecords: (...args: unknown[]) => unknown}, "queryRecords");
+    const fullAudit = vi.spyOn(runtime.repository, "listAudit");
+    const detail = await app.inject({method: "GET", url: `/workspace/api/orders/${order.id}`, headers});
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().data).not.toHaveProperty("audit");
+    expect(fullAudit).not.toHaveBeenCalled();
+
+    const audit = await app.inject({method: "GET", url: `/workspace/api/orders/${order.id}/audit?page=2&limit=20`, headers});
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json()).toMatchObject({meta: {total: 45, page: 2, limit: 20, pages: 3}});
+    expect(audit.json().data).toHaveLength(20);
+    expect(audit.json().data.every((item: {targetId: string}) => item.targetId === order.id)).toBe(true);
+    expect(query).toHaveBeenCalledWith("audit", expect.objectContaining({merchantId: order.merchantId, page: 2, limit: 20}));
+    expect(fullAudit).not.toHaveBeenCalled();
+  });
+
   it("loads only the selected ticket conversation and preserves internal-note visibility", () => {
     const merchant=runtime.repository.listMerchants()[0]!,base=Date.parse("2026-10-01T09:00:00.000Z");
     for(const [offset,ticketId] of [[0,"tk_detail_target"],[1,"tk_detail_other"]] as const){

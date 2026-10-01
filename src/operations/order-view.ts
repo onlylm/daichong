@@ -9,6 +9,7 @@ import {canResubmitFulfillment, isConfirmedUnsuccessfulFulfillment} from "../dom
 import {orderSyncMark, type OrderSyncMark} from "../domain/order-sync-mark.js";
 import type {Actor, OrderVisibilityField} from "./model.js";
 import {isPlatform} from "./accounts.js";
+import {queryRecords, type RecordPage} from "../infra/record-query.js";
 
 export function workspacePayUrl(order: Order): string | null {
   return order.paymentStatus === "pending" ? order.qrPayload : null;
@@ -310,20 +311,6 @@ export function workspaceOrderDetail(
     .filter(item => !["rejected", "cancelled"].includes(item.status))
     .reduce((sum, item) => sum + item.amountMinor, 0n);
   const refundableMinor = order.saleAmountMinor > reservedMinor ? order.saleAmountMinor - reservedMinor : 0n;
-  const audit = isPlatform(actor)
-    ? repository.listAudit(order.merchantId)
-      .filter(item => item.targetId === order.id || refundRecords.some(r => r.id === item.targetId)
-        || fulfillments.some(f => f.id === item.targetId))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 40)
-      .map(item => ({
-        action: item.action,
-        actorId: item.actorId,
-        targetType: item.targetType,
-        targetId: item.targetId,
-        createdAt: item.createdAt.toISOString(),
-      }))
-    : [];
   const canRefundCustomer = isPlatform(actor)
     && (order.collectionMode ?? "platform_collect") === "platform_collect"
     && ["paid", "partially_refunded"].includes(order.paymentStatus)
@@ -387,6 +374,48 @@ export function workspaceOrderDetail(
       ...(isPlatform(actor) ? platformFulfillmentDetails(item) : partnerFulfillmentDetails(item, visibility)),
     })),
     refunds,
-    audit,
+  };
+}
+
+export interface WorkspaceOrderAuditRow {
+  action: string;
+  actorId: string;
+  targetType: string;
+  targetId: string;
+  createdAt: string;
+}
+
+export function workspaceOrderAudit(
+  repository: Repository,
+  actor: Actor,
+  orderId: string,
+  page: number,
+  limit: number,
+): RecordPage<WorkspaceOrderAuditRow> {
+  if (!isPlatform(actor)) throw new AppError(403, "permission_denied", "无权查看平台操作审计");
+  const order = repository.findOrderInternal(orderId);
+  if (!order) throw new AppError(404, "order_not_found", "订单不存在");
+  const targetIds = [
+    order.id,
+    ...repository.listRefundsForOrder(order.merchantId, order.id).map(item => item.id),
+    ...repository.listFulfillments(order.merchantId, order.id).map(item => item.id),
+  ];
+  const result = queryRecords(repository, "audit", {
+    merchantId: order.merchantId,
+    filters: [{field: "targetId", op: "in", value: targetIds}],
+    page,
+    limit,
+    orderBy: "createdAt",
+    direction: "desc",
+  });
+  return {
+    data: result.data.map(item => ({
+      action: item.action,
+      actorId: item.actorId,
+      targetType: item.targetType,
+      targetId: item.targetId,
+      createdAt: item.createdAt.toISOString(),
+    })),
+    meta: result.meta,
   };
 }
