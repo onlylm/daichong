@@ -56,7 +56,7 @@ export interface Repository {
   financeWindow?(from:string,to:string):{daily:Array<Record<string,string|number>>;todayOrders:Order[]};
   outboxCursor?():number;
   outboxSince?(cursor:number,merchantId:string|null,limit:number):Array<{cursor:number;event:OutboxEvent}>;
-  queryWorkspaceOrders?(merchantIds:string[],query:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string}):{
+  queryWorkspaceOrders?(merchantIds:string[],query:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string;includeSupplierTrace?:boolean}):{
     orders:Order[];fulfillments:Fulfillment[];vouchers:CdkVoucher[];meta:{total:number;page:number;limit:number;pages:number;paidCount:number;paidSaleMinor:bigint;todayPaidCount:number;todayPaidSaleMinor:bigint}};
   queryCostAccountingOrders?(query:{status:"all"|"pending_review"|"confirmed"|"disputed";search?:string;page:number;limit:number}):{
     orders:Order[];merchantNames:Array<{merchantId:string;name:string}>;meta:{total:number;page:number;limit:number;pages:number}};

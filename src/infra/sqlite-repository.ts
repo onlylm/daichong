@@ -266,7 +266,7 @@ export class SqliteRepository implements Repository {
     return rows.map(r=>({cursor:Number(r.rowid),event:decode<OutboxEvent>(String(r.payload))}));
   }
 
-  queryWorkspaceOrders(merchantIds:string[],q:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string}) {
+  queryWorkspaceOrders(merchantIds:string[],q:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string;includeSupplierTrace?:boolean}) {
     const empty={orders:[] as Order[],fulfillments:[] as Fulfillment[],vouchers:[] as CdkVoucher[],meta:{total:0,page:1,limit:q.limit,pages:1,paidCount:0,paidSaleMinor:0n,todayPaidCount:0,todayPaidSaleMinor:0n}};
     if(!merchantIds.length)return empty;
     const args:Array<string|number>=[...merchantIds],conditions=[`o.kind='order'`,`o.merchant_id IN (${merchantIds.map(()=>'?').join(',')})`];
@@ -289,7 +289,8 @@ export class SqliteRepository implements Repository {
     if(q.status==='failed')conditions.push(`(${status}='failed' OR ${j('v','status')}='failed')`);
     if(q.status==='refunded')conditions.push(`${pay}='refunded'`);
     if(q.search?.trim()){
-      const needle=q.search.trim().toLowerCase(),fields=['o.id',j('o','merchantOrderNo'),j('o','voucherCode'),j('v','publicCode'),j('v','upstreamCdkId'),j('f','upstreamOrderId'),j('f','accountEmailMasked')];
+      const needle=q.search.trim().toLowerCase(),fields=['o.id',j('o','merchantOrderNo'),j('o','voucherCode'),j('v','publicCode'),j('f','accountEmailMasked')];
+      if(q.includeSupplierTrace)fields.push(j('v','upstreamCdkId'),j('f','upstreamOrderId'));
       const search=fields.map(x=>`instr(lower(COALESCE(${x},'')),?)>0`);args.push(...fields.map(()=>needle));
       const at=needle.lastIndexOf('@');if(at>0&&at===needle.indexOf('@')){search.push(`lower(${j('f','accountEmailMasked')})=?`);const local=needle.slice(0,at);args.push(local[0]+'***'+(local.length>1?local.at(-1):'')+needle.slice(at));}
       conditions.push('('+search.join(' OR ')+')');

@@ -139,6 +139,7 @@ function matchesOrderSearch(
   voucher: CdkVoucher | null,
   fulfillment: Fulfillment | undefined,
   needle: string,
+  includeSupplierTrace: boolean,
 ): boolean {
   const maskedEmail = fulfillment?.accountEmailMasked?.toLowerCase() ?? "";
   const haystack = [
@@ -146,8 +147,7 @@ function matchesOrderSearch(
     order.merchantOrderNo,
     order.voucherCode ?? "",
     voucher?.publicCode ?? "",
-    voucher?.upstreamCdkId ?? "",
-    fulfillment?.upstreamOrderId ?? "",
+    ...(includeSupplierTrace ? [voucher?.upstreamCdkId ?? "", fulfillment?.upstreamOrderId ?? ""] : []),
     maskedEmail,
   ].join("\n").toLowerCase();
   if (haystack.includes(needle)) return true;
@@ -190,7 +190,7 @@ export function listWorkspaceOrders(
   const search = query.search?.trim().toLowerCase() ?? "";
   if (repository.queryWorkspaceOrders) {
     const product=managedGptProducts.find(p=>p.productCode===query.productCode);
-    const result=repository.queryWorkspaceOrders(merchantIds,{...query,search,today:shanghaiDayKey(new Date()),
+    const result=repository.queryWorkspaceOrders(merchantIds,{...query,search,today:shanghaiDayKey(new Date()),includeSupplierTrace:isPlatform(actor),
       ...(query.productCode?{productCodes:[query.productCode,...(product?.legacyProductCode?[product.legacyProductCode]:[])]}:{})});
     const tasks=new Map(result.fulfillments.map(f=>[f.orderId,f])),vouchers=new Map(result.vouchers.map(v=>[v.orderId,v]));
     return {data:result.orders.map(o=>mapWorkspaceOrder(o,merchantNames.get(o.merchantId)??null,tasks.get(o.id),vouchers.get(o.id)??null,actor,visibilityFor(o.merchantId))),
@@ -225,7 +225,7 @@ export function listWorkspaceOrders(
       if (!search) return true;
       const voucher = voucherFor(order);
       const fulfillment = taskFor(order);
-      return matchesOrderSearch(order, voucher ?? null, fulfillment, search);
+      return matchesOrderSearch(order, voucher ?? null, fulfillment, search, isPlatform(actor));
     })
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const total = orders.length;

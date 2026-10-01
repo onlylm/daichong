@@ -77,5 +77,12 @@ describe("upstream masking for downstream consumers", () => {
     expect(row.fulfillment?.message).not.toMatch(/zovo|upstream/i);
     expect(row.fulfillment).not.toHaveProperty("upstream_order_id");
     expect(row.fulfillment).not.toHaveProperty("charge_amount_minor");
+
+    const agentSearch = listWorkspaceOrders(repository, agent, ["m1"], new Map([["m1", "代理 A"]]), () => [],
+      {page: 1, limit: 10, search: "up-cdk-secret"});
+    expect(agentSearch.data).toEqual([]);
+    const platformSearch = listWorkspaceOrders(repository, {id: "admin", merchantId: null, role: "platform_admin"}, ["m1"],
+      new Map([["m1", "代理 A"]]), () => [], {page: 1, limit: 10, search: "up-cdk-secret"});
+    expect(platformSearch.data.map(item => item.id)).toEqual(["ord_mask"]);
   });
 });

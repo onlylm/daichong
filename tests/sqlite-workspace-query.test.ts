@@ -38,9 +38,14 @@ describe("SQLite workspace batch reads",()=>{
       const voucher=(await r.cdk.issueOne())!;
       const task=r.fulfillments.createCdkPublic(r.repository.findOrderInternal(order.id)!,voucher,r.cdk.readUpstreamCode(voucher),{mode:"session",session:"isolated-mock-only"});
       r.repository.insertOrder({...order,id:"other-order",merchantId:"other-tenant",merchantOrderNo:"BATCH-OTHER"});
+      const names=new Map([[order.merchantId,"mock merchant"]]);
+      expect(listWorkspaceOrders(r.repository,{id:"owner",role:"agent_owner",merchantId:order.merchantId},[order.merchantId],names,()=>[],
+        {page:1,limit:20,search:voucher.upstreamCdkId!}).data).toEqual([]);
+      expect(listWorkspaceOrders(r.repository,{id:"admin",role:"platform_admin",merchantId:null},[order.merchantId],names,()=>[],
+        {page:1,limit:20,search:voucher.upstreamCdkId!}).data.map(item=>item.id)).toEqual([order.id]);
       const db=(r.repository as unknown as {db:DatabaseSync}).db,queries=vi.spyOn(db,"prepare");
       const tasks=vi.spyOn(r.repository,"listFulfillments"),vouchers=vi.spyOn(r.repository,"findCdkVoucherByOrder");
-      const result=listWorkspaceOrders(r.repository,{id:"owner",role:"agent_owner",merchantId:order.merchantId},[order.merchantId],new Map([[order.merchantId,"mock merchant"]]),()=>[],{page:1,limit:20});
+      const result=listWorkspaceOrders(r.repository,{id:"owner",role:"agent_owner",merchantId:order.merchantId},[order.merchantId],names,()=>[],{page:1,limit:20});
       expect(result.data.map(o=>o.id)).toEqual([order.id]);expect(result.data[0]?.fulfillmentStatus).toBe("queued");
       expect(result.data[0]?.saleAmount).toBe("135.00");expect(result.data[0]?.createdAt).toBeInstanceOf(Date);
       expect(queries).toHaveBeenCalledTimes(2);expect(tasks).not.toHaveBeenCalled();expect(vouchers).not.toHaveBeenCalled();
