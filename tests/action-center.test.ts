@@ -35,6 +35,11 @@ describe("platform action center", () => {
       counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, tickets: 0},
       tasks: [], refunds: [], refundReviews: [], settlements: [], tickets: [],
       worker: {status: "missing", failedLanes: [], stuckLanes: []},
+      checks: {
+        payment: {status: "missing", label: "支付宝未启用", scope: "configuration"},
+        upstream: {status: "missing", label: "供应连接未启用", scope: "configuration"},
+        backup: {status: "undetected", label: "未检测", scope: "configuration"},
+      },
     });
 
     new WorkerHealthReporter(runtime.repository, ["retail-payment"]).persist();
@@ -42,6 +47,25 @@ describe("platform action center", () => {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
     expect(running.json().data.worker).toMatchObject({status: "healthy", failedLanes: [], stuckLanes: []});
+  });
+
+  it("reports saved Alipay and supplier readiness without making external health calls", async () => {
+    const now = new Date().toISOString();
+    const connection = runtime.supplierManagement.getConnection();
+    vi.spyOn(runtime.paymentSettings, "available").mockReturnValue(["alipay_page"]);
+    vi.spyOn(runtime.supplierManagement, "getConnection").mockReturnValue({
+      ...connection, enabled: true, last_test_status: "succeeded", last_test_at: now, last_plan_sync_at: now,
+    });
+    const login = await loginPlatform(app, "action-admin", "test-action-center-password", "https://admin.tibo.ink");
+    const response = await app.inject({method: "GET", url: "/workspace/api/action-center", headers: {
+      origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
+    }});
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data.checks).toMatchObject({
+      payment: {status: "healthy", label: "支付宝已启用", scope: "configuration"},
+      upstream: {status: "healthy", label: "供应连接已验证", checkedAt: now, scope: "configuration"},
+      backup: {status: "undetected", label: "未检测", scope: "configuration"},
+    });
   });
 
   it("queries only bounded pending queues and excludes system cases from agent tickets", async () => {

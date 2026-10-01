@@ -160,6 +160,18 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     const processingPage=read("processing",()=>queryRecords(runtime.repository,"fulfillment",{filters:[
       {field:"status",op:"in",value:["queued","running"]},{field:"createdAt",op:"gt",value:new Date(now.getTime()-600_000)}],
       page:1,limit:50,orderBy:"createdAt",direction:"asc"}),emptyPage);
+    type ConfigurationCheck={status:"undetected"|"missing"|"degraded"|"healthy";label:string;checkedAt:string|null;scope:"configuration"};
+    const undetectedCheck:ConfigurationCheck={status:"undetected",label:"未检测",checkedAt:null,scope:"configuration"};
+    const paymentCheck=read<ConfigurationCheck>("payment",()=>{
+      const enabled=runtime.paymentSettings.available().includes("alipay_page");
+      return {status:enabled?"healthy":"missing",label:enabled?"支付宝已启用":"支付宝未启用",checkedAt:null,scope:"configuration"};
+    },undetectedCheck);
+    const upstreamCheck=read<ConfigurationCheck>("upstream",()=>{
+      const connection=runtime.supplierManagement.getConnection(),tested=connection.last_test_status==="succeeded",synced=!!connection.last_plan_sync_at;
+      const status=!connection.enabled?"missing":tested&&synced?"healthy":"degraded";
+      const label=!connection.enabled?"供应连接未启用":connection.last_test_status==="failed"?"最近连通测试失败":!tested?"供应连接待验证":!synced?"上游套餐待同步":"供应连接已验证";
+      return {status,label,checkedAt:connection.last_test_at??connection.updated_at,scope:"configuration"};
+    },undetectedCheck);
     const merchantMap=new Map(runtime.repository.listMerchants().map(item=>[item.id,item]));
     const rank=(status:string,urgent:string[])=>urgent.includes(status)?0:1;
     const oldest=(value:{createdAt?:Date|string;firstDetectedAt?:Date|string;updatedAt?:Date|string})=>{
@@ -187,7 +199,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       tickets,
       invoices,
       worker: readWorkerHealth(runtime.repository),
-      checks:{payment:{status:"undetected"},upstream:{status:"undetected"},backup:{status:"undetected"}},
+      checks:{payment:paymentCheck,upstream:upstreamCheck,backup:undetectedCheck},
     }});
   });
   app.get("/workspace/api/refund-reconciliations", async request => {
