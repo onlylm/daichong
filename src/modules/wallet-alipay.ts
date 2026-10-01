@@ -16,6 +16,7 @@ export class WalletAlipayService {
     private readonly wallets: WalletService,
     private readonly base: string,
     private readonly tokens: PortalTokenService,
+    private readonly clientOverride: {client: AlipayClient; identity: {appId: string; sellerId: string}} | null = null,
   ) {}
 
   start(actor: Actor, merchantId: string, amount: string, requestKey: string): {deposit: WalletDeposit; payUrl: string} {
@@ -67,6 +68,10 @@ export class WalletAlipayService {
     const deposit = this.repository.transaction(() => {
       const current = this.deposit(id);
       if (current.status !== "requested" || (current.nextCheckAt && current.nextCheckAt > new Date())) return null;
+      if(current.expiresAt&&current.expiresAt<=new Date()&&!isAlipayPrecreateQr(current.providerRef??"")){
+        this.repository.saveOperations("wallet_deposit",{...current,status:"expired",nextCheckAt:null,updatedAt:new Date()});
+        return null;
+      }
       this.repository.saveOperations("wallet_deposit", {...current, nextCheckAt: new Date(Date.now() + 60_000), updatedAt: new Date()});
       return current;
     });
@@ -74,7 +79,10 @@ export class WalletAlipayService {
     const {client, identity} = this.client(deposit);
     try {
       const result = await client.exec("alipay.trade.query", {bizContent: {out_trade_no: deposit.id}}, {validateSign: true});
-      if (result.code === "40004" && result.sub_code === "ACQ.TRADE_NOT_EXIST") return;
+      if (result.code === "40004" && result.sub_code === "ACQ.TRADE_NOT_EXIST") {
+        if(deposit.expiresAt&&deposit.expiresAt<=new Date())this.finishUnpaid(deposit.id,"expired");
+        return;
+      }
       if (result.code !== "10000") throw new Error("query_failed");
       this.accept(deposit, identity, result as Record<string, string>);
     } catch {
@@ -97,6 +105,7 @@ export class WalletAlipayService {
   }
 
   private client(deposit: WalletDeposit): {client: AlipayClient; identity: {appId: string; sellerId: string}} {
+    if(this.clientOverride)return this.clientOverride;
     const revision = this.settings.revision(deposit.paymentConfigId!, "alipay_page");
     const keys = this.settings.secrets(revision);
     const identity = {appId: revision.details.appId!, sellerId: revision.details.sellerId!};
@@ -105,14 +114,25 @@ export class WalletAlipayService {
   }
 
   private accept(deposit: WalletDeposit, identity: {appId: string; sellerId: string}, data: Record<string, string>): void {
-    if (data.out_trade_no !== deposit.id || amountMinor(data.total_amount) !== deposit.amountMinor || !/^\d{8,64}$/.test(data.trade_no ?? "")
+    const success=["TRADE_SUCCESS","TRADE_FINISHED"].includes(data.trade_status??"");
+    if (data.out_trade_no !== deposit.id || amountMinor(data.total_amount) !== deposit.amountMinor || (success&&!/^\d{8,64}$/.test(data.trade_no ?? ""))
         || (data.seller_id !== undefined && data.seller_id !== identity.sellerId)
         || (data.app_id !== undefined && data.app_id !== identity.appId)) {
       throw new AppError(409, "payment_binding_mismatch", "支付宝交易与余额充值订单不匹配");
     }
-    if (["TRADE_SUCCESS", "TRADE_FINISHED"].includes(data.trade_status ?? "")) {
+    if (success) {
       this.wallets.creditAlipayDeposit(deposit.id, data.trade_no!, deposit.amountMinor);
-    }
+    }else if(data.trade_status==="TRADE_CLOSED")this.finishUnpaid(deposit.id,"closed");
+  }
+
+  private finishUnpaid(id:string,status:"expired"|"closed"):WalletDeposit {
+    return this.repository.transaction(()=>{
+      const current=this.deposit(id);
+      if(current.status!=="requested")return current;
+      const updated={...current,status,nextCheckAt:null,updatedAt:new Date()};
+      this.repository.saveOperations("wallet_deposit",updated);
+      return updated;
+    });
   }
 }
 

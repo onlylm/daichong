@@ -256,7 +256,7 @@ export class WalletService {
         if (current.verifiedReference !== providerReference) throw new AppError(409, "payment_reference_mismatch", "支付宝交易号不匹配");
         return current;
       }
-      if (current.status !== "requested") throw new AppError(409, "deposit_already_reviewed", "余额充值订单已终结");
+      if (!["requested","expired"].includes(current.status)) throw new AppError(409, "deposit_already_reviewed", "余额充值订单已终结");
       if (queryRecords(this.repository,"wallet_deposit",{filters:[{field:"verifiedReference",value:providerReference},{field:"status",value:"credited"},
         {field:"id",op:"ne",value:current.id}],limit:1,count:false}).data.length) {
         throw new AppError(409, "receipt_used", "该支付宝交易已入账");

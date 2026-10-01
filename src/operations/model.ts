@@ -102,7 +102,7 @@ export interface WalletEntry extends BaseRecord {
   procurementDelta: bigint; earningsDelta: bigint; frozenDelta: bigint; reference: string; actorId: string; createdAt: Date;
 }
 export interface WalletDeposit extends BaseRecord {
-  merchantId: string; amountMinor: bigint; status: "requested" | "credited" | "rejected"; requestKey: string;
+  merchantId: string; amountMinor: bigint; status: "requested" | "credited" | "expired" | "closed" | "rejected"; requestKey: string;
   payerReference: string; verifiedReference: string | null; reviewerId: string | null; createdAt: Date; updatedAt: Date;
   paymentProvider?: "manual" | "alipay_page"; paymentConfigId?: string | null; providerRef?: string | null;
   expiresAt?: Date | null; paidAt?: Date | null; nextCheckAt?: Date | null;
@@ -148,7 +148,7 @@ export interface InvoiceApplication extends BaseRecord {
 }
 export interface InvoiceFeePayment extends BaseRecord {
   merchantId: string; applicationId: string; amountMinor: bigint;
-  status: "pending" | "paid" | "expired"; paymentConfigId: string | null;
+  status: "pending" | "paid" | "expired" | "closed"; paymentConfigId: string | null;
   qrPayload: string | null; providerRef: string | null; expiresAt: Date; nextCheckAt: Date | null;
   paidAt: Date | null; createdAt: Date; updatedAt: Date;
 }

@@ -18,23 +18,25 @@ export class InvoiceAlipayService {
     private readonly legacy: LegacyAlipay = null) {}
 
   ensurePayment(actor: Actor, applicationId: string): {payment: InvoiceFeePayment; payUrl: string} {
-    const application = this.invoices.application(applicationId);
-    if (actor.merchantId !== application.merchantId) throw new AppError(404, "invoice_not_found", "开票申请不存在");
-    if (application.status !== "awaiting_payment") throw new AppError(409, "invoice_already_submitted", "补差价已支付，开票申请已提交");
-    const now = new Date();
-    const pending = queryRecords(this.repository,"invoice_fee_payment",{merchantId:application.merchantId,
-      filters:[{field:"applicationId",value:application.id},{field:"status",value:"pending"}],orderBy:"createdAt",direction:"desc",limit:1,count:false}).data[0];
-    if (pending && pending.expiresAt > now) return {payment: pending, payUrl: this.portalUrl(pending.id)};
-    if (pending) this.repository.saveOperations("invoice_fee_payment", {...pending, status: "expired", updatedAt: now});
-    const configId = this.activeConfigId();
-    const id = "invpay_" + randomUUID().replaceAll("-", "");
-    const payment: InvoiceFeePayment = {id, merchantId: application.merchantId, applicationId: application.id,
-      amountMinor: application.feeAmountMinor, status: "pending", paymentConfigId: configId,
-      qrPayload: null, providerRef: null, expiresAt: new Date(Date.now() + 15 * 60_000), nextCheckAt: null,
-      paidAt: null, createdAt: now, updatedAt: now};
-    this.repository.saveOperations("invoice_fee_payment", payment, true);
-    this.invoices.attachPayment(application.id, payment.id);
-    return {payment, payUrl: this.portalUrl(payment.id)};
+    return this.repository.transaction(()=>{
+      const application = this.invoices.application(applicationId);
+      if (actor.merchantId !== application.merchantId) throw new AppError(404, "invoice_not_found", "开票申请不存在");
+      if (application.status !== "awaiting_payment") throw new AppError(409, "invoice_already_submitted", "补差价已支付，开票申请已提交");
+      const now = new Date();
+      const pending = queryRecords(this.repository,"invoice_fee_payment",{merchantId:application.merchantId,
+        filters:[{field:"applicationId",value:application.id},{field:"status",value:"pending"}],orderBy:"createdAt",direction:"desc",limit:1,count:false}).data[0];
+      if (pending && pending.expiresAt > now) return {payment: pending, payUrl: this.portalUrl(pending.id)};
+      if (pending) this.repository.saveOperations("invoice_fee_payment", {...pending, status: "expired",nextCheckAt:null, updatedAt: now});
+      const configId = this.activeConfigId();
+      const id = "invpay_" + randomUUID().replaceAll("-", "");
+      const payment: InvoiceFeePayment = {id, merchantId: application.merchantId, applicationId: application.id,
+        amountMinor: application.feeAmountMinor, status: "pending", paymentConfigId: configId,
+        qrPayload: null, providerRef: null, expiresAt: new Date(Date.now() + 15 * 60_000), nextCheckAt: null,
+        paidAt: null, createdAt: now, updatedAt: now};
+      this.repository.saveOperations("invoice_fee_payment", payment, true);
+      this.invoices.attachPayment(application.id, payment.id);
+      return {payment, payUrl: this.portalUrl(payment.id)};
+    });
   }
 
   portalUrl(id: string): string {
@@ -71,6 +73,10 @@ export class InvoiceAlipayService {
     const payment = this.repository.transaction(() => {
       const current = this.payment(id);
       if (current.status !== "pending" || (current.nextCheckAt && current.nextCheckAt > new Date())) return null;
+      if(current.expiresAt<=new Date()&&!isAlipayPrecreateQr(current.qrPayload??"")){
+        this.repository.saveOperations("invoice_fee_payment",{...current,status:"expired",nextCheckAt:null,updatedAt:new Date()});
+        return null;
+      }
       this.repository.saveOperations("invoice_fee_payment", {...current, nextCheckAt: new Date(Date.now() + 60_000), updatedAt: new Date()});
       return current;
     });
@@ -79,7 +85,7 @@ export class InvoiceAlipayService {
     try {
       const result = await client.exec("alipay.trade.query", {bizContent: {out_trade_no: payment.id}}, {validateSign: true});
       if (result.code === "40004" && result.sub_code === "ACQ.TRADE_NOT_EXIST") {
-        if (payment.expiresAt <= new Date()) this.repository.saveOperations("invoice_fee_payment", {...payment, status: "expired", updatedAt: new Date()});
+        if (payment.expiresAt <= new Date()) this.finishUnpaid(payment.id,"expired");
         return;
       }
       if (result.code !== "10000") throw new Error("query_failed");
@@ -121,12 +127,24 @@ export class InvoiceAlipayService {
   }
 
   private accept(payment: InvoiceFeePayment, identity: {appId: string; sellerId: string}, data: Record<string, string>): void {
-    if (data.out_trade_no !== payment.id || amountMinor(data.total_amount) !== payment.amountMinor || !/^\d{8,64}$/.test(data.trade_no ?? "")
+    const success=["TRADE_SUCCESS","TRADE_FINISHED"].includes(data.trade_status??"");
+    if (data.out_trade_no !== payment.id || amountMinor(data.total_amount) !== payment.amountMinor || (success&&!/^\d{8,64}$/.test(data.trade_no ?? ""))
         || (data.seller_id !== undefined && data.seller_id !== identity.sellerId)
         || (data.app_id !== undefined && data.app_id !== identity.appId)) {
       throw new AppError(409, "payment_binding_mismatch", "支付宝交易与补差价支付单不匹配");
     }
-    if (["TRADE_SUCCESS", "TRADE_FINISHED"].includes(data.trade_status ?? "")) this.invoices.markPaid(payment.id, data.trade_no!, payment.amountMinor);
+    if (success) this.invoices.markPaid(payment.id, data.trade_no!, payment.amountMinor);
+    else if(data.trade_status==="TRADE_CLOSED")this.finishUnpaid(payment.id,"closed");
+  }
+
+  private finishUnpaid(id:string,status:"expired"|"closed"):InvoiceFeePayment {
+    return this.repository.transaction(()=>{
+      const current=this.payment(id);
+      if(current.status!=="pending")return current;
+      const updated={...current,status,nextCheckAt:null,updatedAt:new Date()};
+      this.repository.saveOperations("invoice_fee_payment",updated);
+      return updated;
+    });
   }
 }
 

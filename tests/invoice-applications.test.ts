@@ -1,4 +1,4 @@
-import {afterEach, beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it,vi} from "vitest";
 import {createRuntime, type Runtime} from "../src/bootstrap.js";
 import {loadConfig} from "../src/config.js";
 import type {Actor, InvoiceFeePayment} from "../src/operations/model.js";
@@ -23,7 +23,7 @@ describe("order invoice applications", () => {
     orderId = order.id;
   });
 
-  afterEach(() => runtime.close());
+  afterEach(() => {vi.restoreAllMocks();runtime.close();});
 
   it("requires company name and tax id, then calculates a separate five-percent difference", () => {
     expect(() => runtime.invoices.create(owner, orderId, {
@@ -96,5 +96,56 @@ describe("order invoice applications", () => {
     gateway.handleNotification({out_trade_no: payment.id, total_amount: "50.00", trade_no: "2026100100000003",
       trade_status: "TRADE_SUCCESS", sign_type: "RSA2", app_id: "2026000000000000", seller_id: "2088000000000000"});
     expect(runtime.invoices.get(owner, application.id).status).toBe("submitted");
+  });
+
+  it("expires an unstarted difference payment without querying Alipay and accepts one verified late payment",async()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-timeout-late"});
+    const exec=vi.fn(),client={pageExecute:()=>"",exec,checkNotifySignV2:()=>true},identity={appId:"2026000000000000",sellerId:"2088000000000000"};
+    const gateway=new InvoiceAlipayService(runtime.repository,runtime.paymentSettings,runtime.invoices,
+      "https://pay.example.com",runtime.portalTokens,{client,identity});
+    const {payment}=gateway.ensurePayment(owner,application.id);
+    runtime.repository.saveOperations("invoice_fee_payment",{...payment,expiresAt:new Date(Date.now()-1_000),updatedAt:new Date()});
+    await gateway.reconcile(payment.id);
+    expect(exec).not.toHaveBeenCalled();
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("expired");
+    const notice={out_trade_no:payment.id,total_amount:"50.00",trade_no:"2026100100002881",trade_status:"TRADE_SUCCESS",
+      sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId};
+    gateway.handleNotification(notice);gateway.handleNotification(notice);
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("paid");
+    expect(runtime.invoices.get(owner,application.id)).toMatchObject({status:"submitted",providerRef:"2026100100002881"});
+  });
+
+  it("keeps an Alipay-closed difference payment terminal",()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-provider-closed"});
+    const client={pageExecute:()=>"",exec:vi.fn(),checkNotifySignV2:()=>true},identity={appId:"2026000000000000",sellerId:"2088000000000000"};
+    const gateway=new InvoiceAlipayService(runtime.repository,runtime.paymentSettings,runtime.invoices,
+      "https://pay.example.com",runtime.portalTokens,{client,identity}),{payment}=gateway.ensurePayment(owner,application.id);
+    gateway.handleNotification({out_trade_no:payment.id,total_amount:"50.00",trade_status:"TRADE_CLOSED",
+      sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId});
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("closed");
+    expect(()=>gateway.handleNotification({out_trade_no:payment.id,total_amount:"50.00",trade_no:"2026100100002882",
+      trade_status:"TRADE_SUCCESS",sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId})).toThrow("明确关闭");
+    expect(runtime.invoices.get(owner,application.id).status).toBe("awaiting_payment");
+  });
+
+  it("does not let a stale closed result overwrite an interleaved paid invoice fee",()=>{
+    const application=runtime.invoices.create(owner,orderId,{invoiceTitle:"测试科技有限公司",taxId:"91310000MA12345678",
+      recipientEmail:"finance@example.com",contactName:"财务人员",invoiceAmount:"1000.00",requestKey:"invoice-close-race"});
+    const client={pageExecute:()=>"",exec:vi.fn(),checkNotifySignV2:()=>true},identity={appId:"2026000000000000",sellerId:"2088000000000000"};
+    const gateway=new InvoiceAlipayService(runtime.repository,runtime.paymentSettings,runtime.invoices,
+      "https://pay.example.com",runtime.portalTokens,{client,identity}),{payment}=gateway.ensurePayment(owner,application.id),
+      repository=runtime.repository,transaction=repository.transaction.bind(repository);
+    let injected=false;
+    const transactionSpy=vi.spyOn(repository,"transaction").mockImplementation(action=>{
+      if(!injected){injected=true;runtime.invoices.markPaid(payment.id,"2026100100002883",payment.amountMinor);}
+      return transaction(action);
+    });
+    gateway.handleNotification({out_trade_no:payment.id,total_amount:"50.00",trade_status:"TRADE_CLOSED",
+      sign_type:"RSA2",sign:"verified",app_id:identity.appId,seller_id:identity.sellerId});
+    transactionSpy.mockRestore();
+    expect(runtime.repository.getOperations("invoice_fee_payment",payment.id)?.status).toBe("paid");
+    expect(runtime.invoices.get(owner,application.id).status).toBe("submitted");
   });
 });

@@ -179,6 +179,7 @@ export class InvoiceService {
         if (payment.providerRef !== providerRef) throw new AppError(409, "invoice_payment_reference_mismatch", "补差价支付单已绑定其他支付宝流水");
         return current;
       }
+      if(payment.status==="closed")throw new AppError(409,"invoice_payment_closed","支付宝已明确关闭该补差价支付单，不能登记到账");
       const now = new Date();
       const paid: InvoiceFeePayment = {...payment, status: "paid", providerRef, paidAt: now, updatedAt: now};
       const submitted: InvoiceApplication = {...current, status: current.status === "awaiting_payment" ? "submitted" : current.status,
