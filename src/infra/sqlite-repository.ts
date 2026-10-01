@@ -107,6 +107,8 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_refund_review_checked_idx ON sandbox_records(kind,json_extract(payload,'$.lastCheckedAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_wallet_entry_time_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.createdAt') DESC);
+      CREATE INDEX IF NOT EXISTS records_wallet_earning_reference_idx ON sandbox_records(merchant_id,json_extract(payload,'$.reference'))
+        WHERE kind='ops_wallet_entry' AND json_extract(payload,'$.kind') IN ('earning_release','earning_reversal');
       CREATE INDEX IF NOT EXISTS records_tenant_occurred_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.occurredAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_outbox_cursor_idx ON sandbox_records(kind,id);
       CREATE INDEX IF NOT EXISTS records_upstream_client_request_idx ON sandbox_records(kind,json_extract(payload,'$.upstreamClientRequestId'));
@@ -450,17 +452,25 @@ export class SqliteRepository implements Repository {
     return result;
   }
 
-  walletCreditTotalForOrders(merchantId:string,orderIds:readonly string[]):bigint {
-    let total=0n;
-    for(let offset=0;offset<orderIds.length;offset+=400){
-      const ids=orderIds.slice(offset,offset+400);
-      if(!ids.length)continue;
-      const row=this.db.prepare(`SELECT COALESCE(SUM(CAST(json_extract(payload,'$.recognizedMinor.__bigint') AS INTEGER)),0) AS total
+  settlementEarningRows(merchantId:string,orderIds:readonly string[]) {
+    const unique=[...new Set(orderIds)],result:Array<{orderId:string;creditMinor:bigint;creditCount:number;ledgerMinor:bigint}>=[];
+    for(let offset=0;offset<unique.length;offset+=400){
+      const ids=unique.slice(offset,offset+400),placeholders=ids.map(()=>'?').join(',');
+      const creditRows=this.db.prepare(`SELECT json_extract(payload,'$.orderId') AS orderId,COUNT(*) AS creditCount,
+        CAST(COALESCE(SUM(CAST(json_extract(payload,'$.recognizedMinor.__bigint') AS INTEGER)),0) AS TEXT) AS creditMinor
         FROM sandbox_records WHERE kind='ops_wallet_credit' AND merchant_id=?
-        AND json_extract(payload,'$.orderId') IN (${ids.map(()=>'?').join(',')})`).get(merchantId,...ids) as {total:number|string};
-      total+=BigInt(row.total);
+        AND json_extract(payload,'$.orderId') IN (${placeholders}) GROUP BY json_extract(payload,'$.orderId')`).all(merchantId,...ids);
+      const ledgerRows=this.db.prepare(`SELECT json_extract(payload,'$.reference') AS orderId,
+        CAST(COALESCE(SUM(CAST(json_extract(payload,'$.earningsDelta.__bigint') AS INTEGER)),0) AS TEXT) AS ledgerMinor
+        FROM sandbox_records WHERE kind='ops_wallet_entry' AND merchant_id=?
+        AND json_extract(payload,'$.kind') IN ('earning_release','earning_reversal')
+        AND json_extract(payload,'$.reference') IN (${placeholders}) GROUP BY json_extract(payload,'$.reference')`).all(merchantId,...ids);
+      const credits=new Map(creditRows.map(row=>[String(row.orderId),row]));
+      const ledger=new Map(ledgerRows.map(row=>[String(row.orderId),BigInt(String(row.ledgerMinor))]));
+      result.push(...ids.map(orderId=>({orderId,creditMinor:BigInt(String(credits.get(orderId)?.creditMinor??0)),
+        creditCount:Number(credits.get(orderId)?.creditCount??0),ledgerMinor:ledger.get(orderId)??0n})));
     }
-    return total;
+    return result;
   }
 
   earningReversalCandidates(merchantId:string,onlyOrderId?:string) {

@@ -147,11 +147,13 @@ export class DailySettlementService {
       if(hasUnreconciledProviderRefundForReleasedEarnings(this.repository,current.merchantId,current.orderIds)){
         throw new AppError(409,"settlement_refund_reconciliation_pending","核算单关联订单存在渠道退款差异，核实前不能登记打款");
       }
-      const currentStatementEarnings=this.repository.walletCreditTotalForOrders?.(current.merchantId,current.orderIds)
-        ??this.repository.listOperations("wallet_credit",current.merchantId)
-          .filter(credit=>current.orderIds.includes(credit.orderId)).reduce((sum,credit)=>sum+credit.recognizedMinor,0n);
+      const earningRows=this.repository.settlementEarningRows(current.merchantId,current.orderIds);
+      const currentStatementEarnings=earningRows.reduce((sum,row)=>sum+row.creditMinor,0n);
       if(currentStatementEarnings!==current.agentEarningsMinor){
         throw new AppError(409,"settlement_amount_changed","核算单内订单收益已因退款或纠偏变化，请作废本单并在下一核算周期重新生成");
+      }
+      if(earningRows.length!==current.orderIds.length||earningRows.some(row=>row.creditCount!==1||row.creditMinor!==row.ledgerMinor)){
+        throw new AppError(409,"settlement_earning_ledger_mismatch","核算单关联订单的收益记录与资金流水不一致，请先核对，不得登记打款");
       }
       const earnings = this.repository.walletTotals?.(current.merchantId).earnings
         ??this.repository.listOperations("wallet_entry", current.merchantId).reduce((sum, entry) => sum + entry.earningsDelta, 0n);

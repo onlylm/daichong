@@ -81,11 +81,20 @@ export class MemoryRepository implements Repository {
   private readonly audit: AuditLog[] = [];
   private readonly sequences = new Map<string, bigint>();
 
-  walletCreditTotalForOrders(merchantId: string, orderIds: readonly string[]): bigint {
-    return orderIds.reduce((sum, orderId) => {
-      const credit = this.getOperations("wallet_credit", orderId);
-      return sum + (credit?.merchantId === merchantId ? credit.recognizedMinor : 0n);
-    }, 0n);
+  settlementEarningRows(merchantId: string, orderIds: readonly string[]) {
+    const unique=[...new Set(orderIds)],selected=new Set(unique);
+    const credits=new Map<string,{minor:bigint;count:number}>(),ledger=new Map<string,bigint>();
+    for(const credit of this.listOperations("wallet_credit",merchantId)){
+      if(!selected.has(credit.orderId))continue;
+      const current=credits.get(credit.orderId)??{minor:0n,count:0};
+      credits.set(credit.orderId,{minor:current.minor+credit.recognizedMinor,count:current.count+1});
+    }
+    for(const entry of this.listOperations("wallet_entry",merchantId)){
+      if(!selected.has(entry.reference)||!["earning_release","earning_reversal"].includes(entry.kind))continue;
+      ledger.set(entry.reference,(ledger.get(entry.reference)??0n)+entry.earningsDelta);
+    }
+    return unique.map(orderId=>({orderId,creditMinor:credits.get(orderId)?.minor??0n,
+      creditCount:credits.get(orderId)?.count??0,ledgerMinor:ledger.get(orderId)??0n}));
   }
 
   findPayoutReferenceUsage(reference: string): {kind: "daily_settlement" | "wallet_withdrawal"; id: string} | null {

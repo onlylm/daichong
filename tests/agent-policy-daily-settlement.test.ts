@@ -166,6 +166,64 @@ describe("2026-10-01 agent policy", () => {
     expect(runtime.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
   });
 
+  it.each(["memory", "sqlite"] as const)("rejects %s payout when an unrelated balance masks a missing order earning entry", async storageDriver => {
+    const isolated=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:storageDriver,SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
+    try {
+      publishTestRechargeProduct(isolated);
+      const order=await seedSettlementEarning(isolated,`orphan-credit-${storageDriver}`,{skipWalletEntry:true});
+      isolated.repository.saveOperations("wallet_entry",{id:`earning:unrelated-${storageDriver}`,merchantId:order.merchantId,
+        kind:"earning_release",procurementDelta:0n,earningsDelta:2_500n,frozenDelta:0n,
+        reference:`unrelated-${storageDriver}`,actorId:"system",createdAt:new Date()},true);
+      isolated.dailySettlements.generate("2026-09-30");
+      const statement=isolated.repository.getOperations("daily_settlement",`ds_20260930_${order.merchantId}`)!;
+      expect(statement).toMatchObject({agentEarningsMinor:2_500n,payableMinor:2_500n,status:"pending_payment"});
+      expect(()=>isolated.dailySettlements.confirmPaid(admin,statement.id,{method:"bank",
+        reference:`orphan-credit-${storageDriver}-payment`,evidence:"银行付款凭证已归档"}))
+        .toThrow("收益记录与资金流水不一致");
+      expect(isolated.repository.getOperations("daily_settlement",statement.id)?.status).toBe("pending_payment");
+      expect(isolated.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
+    } finally { isolated.close(); }
+  });
+
+  it.each(["memory", "sqlite"] as const)("rejects %s payout when credit changed without its reversal ledger", async storageDriver => {
+    const isolated=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:storageDriver,SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
+    try {
+      publishTestRechargeProduct(isolated);
+      const order=await seedSettlementEarning(isolated,`missing-reversal-${storageDriver}`);
+      const credit=isolated.repository.getOperations("wallet_credit",order.id)!;
+      isolated.repository.saveOperations("wallet_credit",{...credit,recognizedMinor:1_500n});
+      isolated.dailySettlements.generate("2026-09-30");
+      const statement=isolated.repository.getOperations("daily_settlement",`ds_20260930_${order.merchantId}`)!;
+      expect(statement).toMatchObject({agentEarningsMinor:1_500n,payableMinor:1_500n,status:"pending_payment"});
+      expect(()=>isolated.dailySettlements.confirmPaid(admin,statement.id,{method:"bank",
+        reference:`missing-reversal-${storageDriver}-payment`,evidence:"银行付款凭证已归档"}))
+        .toThrow("收益记录与资金流水不一致");
+      expect(isolated.repository.getOperations("wallet_entry","settlement_payout:"+statement.id)).toBeNull();
+    } finally { isolated.close(); }
+  });
+
+  it.each(["memory", "sqlite"] as const)("checks %s order earnings across a 400-id query boundary without mixing tenants", storageDriver => {
+    const isolated=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:storageDriver,SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
+    try {
+      const merchantId=isolated.repository.findMerchantByPartner("pt_demo_a")!.id;
+      const otherMerchantId=isolated.repository.findMerchantByPartner("pt_demo_b")!.id;
+      const orderIds=Array.from({length:401},(_,index)=>`boundary-${index}`),orderId=orderIds[400]!;
+      const at=new Date("2026-09-30T12:00:00.000Z");
+      isolated.repository.saveOperations("wallet_credit",{id:"boundary-credit",merchantId,orderId,
+        recognizedMinor:2_500n,createdAt:at},true);
+      isolated.repository.saveOperations("wallet_entry",{id:"boundary-entry",merchantId,kind:"earning_release",
+        procurementDelta:0n,earningsDelta:2_500n,frozenDelta:0n,reference:orderId,actorId:"system",createdAt:at},true);
+      isolated.repository.saveOperations("wallet_credit",{id:"boundary-other-credit",merchantId:otherMerchantId,orderId,
+        recognizedMinor:9_999n,createdAt:at},true);
+      isolated.repository.saveOperations("wallet_entry",{id:"boundary-other-entry",merchantId:otherMerchantId,kind:"earning_release",
+        procurementDelta:0n,earningsDelta:9_999n,frozenDelta:0n,reference:orderId,actorId:"system",createdAt:at},true);
+      const rows=isolated.repository.settlementEarningRows(merchantId,orderIds);
+      expect(rows).toHaveLength(401);
+      expect(rows[0]).toEqual({orderId:"boundary-0",creditMinor:0n,creditCount:0,ledgerMinor:0n});
+      expect(rows[400]).toEqual({orderId,creditMinor:2_500n,creditCount:1,ledgerMinor:2_500n});
+    } finally { isolated.close(); }
+  });
+
   it("builds SQLite settlement candidates and balances without per-order historical scans",async()=>{
     const sqlite=createRuntime(loadConfig({NODE_ENV:"test",STORAGE_DRIVER:"sqlite",SQLITE_PATH:":memory:",LOG_LEVEL:"silent"}));
     try{
@@ -236,7 +294,7 @@ describe("2026-10-01 agent policy", () => {
   });
 });
 
-async function seedSettlementEarning(runtime:Runtime,suffix:string){
+async function seedSettlementEarning(runtime:Runtime,suffix:string,options:{skipWalletEntry?:boolean}={}){
   const credential=runtime.repository.findCredential("pt_demo_a","key_demo_a_01")!;
   const tenant={merchantId:credential.merchant.id,partnerId:credential.merchant.partnerId,
     appId:credential.app.appId,keyId:credential.key.keyId};
@@ -255,7 +313,7 @@ async function seedSettlementEarning(runtime:Runtime,suffix:string){
     nextCheckAt:at,createdAt:at,finishedAt:at});
   runtime.repository.saveOperations("wallet_credit",{id:created.id,merchantId:created.merchantId,
     orderId:created.id,recognizedMinor:2_500n,createdAt:at},true);
-  runtime.repository.saveOperations("wallet_entry",{id:"earning:"+created.id,merchantId:created.merchantId,kind:"earning_release",
+  if(!options.skipWalletEntry)runtime.repository.saveOperations("wallet_entry",{id:"earning:"+created.id,merchantId:created.merchantId,kind:"earning_release",
     procurementDelta:0n,earningsDelta:2_500n,frozenDelta:0n,reference:created.id,actorId:"system",createdAt:at},true);
   return created;
 }
