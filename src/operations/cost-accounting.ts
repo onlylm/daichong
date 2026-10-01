@@ -147,12 +147,14 @@ export class CostAccountingService {
   /** Only newly-created orders with frozen cost terms. Read-only upstream calls; never posts a payment or changes balances. */
   async syncOne() {
     if(!this.autoReadEnabled||Date.now()<this.nextScanAt)return;this.nextScanAt=Date.now()+30_000;
-    const costs=new Map(this.repo.listOperations("order_cost").map(c=>[c.orderId,c]));
-    const records=this.repo.listWorkspaceRecords?.(this.repo.listMerchants().map(m=>m.id));
-    const succeeded=records?new Set(records.fulfillments.filter(f=>f.status==="succeeded").map(f=>f.orderId)):null;
-    const o=this.repo.listOrdersInternal().find(o=>o.costTerms&&o.paymentStatus==="paid"&&Date.now()-o.createdAt.getTime()<48*60*60_000
-      &&!['confirmed','disputed'].includes(costs.get(o.id)?.status??'')&&(!costs.get(o.id)?.nextCheckAt||costs.get(o.id)!.nextCheckAt!.getTime()<=Date.now())
-      &&(succeeded?succeeded.has(o.id):this.repo.listFulfillments(o.merchantId,o.id).some(f=>f.status==="succeeded")));
+    const now=new Date(),cutoff=new Date(now.getTime()-48*60*60_000),indexed=this.repo.findCostReadCandidate?.(now,cutoff);
+    let o=indexed;
+    if(!this.repo.findCostReadCandidate){const costs=new Map(this.repo.listOperations("order_cost").map(c=>[c.orderId,c]));
+      const records=this.repo.listWorkspaceRecords?.(this.repo.listMerchants().map(m=>m.id));
+      const succeeded=records?new Set(records.fulfillments.filter(f=>f.status==="succeeded").map(f=>f.orderId)):null;
+      o=this.repo.listOrdersInternal().find(order=>order.costTerms&&order.paymentStatus==="paid"&&now.getTime()-order.createdAt.getTime()<48*60*60_000
+        &&!['confirmed','disputed'].includes(costs.get(order.id)?.status??'')&&(!costs.get(order.id)?.nextCheckAt||costs.get(order.id)!.nextCheckAt!.getTime()<=now.getTime())
+        &&(succeeded?succeeded.has(order.id):this.repo.listFulfillments(order.merchantId,order.id).some(f=>f.status==="succeeded")));}
     if(!o)return;const actor:Actor={id:"cost-read-worker",role:"platform_admin",merchantId:null};
     try{await this.sync(actor,o.id);}finally{this.repo.transaction(()=>{const c=this.repo.getOperations("order_cost",o.id)??this.initial(o);
       this.repo.saveOperations("order_cost",{...c,nextCheckAt:new Date(Date.now()+15*60_000)});});}

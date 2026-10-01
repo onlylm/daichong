@@ -41,7 +41,8 @@ describe("default-open API and dual-mode spending", () => {
     const platform = await request("POST", "/v1/orders", orderBody("zero-platform", "platform_collect"), "zero-platform");
     expect(platform.statusCode).toBe(201); expect(platform.json().data.payment_scope).toBe("retail");
     const deposit = r.wallets.requestDeposit(owner, owner.merchantId!, "110.00", "verified-deposit", "payer");
-    r.wallets.reviewDeposit(admin, deposit.id, true, "receipt:verified-deposit");
+    const credited = r.wallets.reviewDeposit(admin, deposit.id, true, "receipt:verified-deposit");
+    expect(credited.paidAt).toBeInstanceOf(Date);
     const profile = r.agents.profile(owner.merchantId!);
     r.agents.saveProfile(admin, owner.merchantId!, {...profile, collectionModes: ["platform_collect", "agent_collect"]});
     const purchase = await request("POST", "/v1/orders", orderBody("wallet-purchase", "agent_collect"), "wallet-purchase");

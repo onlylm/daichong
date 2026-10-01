@@ -259,6 +259,10 @@ export class MemoryRepository implements Repository {
     this.cdkVouchers.set(value.id, clone(value));
   }
 
+  findCdkVoucherById(voucherId: string): CdkVoucher | null {
+    return copyOrNull(this.cdkVouchers.get(voucherId));
+  }
+
   findCdkVoucherByOrder(orderId: string): CdkVoucher | null {
     return copyOrNull([...this.cdkVouchers.values()].find((item) => item.orderId === orderId));
   }

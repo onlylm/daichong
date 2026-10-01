@@ -285,7 +285,9 @@ export class WalletService {
         if (this.repository.listOperations("wallet_deposit").some(x => x.verifiedReference === verifiedReference && x.status === "credited")) throw new AppError(409, "receipt_used", "该渠道流水已入账，不能重复记账");
         this.entry(current.merchantId, "deposit:" + id, "deposit", current.amountMinor, 0n, 0n, verifiedReference, actor.id);
       }
-      const updated = {...current, status: approve ? "credited" as const : "rejected" as const, verifiedReference: approve ? verifiedReference : null, reviewerId: actor.id, updatedAt: new Date()};
+      const reviewedAt = new Date();
+      const updated = {...current, status: approve ? "credited" as const : "rejected" as const, verifiedReference: approve ? verifiedReference : null,
+        reviewerId: actor.id, paidAt: approve ? reviewedAt : current.paidAt ?? null, updatedAt: reviewedAt};
       this.repository.saveOperations("wallet_deposit", updated); this.log(actor, current.merchantId, "wallet.deposit." + updated.status, id);
       return updated;
     });

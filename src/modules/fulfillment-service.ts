@@ -107,14 +107,16 @@ export class FulfillmentService {
   async processOne(): Promise<Fulfillment | null> {
     // Historical refunds may have stopped dispatch without closing the queued task.
     // Only close an attempt that has never crossed the persisted submission checkpoint.
-    for (const order of this.repository.listOrdersInternal()) {
+    const now=new Date(),indexed=this.repository.findRefundedFulfillmentCleanupOrder?.(now);
+    const refundedOrders=this.repository.findRefundedFulfillmentCleanupOrder?(indexed?[indexed]:[]):this.repository.listOrdersInternal();
+    for (const order of refundedOrders) {
       if (order.paymentStatus !== "refunded") continue;
       const closed = this.closeRefundedOrder(order.id);
       if (closed) return closed;
     }
     const current = this.repository.transaction(() => {
       const now = new Date();
-      const due = this.repository.listProcessableFulfillments(Number.MAX_SAFE_INTEGER, now)
+      const due = this.repository.listProcessableFulfillments(20, now)
         .find((item) => {
           if (item.leaseUntil && item.leaseUntil > now) return false;
           if (item.status !== "queued" || !this.livePolicy) return true;

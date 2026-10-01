@@ -319,6 +319,64 @@ export class SqliteRepository implements Repository {
 
   findRefundInternal(refundId:string):Refund|null {return this.get<Refund>('refund',refundId);}
 
+  listCdkIssuanceCandidates(limit:number,now:Date):Order[] {
+    return this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
+      LEFT JOIN sandbox_records v ON v.kind='cdk_voucher' AND json_extract(v.payload,'$.orderId')=o.id
+      WHERE o.kind='order' AND json_extract(o.payload,'$.archivedAt') IS NULL
+      AND json_extract(o.payload,'$.fulfillmentMode')='cdk'
+      AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded')
+      AND CAST(COALESCE(json_extract(o.payload,'$.ordinaryRefundedMinor.__bigint'),'0') AS INTEGER)=0
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records r WHERE r.kind='refund' AND r.merchant_id=o.merchant_id
+        AND json_extract(r.payload,'$.orderId')=o.id AND json_extract(r.payload,'$.status') IN ('requested','approved','processing'))
+      AND (v.id IS NULL OR (json_extract(v.payload,'$.status')='issuing'
+        AND COALESCE(json_extract(v.payload,'$.nextAttemptAt'),json_extract(v.payload,'$.createdAt'))<=?))
+      ORDER BY json_extract(o.payload,'$.createdAt') ASC,o.id ASC LIMIT ?`).all(now.toISOString(),Math.min(100,Math.max(1,limit)))
+      .map(row=>decode<Order>(String(row.order_payload)));
+  }
+
+  findRefundedCdkCleanupOrder(now:Date):Order|null {
+    const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
+      JOIN sandbox_records v ON v.kind='cdk_voucher' AND json_extract(v.payload,'$.orderId')=o.id
+      WHERE o.kind='order' AND json_extract(o.payload,'$.paymentStatus')='refunded'
+      AND json_extract(v.payload,'$.upstreamCdkId') IS NOT NULL
+      AND json_extract(v.payload,'$.status') IN ('unused','reserved','disabling','disabled')
+      AND (json_extract(v.payload,'$.status')!='disabled' OR json_extract(v.payload,'$.upstreamCodePayload.ciphertext') IS NOT NULL)
+      AND (json_extract(v.payload,'$.status')!='disabling' OR json_extract(v.payload,'$.nextAttemptAt')<=?)
+      AND NOT EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND NOT (json_extract(f.payload,'$.status') IN ('failed','cancelled')
+          AND (COALESCE(json_extract(f.payload,'$.retryAllowed'),0)=1 OR json_extract(f.payload,'$.upstreamStatus') IN ('declined','failed_precharge'))))
+      ORDER BY json_extract(o.payload,'$.updatedAt') ASC,o.id ASC LIMIT 1`).get(now.toISOString());
+    return row?decode<Order>(String(row.order_payload)):null;
+  }
+
+  findRefundedFulfillmentCleanupOrder(now:Date):Order|null {
+    const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
+      WHERE o.kind='order' AND json_extract(o.payload,'$.paymentStatus')='refunded'
+      AND (COALESCE(json_extract(o.payload,'$.fallbackRechargeAvailable'),0)=1 OR EXISTS(
+        SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id AND json_extract(f.payload,'$.orderId')=o.id AND (
+          (json_extract(f.payload,'$.status')='queued' AND json_extract(f.payload,'$.upstreamOrderId') IS NULL
+            AND json_extract(f.payload,'$.upstreamProvider') IS NULL AND json_extract(f.payload,'$.upstreamStatus') IS NULL
+            AND json_extract(f.payload,'$.upstreamLookupToken') IS NULL AND json_extract(f.payload,'$.lookupPayload.ciphertext') IS NULL
+            AND (json_extract(f.payload,'$.leaseToken') IS NULL OR (json_extract(f.payload,'$.leaseUntil') IS NOT NULL AND json_extract(f.payload,'$.leaseUntil')<=?)))
+          OR (json_extract(f.payload,'$.status') IN ('failed','cancelled') AND COALESCE(json_extract(f.payload,'$.recoveryAction'),'')!='refund'
+            AND (COALESCE(json_extract(f.payload,'$.retryAllowed'),0)=1 OR json_extract(f.payload,'$.upstreamStatus') IN ('declined','failed_precharge')))
+        ))) ORDER BY json_extract(o.payload,'$.updatedAt') ASC,o.id ASC LIMIT 1`).get(now.toISOString());
+    return row?decode<Order>(String(row.order_payload)):null;
+  }
+
+  findCostReadCandidate(now:Date,createdAfter:Date):Order|null {
+    const row=this.db.prepare(`SELECT o.payload AS order_payload FROM sandbox_records o
+      LEFT JOIN sandbox_records c ON c.kind='ops_order_cost' AND c.id=o.id
+      WHERE o.kind='order' AND json_extract(o.payload,'$.archivedAt') IS NULL AND json_type(o.payload,'$.costTerms') IS NOT NULL
+      AND json_extract(o.payload,'$.paymentStatus')='paid' AND json_extract(o.payload,'$.createdAt')>=?
+      AND COALESCE(json_extract(c.payload,'$.status'),'pending_review') NOT IN ('confirmed','disputed')
+      AND (json_extract(c.payload,'$.nextCheckAt') IS NULL OR json_extract(c.payload,'$.nextCheckAt')<=?)
+      AND EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id
+        AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded')
+      ORDER BY json_extract(o.payload,'$.createdAt') ASC,o.id ASC LIMIT 1`).get(createdAfter.toISOString(),now.toISOString());
+    return row?decode<Order>(String(row.order_payload)):null;
+  }
+
   consumeNonce(key: string, expiresAt: number, now: number): boolean {
     return this.transaction(() => {
       this.db.prepare("DELETE FROM request_nonces WHERE expires_at <= ?").run(now);
@@ -414,9 +472,12 @@ export class SqliteRepository implements Repository {
     return this.db.prepare("SELECT payload FROM sandbox_records WHERE kind=? AND merchant_id=? AND json_extract(payload,'$.orderId')=?").all("fulfillment",merchantId,orderId).map(r=>deserialize(String(r.payload)) as Fulfillment).sort((a,b)=>a.attemptNo-b.attemptNo);
   }
   listProcessableFulfillments(limit: number, now: Date): Fulfillment[] {
-    return this.db.prepare(`SELECT payload FROM sandbox_records WHERE kind='fulfillment' AND json_extract(payload,'$.status') IN ('queued','running')
-      AND COALESCE(json_extract(payload,'$.nextCheckAt'),json_extract(payload,'$.createdAt'))<=?
-      ORDER BY COALESCE(json_extract(payload,'$.nextCheckAt'),json_extract(payload,'$.createdAt')),id LIMIT ?`).all(now.toISOString(),limit).map(r=>decode<Fulfillment>(String(r.payload)));
+    return this.db.prepare(`SELECT f.payload AS payload FROM sandbox_records f
+      LEFT JOIN sandbox_records o ON o.kind='order' AND o.merchant_id=f.merchant_id AND o.id=json_extract(f.payload,'$.orderId')
+      WHERE f.kind='fulfillment' AND json_extract(f.payload,'$.status') IN ('queued','running')
+      AND COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt'))<=?
+      AND (json_extract(f.payload,'$.status')!='queued' OR COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 OR COALESCE(json_extract(f.payload,'$.liveSubmissionApproved'),0)=1)
+      ORDER BY COALESCE(json_extract(f.payload,'$.nextCheckAt'),json_extract(f.payload,'$.createdAt')),f.id LIMIT ?`).all(now.toISOString(),limit).map(r=>decode<Fulfillment>(String(r.payload)));
   }
   findFulfillmentByUpstreamClientRequestId(clientRequestId: string): Fulfillment | null {
     return this.listAll<Fulfillment>("fulfillment").find((item) => item.upstreamClientRequestId === clientRequestId) ?? null;
@@ -424,6 +485,7 @@ export class SqliteRepository implements Repository {
 
   insertCdkVoucher(value: CdkVoucher): void { this.insert("cdk_voucher", value.id, value.merchantId, value.orderId, value); }
   updateCdkVoucher(value: CdkVoucher): void { this.requireExisting("cdk_voucher", value.id, value.merchantId); this.put("cdk_voucher", value.id, value.merchantId, value.orderId, value); }
+  findCdkVoucherById(voucherId: string): CdkVoucher | null { return this.get("cdk_voucher", voucherId); }
   findCdkVoucherByOrder(orderId: string): CdkVoucher | null {
     const row=this.db.prepare("SELECT payload FROM sandbox_records WHERE kind='cdk_voucher' AND json_extract(payload,'$.orderId')=? LIMIT 1").get(orderId);
     return row ? deserialize(String(row.payload)) as CdkVoucher : null;

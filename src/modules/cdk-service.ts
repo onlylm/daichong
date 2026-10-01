@@ -65,7 +65,8 @@ export class CdkService {
   }
 
   private claimIssuance(): {order: Order; pending: CdkVoucher} | null {
-    const order = this.repository.listOrdersInternal().find((item) =>
+    const now=new Date(),candidates=this.repository.listCdkIssuanceCandidates?.(20,now)??this.repository.listOrdersInternal();
+    const order = candidates.find((item) =>
       item.fulfillmentMode === "cdk"
       && (!this.livePolicy || this.livePolicy.canFulfill(item))
       && ["paid", "partially_refunded"].includes(item.paymentStatus)
@@ -73,7 +74,7 @@ export class CdkService {
       && !this.repository.listRefundsForOrder(item.merchantId, item.id).some((refund) => ["requested", "approved", "processing"].includes(refund.status))
       && (() => {
         const voucher = this.repository.findCdkVoucherByOrder(item.id);
-        return !voucher || (voucher.status === "issuing" && (voucher.nextAttemptAt ?? voucher.createdAt) <= new Date());
+        return !voucher || (voucher.status === "issuing" && (voucher.nextAttemptAt ?? voucher.createdAt) <= now);
       })(),
     );
     if (!order) return null;
@@ -108,7 +109,9 @@ export class CdkService {
   async reconcileRefundedOne(): Promise<CdkVoucher | null> {
     const candidate = this.repository.transaction(() => {
       const now = new Date();
-      for (const order of this.repository.listOrdersInternal()) {
+      const indexed=this.repository.findRefundedCdkCleanupOrder?.(now);
+      const orders=this.repository.findRefundedCdkCleanupOrder?(indexed?[indexed]:[]):this.repository.listOrdersInternal();
+      for (const order of orders) {
         if (order.paymentStatus !== "refunded") continue;
         if (this.repository.listFulfillments(order.merchantId, order.id).some(task => !isConfirmedUnsuccessfulFulfillment(task))) continue;
         const voucher = this.repository.findCdkVoucherByOrder(order.id);
@@ -170,9 +173,7 @@ export class CdkService {
   }
 
   release(voucherId: string): void {
-    const voucher = this.repository.listOrdersInternal()
-      .map((order) => this.repository.findCdkVoucherByOrder(order.id))
-      .find((item) => item?.id === voucherId);
+    const voucher = this.repository.findCdkVoucherById(voucherId);
     if (!voucher || voucher.status !== "reserved") return;
     this.repository.updateCdkVoucher({...voucher, status: "unused"});
   }
@@ -197,9 +198,7 @@ export class CdkService {
   }
 
   consume(voucherId: string): void {
-    const voucher = this.repository.listOrdersInternal()
-      .map((order) => this.repository.findCdkVoucherByOrder(order.id))
-      .find((item) => item?.id === voucherId);
+    const voucher = this.repository.findCdkVoucherById(voucherId);
     if (!voucher || voucher.status === "consumed") return;
     this.repository.updateCdkVoucher({
       ...voucher,

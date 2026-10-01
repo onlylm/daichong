@@ -57,6 +57,10 @@ export interface Repository {
   findDuePaymentOrder?(provider:string,now:Date):Order|null;
   findDueRefund?(provider:string,now:Date):Refund|null;
   findRefundInternal?(refundId:string):Refund|null;
+  listCdkIssuanceCandidates?(limit:number,now:Date):Order[];
+  findRefundedCdkCleanupOrder?(now:Date):Order|null;
+  findRefundedFulfillmentCleanupOrder?(now:Date):Order|null;
+  findCostReadCandidate?(now:Date,createdAfter:Date):Order|null;
   findMerchantById(id: string): Merchant | null;
   listMerchants(): Merchant[];
   listApps(merchantId: string): PartnerApp[];
@@ -104,6 +108,7 @@ export interface Repository {
 
   insertCdkVoucher(value: CdkVoucher): void;
   updateCdkVoucher(value: CdkVoucher): void;
+  findCdkVoucherById(voucherId: string): CdkVoucher | null;
   findCdkVoucherByOrder(orderId: string): CdkVoucher | null;
   findCdkVoucherByPublicCode(publicCode: string): CdkVoucher | null;
   insertSupplierWebhookEvent(value: SupplierWebhookEvent): void;
