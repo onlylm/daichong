@@ -35,6 +35,7 @@ describe("platform action center", () => {
     }});
     expect(response.statusCode,response.body).toBe(200);
     expect(response.json().data).toMatchObject({
+      capabilities: {canReviewRefunds: true, canReviewWithdrawals: true, canManageSettlements: true, canManageInvoices: true},
       counts: {tasks: 0, refunds: 0, refundReviews: 0, settlements: 0, withdrawals: 0, tickets: 0},
       tasks: [], refunds: [], refundReviews: [], settlements: [], withdrawals: [], tickets: [],
       worker: {status: "missing", failedLanes: [], stuckLanes: []},
@@ -50,6 +51,29 @@ describe("platform action center", () => {
       origin: "https://admin.tibo.ink", cookie: String(login.headers["set-cookie"]).split(";")[0]!,
     }});
     expect(running.json().data.worker).toMatchObject({status: "healthy", failedLanes: [], stuckLanes: []});
+  });
+
+  it("returns server-derived action capabilities for finance and audit roles", async () => {
+    const admin = runtime.repository.listOperations("account").find(value => value.role === "platform_admin")!;
+    const actor = {id: admin.id, role: admin.role, merchantId: admin.merchantId};
+    const finance = await runtime.accounts.create(actor, {username: "action-finance", displayName: "平台财务",
+      role: "platform_finance", merchantId: null, password: "test-action-finance-password"});
+    const auditor = await runtime.accounts.create(actor, {username: "action-auditor", displayName: "平台审计",
+      role: "platform_auditor", merchantId: null, password: "test-action-auditor-password"});
+    runtime.repository.saveOperations("account", {...finance, mustChangePassword: false});
+    runtime.repository.saveOperations("account", {...auditor, mustChangePassword: false});
+    const financeSession = runtime.accounts.issueSessionFor({...finance, mustChangePassword: false});
+    const auditorSession = runtime.accounts.issueSessionFor({...auditor, mustChangePassword: false});
+    const read = (token: string) => app.inject({method: "GET", url: "/workspace/api/action-center", headers: {
+      origin: "https://admin.tibo.ink", cookie: `__Host-quefa_account=${token}`}});
+
+    const financeResponse = await read(financeSession.token), auditorResponse = await read(auditorSession.token);
+    expect(financeResponse.statusCode, financeResponse.body).toBe(200);
+    expect(financeResponse.json().data.capabilities).toEqual({canReviewRefunds: true, canReviewWithdrawals: true,
+      canManageSettlements: false, canManageInvoices: true});
+    expect(auditorResponse.statusCode, auditorResponse.body).toBe(200);
+    expect(auditorResponse.json().data.capabilities).toEqual({canReviewRefunds: false, canReviewWithdrawals: false,
+      canManageSettlements: false, canManageInvoices: false});
   });
 
   it("reports saved Alipay and supplier readiness without making external health calls", async () => {

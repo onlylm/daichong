@@ -194,6 +194,8 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
     moduleStatus.worker={available:true,updatedAt:now.toISOString(),error:null};
     return wire({data: {
       generatedAt:now.toISOString(),moduleStatus,
+      capabilities:{canReviewRefunds:canReviewWallet,canReviewWithdrawals:canReviewWallet,
+        canManageSettlements:actor.role==="platform_admin",canManageInvoices:permissions.has("*")||permissions.has("invoices.manage")},
       counts: {tasks: taskPage.meta.total, refunds: refundPage.meta.total, refundReviews: refundReviewPage.meta.total,
         settlements: settlementPage.meta.total, withdrawals: withdrawalPage.meta.total, tickets: ticketPage.meta.total, invoices: invoicePage.meta.total},
       tasks,
