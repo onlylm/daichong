@@ -84,6 +84,21 @@ describe("Alipay payment reconciliation", () => {
     });
   });
 
+  it("rejects and discards a provider code when a paid notification wins the in-flight request", async () => {
+    const order=await orderWithAlipayAttempt();let release!:()=>void,started!:()=>void;
+    const began=new Promise<void>(resolve=>{started=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+    const client={exec:vi.fn(async()=>{started();await gate;return {code:"10000",qr_code:"https://qr.alipay.com/stale-after-paid"};}),
+      pageExecute:vi.fn(async()=>""),checkNotifySignV2:vi.fn(()=>true)} as unknown as AlipayClient;
+    const alipay=new AlipayPaymentService(runtime.repository,runtime.payment,client,{appId:"test-app",sellerId:"2088000000000000"},
+      config.publicBaseUrl,new AlipayPagePaymentProvider(config.publicBaseUrl,runtime.portalTokens));
+    const pending=alipay.precreate(order.id);await began;
+    runtime.payment.markPaid(order.merchantId,order.id,{channel:"alipay_page",providerRef:"2026100100000813",
+      receivedMinor:order.saleAmountMinor});release();
+    await expect(pending).rejects.toMatchObject({code:"payment_not_available"});
+    expect(runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)).toMatchObject({status:"paid",qrPayload:null,
+      precreateLeaseToken:null,precreateLeaseUntil:null});
+  });
+
   it("rejects a cross-process precreate race while the database lease is active", async () => {
     const order = await orderWithAlipayAttempt(), attempt = runtime.repository.findPaymentAttemptByOrder(order.merchantId, order.id)!;
     runtime.repository.updatePaymentAttempt({...attempt, precreateLeaseToken: "another-process",

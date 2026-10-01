@@ -211,24 +211,13 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
     // Response format is intentionally fixed. In particular, this endpoint
     // accepts no amount, payment-channel or payment-config override.
     z.object({}).strict().parse(request.body);
+    const assertAvailable=()=>assertPartnerPaymentCodeAvailable(runtime,tenant,request.params.orderId);
     return sendIdempotent(runtime, request, reply, "POST /v1/orders/:orderId/payment-code", 200, async () => {
-      const profile = runtime.agents.profile(tenant.merchantId);
-      if (!profile.directPaymentCodeEnabled) {
-        throw new AppError(403, "direct_payment_code_disabled", "当前代理尚未开通后端直出付款码");
-      }
-      const order = runtime.orders.get(tenant.merchantId, request.params.orderId);
-      const attempt = runtime.repository.findPaymentAttemptByOrder(tenant.merchantId, order.id);
-      if (order.collectionMode === "agent_collect" || attempt?.provider !== "alipay_page") {
-        throw new AppError(409, "payment_code_not_supported", "该订单不使用平台支付宝收款");
-      }
-      if (order.paymentStatus !== "pending" || order.expiresAt <= new Date()) {
-        throw new AppError(409, "payment_not_available", "订单不可支付，请查询订单状态或重新下单");
-      }
-      if (attempt.status !== "pending" || attempt.requestedMinor !== order.saleAmountMinor || attempt.expiresAt.getTime() !== order.expiresAt.getTime()) {
-        throw new AppError(409, "payment_binding_mismatch", "支付记录与订单金额或有效期不一致");
-      }
-      if (!runtime.alipay) throw new AppError(503, "payment_provider_unavailable", "支付宝付款码暂不可用", true);
-      const paymentCode = await runtime.alipay.precreate(order.id);
+      const initial=assertAvailable();
+      const paymentCode = await runtime.alipay!.precreate(initial.order.id);
+      // Provider notifications and expiry can win while precreate is in flight.
+      // Never return a now-invalid code merely because the provider call began first.
+      const {order}=assertAvailable();
       const qrImageDataUrl = await paymentQrDataUrl(paymentCode);
       runtime.audit.record({merchantId: tenant.merchantId, actorId: tenant.keyId, action: "payment_code.fetch",
         targetType: "order", targetId: order.id, requestId: request.id});
@@ -243,7 +232,7 @@ export async function buildApp(config: AppConfig, runtime: Runtime): Promise<Fas
         qr_image_data_url: qrImageDataUrl,
         expires_at: order.expiresAt.toISOString(),
       }};
-    });
+    },()=>{assertAvailable();});
   });
 
   app.post<{Params: {orderId: string}}>("/v1/orders/:orderId/fulfillments", async (request, reply) => {
@@ -404,6 +393,7 @@ async function sendIdempotent(
   routeKey: string,
   successStatus: number,
   action: () => Promise<unknown>,
+  beforeReplay?: () => void | Promise<void>,
 ): Promise<unknown> {
   const tenant = requireTenant(request);
   const key = header(request, "idempotency-key");
@@ -424,6 +414,7 @@ async function sendIdempotent(
     throw new AppError(409, "idempotency_in_progress", "相同请求正在处理中，请稍后查询或使用原幂等键重试", true);
   }
   if (claim.state === "replay") {
+    await beforeReplay?.();
     reply.header("Idempotent-Replayed", "true").code(claim.record.responseStatus);
     const body = claim.record.responseBody as Record<string, unknown>;
     return {...body, idempotent: true};
@@ -438,6 +429,21 @@ async function sendIdempotent(
     runtime.repository.releaseIdempotency(tenant.merchantId, tenant.appId, routeKey, key, leaseToken);
     throw error;
   }
+}
+
+function assertPartnerPaymentCodeAvailable(runtime:Runtime,tenant:TenantContext,orderId:string) {
+  const profile=runtime.agents.profile(tenant.merchantId);
+  if(!profile.directPaymentCodeEnabled)throw new AppError(403,"direct_payment_code_disabled","当前代理尚未开通后端直出付款码");
+  const order=runtime.orders.get(tenant.merchantId,orderId);
+  const attempt=runtime.repository.findPaymentAttemptByOrder(tenant.merchantId,order.id);
+  if(order.collectionMode==="agent_collect"||!attempt||attempt.provider!=="alipay_page")
+    throw new AppError(409,"payment_code_not_supported","该订单不使用平台支付宝收款");
+  if(order.paymentStatus!=="pending"||order.expiresAt<=new Date())
+    throw new AppError(409,"payment_not_available","订单不可支付，请查询订单状态或重新下单");
+  if(attempt.status!=="pending"||attempt.requestedMinor!==order.saleAmountMinor||attempt.expiresAt.getTime()!==order.expiresAt.getTime())
+    throw new AppError(409,"payment_binding_mismatch","支付记录与订单金额或有效期不一致");
+  if(!runtime.alipay)throw new AppError(503,"payment_provider_unavailable","支付宝付款码暂不可用",true);
+  return {order,attempt};
 }
 
 function requireTenant(request: FastifyRequest): TenantContext {

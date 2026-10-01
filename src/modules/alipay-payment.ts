@@ -96,7 +96,12 @@ export class AlipayPaymentService {
       const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
       if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝当面付暂不可用，请稍后重试");
       return this.repository.transaction(() => {
+        const order=this.order(claimed.order.id),now=new Date();
         const current = this.repository.findPaymentAttemptByOrder(claimed.order.merchantId, claimed.order.id)!;
+        if(order.paymentStatus!=="pending"||order.expiresAt<=now)
+          throw new AppError(409,"payment_not_available","订单不可支付，请查询订单状态或重新下单");
+        if(current.status!=="pending"||current.requestedMinor!==order.saleAmountMinor||current.expiresAt.getTime()!==order.expiresAt.getTime())
+          throw new AppError(409,"payment_binding_mismatch","支付记录与订单金额或有效期不一致");
         if (current.qrPayload && isAlipayPrecreateQr(current.qrPayload)) return current.qrPayload;
         if (current.precreateLeaseToken !== leaseToken) throw new AppError(409, "payment_code_generation_changed", "付款码生成状态已变化，请重新查询", true);
         this.repository.updatePaymentAttempt({...current, qrPayload: qrCode, precreateLeaseToken: null,

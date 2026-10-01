@@ -89,4 +89,50 @@ describe("signed partner payment-code API", () => {
     runtime.payment.markPaid(order.merchantId, order.id, {channel: "alipay_page", providerRef: "2026100100000800", receivedMinor: order.saleAmountMinor});
     expect((await signed("POST", path, {}, "already-paid")).json().error.code).toBe("payment_not_available");
   });
+
+  it("revalidates a cached response against paid, expired and disabled state", async () => {
+    const installCode=(orderId:string)=>{
+      const precreate=vi.fn(async()=>"https://qr.alipay.com/replay-state-code");
+      (runtime as unknown as {alipay:{precreate:(id:string)=>Promise<string>}}).alipay={precreate};
+      return {path:`/v1/orders/${orderId}/payment-code`,precreate};
+    };
+
+    const paidOrder=await platformOrder();enable(paidOrder.merchantId);const paid=installCode(paidOrder.id);
+    expect((await signed("POST",paid.path,{},"replay-paid-state")).statusCode).toBe(200);
+    runtime.payment.markPaid(paidOrder.merchantId,paidOrder.id,{channel:"alipay_page",providerRef:"2026100100000811",
+      receivedMinor:paidOrder.saleAmountMinor});
+    const paidReplay=await signed("POST",paid.path,{},"replay-paid-state");
+    expect(paidReplay.json().error.code).toBe("payment_not_available");
+    expect(paidReplay.headers["idempotent-replayed"]).toBeUndefined();
+
+    const expiredOrder=await platformOrder();const expired=installCode(expiredOrder.id);
+    expect((await signed("POST",expired.path,{},"replay-expired-state")).statusCode).toBe(200);
+    const stored=runtime.repository.findOrder(expiredOrder.merchantId,expiredOrder.id)!;
+    runtime.repository.updateOrder({...stored,expiresAt:new Date(Date.now()-1_000),updatedAt:new Date()});
+    expect((await signed("POST",expired.path,{},"replay-expired-state")).json().error.code).toBe("payment_not_available");
+
+    const disabledOrder=await platformOrder();const disabled=installCode(disabledOrder.id);
+    expect((await signed("POST",disabled.path,{},"replay-disabled-state")).statusCode).toBe(200);
+    const profile=runtime.agents.profile(disabledOrder.merchantId);
+    runtime.agents.saveProfile(admin,disabledOrder.merchantId,{...profile,directPaymentCodeEnabled:false});
+    expect((await signed("POST",disabled.path,{},"replay-disabled-state")).json().error.code).toBe("direct_payment_code_disabled");
+  });
+
+  it("does not return a code when payment notification wins during provider precreate", async () => {
+    const order=await platformOrder();enable(order.merchantId);let release!:()=>void;
+    const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{
+      (runtime as unknown as {alipay:{precreate:(id:string)=>Promise<string>}}).alipay={precreate:async()=>{resolve();await gate;
+        return "https://qr.alipay.com/late-provider-code";}};
+    });
+    const request=signed("POST",`/v1/orders/${order.id}/payment-code`,{},"notification-before-code");
+    await started;
+    runtime.payment.markPaid(order.merchantId,order.id,{channel:"alipay_page",providerRef:"2026100100000812",
+      receivedMinor:order.saleAmountMinor});
+    release();
+    const response=await request;
+    expect(response.json().error.code).toBe("payment_not_available");
+    expect(runtime.repository.getIdempotency(order.merchantId,
+      runtime.repository.findCredential(config.demoPartnerId,config.demoKeyId)!.app.id,
+      "POST /v1/orders/:orderId/payment-code","notification-before-code")).toBeNull();
+  });
 });
