@@ -1,14 +1,14 @@
 # Quefa 下游统一对接标准
 
-版本 1.2 · 2026-09-30  
+版本 1.3 · 2026-10-02（本地候选，生产能力以已部署版本及代理授权为准）
 接口前缀：`/v1`  
 生产 Base：`https://tibo.ink/v1`  
 机器可读：`https://tibo.ink/developers/openapi.yaml`  
 联调示例：`examples/partner-demo/`、`examples/signing/`
 
 > 本文档是 **Quefa 对下游（代理商 / 自建商城 / 其他平台）的正式对接标准**。  
-> 按本文档实现的下游，只需在工作台完成资金与 API 开通、登记回调，即可统一部署上线。  
-> Quefa **只提供后端能力**；客户前端、品牌站、订单页由下游自行开发与托管。
+> 代理商默认可创建服务端 API 密钥，无需申请或预存；零采购余额只能使用平台收款。完成密钥、回调登记和联调后再上线。
+> 自建模式下 Quefa 提供后端能力；客户前端、品牌站、订单页由下游自行开发与托管。不开发网站也可直接使用代理工作台，两种入口可并存。
 
 与历史关系：早期有下游平台曾用「上游提供 `/api/v1/checkout/*`」协议接入我们。  
 现在角色对调——**Quefa 定义标准，下游按本文档对接我们**。字段与路径以本文档和 OpenAPI 为准，不再要求下游实现 checkout 供货接口。
@@ -23,6 +23,7 @@
 4. 接口  
    - 4.1 商品目录  
    - 4.2 开单  
+   - 4.2.1 自有页面取付款码
    - 4.3 查单  
    - 4.4 交付（CDK / 自动直充）  
    - 4.5 查履约 / 兑换进度  
@@ -44,7 +45,7 @@
 | | Quefa（我方） | 下游（你方） |
 |---|---|---|
 | 面对买家 | 不直接运营你的品牌站 | 展示商品、接单、收款展示、收 Session、展示结果 |
-| 收款 | `platform_collect`：平台出码/收款并确认到账；`agent_collect`：只扣你的采购余额 | 平台代收时把我方支付入口给买家；自收款时你自己收买家款 |
+| 收款 | `platform_collect`：平台出码/收款并确认到账；`agent_collect`：只扣你的采购余额 | 自有品牌站经代理后端取码后在自己页面展示；旧接入保留付款链接；自收款时你自己收买家款 |
 | 开通 / 交付 | 履约、签发代理品牌公开号、自动直充、统一失败码 | 把买家凭据经你的后端转交；或直接交付完整品牌码 |
 | 调用方向 | 你主动调我方 `/v1`（第 4 节） | 我方向你推送 Webhook（第 5 节），只作提醒 |
 
@@ -60,6 +61,7 @@
 | 6 | 查进度 | `GET /v1/redemptions/{id}` 或订单履约列表 |
 | 7 | 收回调 | 验签 + 按 `event_id` 去重，然后立刻查单 |
 | 8 | 退款申请（可选） | `POST /v1/orders/{order_id}/refunds`（平台代收场景） |
+| 9 | 原站付款码（按代理开通） | `POST /v1/orders/{order_id}/payment-code`，后端取码、自己的前端展示 |
 
 路径前缀 `/v1` 固定，接在 Base 后面。例：Base = `https://tibo.ink/v1`，开单即 `POST https://tibo.ink/v1/orders`。
 
@@ -73,7 +75,8 @@
  │ ─────────────────────────────────────────────────────────▶ │  创建订单 / 支付入口
  │ ◀──────── {order_id, payment_status=pending, pay 相关字段}
  │
- │  （买家在你站完成付款；钱进平台通道）
+ │  POST /orders/{order_id}/payment-code {} → payment_code / qr_image_data_url
+ │  （代理后端转交付款码；买家在你站扫码付款，钱进平台通道）
  │
  │ ◀────────────── 回调 order.paid（只是提醒）                 │  确认到账
  │  2. GET /orders/{order_id} → payment_status=paid           │  ← 你方以这里为准
@@ -120,19 +123,20 @@
 | 项目 | 说明 |
 |---|---|
 | API Base | 生产 `https://tibo.ink/v1`；沙箱另发 |
-| `partner_id` / `key_id` / `client_secret` | 审核开通后发放；`client_secret` 只显示一次 |
+| `partner_id` / `key_id` / `client_secret` | API 默认开放，代理主账号在工作台创建；`client_secret` 只显示一次；平台风控停用时拒绝调用 |
 | `webhook_secret` | 与 `client_secret` **必须不同**，用于验回调 |
-| 商品授权与价格 | 供货价、售价上限、可售编码 |
+| 商品授权与价格 | 供货价、可售编码及交付方式；`max_sale_price` 为历史兼容字段 |
 | 开发者中心 | `https://tibo.ink/developers` |
 
 ### 2.3 联调步骤（按序，一步过再下一步）
 
 1. **连通性**：错误签名 / 过期时间戳 / 重放 Nonce 均被拒绝；正确签名可拉商品。  
-2. **商品目录**：双方核对 `product_code`、供货价、售价上限、`delivery_modes`。  
+2. **商品目录**：双方核对 `product_code`、供货价、`delivery_modes`。
 3. **开单 + 查单**：同幂等键重放返回同一单；异内容同键返回冲突。  
 4. **回调**：收到 `webhook.test` 或真实 `order.paid`，验签通过并返回 2xx。  
-5. **真实小额单**：平台代收付款 → 查到 `paid` → 自动直充或 CDK 交付到终态。  
-6. **异常路径**：至少走一遍无效 Session（期望失败且可按策略重交）与未付款过期。
+5. **纯支付联调**：用 `POST /v1/payment-tests` 创建固定 1 元订单，确认付款、查单和回调；该用途不进入 CDK 或上游充值，不可用正式商品改价替代。
+6. **正式商品履约**：经业务方确认后，四款正式商品按正常售价验证自动直充或 CDK 交付到终态；这是会真实扣款和履约的独立步骤。
+7. **异常路径**：在隔离环境验证明确失败后的原单重提与未付款过期，不用生产真实充值制造异常。
 
 ---
 
@@ -166,7 +170,7 @@ METHOD\nPATH\nCANONICAL_QUERY\nTIMESTAMP\nNONCE\nKEY_ID\nIDEMPOTENCY_KEY\nSHA256
 
 ### 3.3 响应与重试
 
-成功时业务数据在 `data`（及列表的 `meta`）中。失败：
+成功时业务数据在 `data` 中，分页方式按接口区分：订单、账单和结算单列表使用响应顶层 `next_cursor`，没有下一页时为 `null`；工单列表使用 `meta`；钱包流水使用 `entries` 和 `entries_meta`。不要给所有列表套用同一种分页结构。失败：
 
 ```json
 {
@@ -217,9 +221,11 @@ METHOD\nPATH\nCANONICAL_QUERY\nTIMESTAMP\nNONCE\nKEY_ID\nIDEMPOTENCY_KEY\nSHA256
 
 返回当前代理已授权且可售的商品。上架前先拉目录，价格与库存以实时响应为准，禁止写死。
 
+正式商品只保留 Plus（`chatgpt_plus_cdk_1m`）、Pro 5x（`chatgpt_pro_5x_cdk_1m`）、Pro 20x（`chatgpt_pro_20x_cdk_1m`）、Pro 50x（`chatgpt_pro_50x_cdk_1m`）。历史商品不再接受新订单。`POST /v1/payment-tests` 是独立固定 1 元测试用途，不在商品目录中；不签发 CDK、不创建充值任务、不计算佣金、不调用上游。
+
 关键字段：`product_code`、`name`、`supply_price`、`max_sale_price`、`currency`、`max_quantity`、`available`、`fulfillment_mode`、`delivery_modes`。
 
-售价必须落在 `[supply_price, max_sale_price]`。`available=false` 时不要开单。
+`sale_amount` 是整单总额，必须不低于 `supply_price × quantity`。`max_sale_price` 保留为历史兼容字段，当前后端不使用它限制售价上限；不得将其为 `0.00` 等历史值理解为免费或不可售。`available=false` 时不要开单。
 
 ### 4.2 开单
 
@@ -245,14 +251,43 @@ METHOD\nPATH\nCANONICAL_QUERY\nTIMESTAMP\nNONCE\nKEY_ID\nIDEMPOTENCY_KEY\nSHA256
 | `sale_amount` | 买家侧售价（平台代收时为买家实付口径） |
 | `collection_mode` | `platform_collect` / `agent_collect` |
 | `delivery_mode` | `cdk` / `auto_recharge` |
+| `payment_channel` | 平台收款仅支持 `alipay`（可省略），不支持 USDT；余额采购不传 |
 | `notify_url` | 必须已预登记；生产必须 HTTPS |
 | `metadata` | 仅非敏感业务标识；**禁止**放 Session/密码 |
 
 **幂等**：同一租户、路由、`Idempotency-Key` 且请求摘要相同 → 返回首次建单结果（含同一 `order_id`）。同键不同内容 → `409 idempotency_conflict`。
 
+#### 4.2.1 自有页面取付款码
+
+`POST /v1/orders/{order_id}/payment-code`，必须由代理后端携带 HMAC 签名和 `Idempotency-Key` 调用，请求体固定为 `{}`。
+
+该能力由平台按代理开通；未开通返回 `403 direct_payment_code_disabled`。平台校验订单归属、待付款状态、有效期及支付宝平台收款配置，金额、币种、有效期和支付配置只取服务端订单，禁止请求覆盖。
+
+```json
+{
+  "data": {
+    "order_id": "ord_xxx",
+    "merchant_order_no": "M202609290001",
+    "amount": "139.00",
+    "currency": "CNY",
+    "payment_status": "pending",
+    "payment_code_type": "alipay_precreate",
+    "payment_code": "https://qr.alipay.com/example",
+    "qr_image_data_url": "data:image/png;base64,...",
+    "expires_at": "2026-10-02T09:30:00.000Z"
+  }
+}
+```
+
+代理后端转交图片数据给自己的前端，或用 `payment_code` 本地绘码；买家浏览器不得直连平台 API 或第三方绘码服务，不得接触平台密钥、供货价和内部字段。旧 `qr_payload` 仍表示平台付款页 URL，不是实际支付宝付款码，含义保持兼容。
+
+重复取码复用原支付记录。同幂等键重放和首次生成返回前均复验当前订单及开关；已付款、到期、关闭或停用后不返回旧待付款码。到账仍以验签通知或签名查单为准，过期不能替代晚到款核对。
+
 ### 4.3 查单
 
 `GET /v1/orders/{order_id}`
+
+列表使用 `GET /v1/orders?payment_status=&cursor=&limit=`，默认 20 条、最大 100 条。响应示例为 `{"data": [], "next_cursor": null}`；下一页传上次返回的顶层 `next_cursor`，并原样保留筛选条件。不要从 `meta` 读取订单游标。
 
 **判断「付没付款 / 采购扣没扣」的唯一依据。**
 
@@ -268,7 +303,7 @@ pending ──确认──▶ paid ──退款──▶ partially_refunded / re
 |---|---|---|
 | `pending` | 等待付款（或待确认） | 继续查 |
 | `paid` | 平台代收：买家已付；自收款：采购余额已扣 | 进入交付 |
-| `expired` / `closed` | 未完成付款流程 | 本单结束 |
+| `expired` / `closed` | 未完成付款流程 | 关闭付款入口；仍处理晚到的验签付款通知并查询原单，不能忽略后来确认的到账 |
 | `partially_refunded` / `refunded` | 已发生退款 | 按退款接口与账单核对；若同时 `sync_mark=cancelled_refunded`，可关闭本地「充值取消已退」订单 |
 
 查单还会返回最近一次履约摘要（只读派生字段，不替代履约明细接口）：
@@ -362,11 +397,18 @@ pending ──确认──▶ paid ──退款──▶ partially_refunded / re
 |---|---|---|
 | `order.paid` | 付款/采购扣款确认 | 是 |
 | `order.expired` | 未付款过期 | 建议 |
+| `order.closed` | 支付渠道明确关闭未付款交易 | 关闭付款入口；仍以最新查单处理晚到款 |
 | `cdk.issued` | 公开号就绪 | `delivery_mode=cdk` 时 |
+| `cdk.failed` | 签发明确失败，含 `order_id`、`failure_code` | 查原单及平台处理，不重复付款；不代表退款到账 |
+| `cdk.disabled` | 平台侧兑换码已停用，含 `order_id` | 停止使用旧码；不证明上游原始码已作废 |
 | `fulfillment.updated` | 受理、业务阶段或恢复操作变化 | 建议订阅；相同状态不重复通知 |
 | `fulfillment.succeeded` / `failed` / `cancelled` | 开通终态 | 是 |
-| `refund.succeeded` / `rejected` | 退款结果；`succeeded` 体可含 `payment_status`、`fulfillment_status`、`sync_mark` | 申请过退款时；`sync_mark=cancelled_refunded` 时可同步关闭本地单 |
+| `refund.succeeded` | 退款成功；可含 `payment_status`、`fulfillment_status`、`sync_mark` | 申请过退款时；`sync_mark=cancelled_refunded` 时可同步关闭本地单 |
+| `procurement.refunded` | 采购余额退回 | 不代表客户零售款已退 |
+| `wallet.deposit.credited` | 支付宝采购余额充值入账，含 `deposit_id`、`amount` | 查钱包核对，不视为客户订单付款或代理打款 |
 | `webhook.test` | 联调 | 联调时 |
+
+退款驳回与每日核算生成、登记打款目前没有独立 Webhook，通过退款、结算查询或工作台查看。平台不发送邮件，也不自动向代理打款；自动生成核算单、自动记账不是自动出款。
 
 收到后只做一件事：**验签 → 去重 → 立刻查对应查询接口**。不要只凭回调改本地终态。
 
@@ -407,7 +449,7 @@ X-Quefa-Signature: t=<秒>,v1=<hex>
 
 1. 你方 `POST /v1/orders/{order_id}/refunds` 申请（`full` / `partial` / `price_adjustment`）。  
 2. 接口只受理；出款以平台审核与支付通道确认为准。  
-3. 以查退款 / 查单 / `refund.*` 回调为准，不要假设同步到账。  
+3. 以查退款 / 查单 / `refund.succeeded` 回调为准，不要假设同步到账；驳回结果需查询，不能等待不存在的驳回通知。
 4. 存在进行中或已成功履约时，可能进入人工复核。
 
 **`agent_collect`**：平台订单上的退款接口不替你退买家零售款；采购侧余额退回按工作台/合同规则处理，买家侧退款由你方支付通道自行完成。
@@ -428,7 +470,7 @@ X-Quefa-Signature: t=<秒>,v1=<hex>
 6. Session / Token 不进日志、不进 `metadata`、不进 Webhook、不落长期库。  
 7. 失败码驱动分支；中间态 `result_code` 不当作失败。  
 8. Webhook 验签 + `event_id` 去重；时钟 NTP 同步。  
-9. 售价落在供货价与上限之间；未授权商品不开单。  
+9. 整单售价不低于供货价乘以数量；未授权商品不开单。
 10. 已有字段与错误码不擅自改名理解；有疑问以 OpenAPI 与本文档为准。
 
 ---
@@ -462,6 +504,7 @@ X-Quefa-Signature: t=<秒>,v1=<hex>
 | 1.0 | 2026-09-29 | 首版：明确 Quefa 为标准制定方，下游按 `/v1` Partner API 统一对接部署 |
 | 1.1 | 2026-09-30 | 明确进度与失败原因同步、终态通知加查询、恢复入口与未知结果限制；修正 Session 请求字段 |
 | 1.2 | 2026-09-30 | 实现阶段变化通知与进度版本；管理员确认取消后选择退款或开放原订单重提。生产须部署同版后生效 |
+| 1.3 | 2026-10-02 | 校准四款正式商品、1 元纯支付用途、默认 API 与原站取码；修正订单游标和实际事件清单，不新增运行功能 |
 
 ---
 

@@ -21,6 +21,7 @@
   "quantity":1,
   "sale_amount":"135.00",
   "collection_mode":"platform_collect",
+  "delivery_mode":"auto_recharge",
   "payment_channel":"alipay"
 }
 ```
@@ -29,15 +30,17 @@ POST /v1/orders，必须按现有规范携带签名和 Idempotency-Key。
 payment_channel 当前只可选 alipay；省略时同样使用支付宝。平台不再接受新的 USDT 订单。
 sale_amount 始终为人民币元字符串，不能填 USDT 数量。旧接入继续把 `qr_payload` 视为 Quefa 付款链接，不能将它当作支付宝当面付二维码。
 
-如需买家全程留在代理商页面，可由平台按代理开通后端直出码能力。代理后端签名调用 `POST /v1/orders/{order_id}/payment-code`，请求体只能为 `{}`，平台返回实际 `payment_code` 及本地生成的 `qr_image_data_url`。金额、有效期和支付配置全部取原订单，不能在取码请求中覆盖。代理前端只请求自己的后端；不得把平台 API 密钥放进浏览器，也不得让买家浏览器请求平台或第三方绘码网站。该新接口不改变 `qr_payload` 的旧含义。
+如需买家全程留在代理商页面，可由平台按代理开通后端直出码能力。代理后端签名调用 `POST /v1/orders/{order_id}/payment-code`，必须携带 `Idempotency-Key`，请求体只能为 `{}`。平台返回实际 `payment_code` 及本地生成的 `qr_image_data_url`，并包含 `order_id`、`merchant_order_no`、`amount`、`currency`、`payment_status`、`payment_code_type=alipay_precreate` 和 `expires_at`。金额、有效期和支付配置全部取原订单，不能在取码请求中覆盖。未开通返回 `403 direct_payment_code_disabled`；同键重放及生成返回前均复验当前订单和开关，已付款、到期或停用后不返回旧待付款码。代理前端只请求自己的后端；不得把平台 API 密钥放进浏览器，也不得让买家浏览器请求平台或第三方绘码网站。该新接口不改变 `qr_payload` 的旧含义。完整示例见 [接入文档](/developers/doc/integration)。
 
 一笔订单锁定一个支付通道，不提供原单切换。不要因超时换订单号重试；先查原单。相同幂等键必须对应相同原始请求体，改变支付通道视为冲突。
 选定的通道关闭时新请求会被拒绝；不要在未经客户确认的情况下另建订单以更换支付方式。
 
 ## 到账后
 
-客户在 Quefa 收银台支付并等待服务端核对。以 GET /v1/orders/{order_id} 和验签后的 order.paid 通知为依据，不能用浏览器跳转、截图、交易哈希提交或客户口述判断已付。
-CDK 商品等待 voucher_code 或 cdk.issued 通知；直充商品可引导至 fulfillment_url，或按已有自建兑换指南调用。付款成功不等于充值完成，仍须看充值任务状态。
+客户在代理页面扫码付款；旧接入也可使用 Quefa 收银台。以 GET /v1/orders/{order_id} 和验签后的 order.paid 通知为依据，不能用浏览器跳转、截图或客户口述判断已付。
+当前四款正式套餐均由 CDK 支撑，按 `delivery_mode` 区分交付：`cdk` 等待 `voucher_code` 或 `cdk.issued` 后交付代理品牌公开号；`auto_recharge` 在代理自有订单页收集本次授权凭据，由代理后端调用 `/v1/redemptions`，不展示明文 CDK、不要求跳转平台页。付款成功不等于充值完成，仍须看充值任务状态。
+
+首次支付联调可使用 `POST /v1/payment-tests` 固定 1 元订单。它不属于 Plus、Pro 5x、Pro 20x、Pro 50x 四款正式商品；付款后不产生 CDK、充值任务、佣金或上游调用。
 
 ## 代理自收款
 
@@ -52,4 +55,4 @@ collection_mode=agent_collect 时，不传 payment_channel。
 - payment_query_pending：支付核验暂未完成，等待原单查询，不重复付款。
 - 实单白名单或累计限额错误：联系平台，不创建更多订单绕过限额。
 
-平台收款关闭不等于取消已发起付款，也不等于退款。已发起的付款仍核对原订单；如金额、链或付款窗口有异常，请提交工单并保留转账记录。
+平台收款关闭不等于取消已发起付款，也不等于退款。已发起的付款仍核对原订单；金额或付款窗口异常在订单及退款核对模块处理，需要人工沟通时可关联工单并保留付款凭证。

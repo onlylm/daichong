@@ -15,7 +15,7 @@
 
 另有独立的固定 1 元纯支付联调入口 `POST /v1/payment-tests`。它不属于上述四款商品，只验证签名、平台收款、支付宝到账、查单和 Webhook；付款成功后不会签发 CDK、创建充值任务、计算佣金或调用上游。
 
-平台不发送邮件。异常通过站内工单跟踪，API 对接使用 `fulfillment.updated` 及终态 Webhook，并保留订单查询兜底。上游结果未知时不能取消或重复提交；明确失败且响应允许重提时，在原订单重新提交，展示代理商自己的充值入口，不泄露上游兑换码。
+平台不发送邮件。订单、退款核对、提现和核算事项在各自业务模块跟踪；站内工单用于人工咨询与售后沟通。API 对接使用 `fulfillment.updated` 及终态 Webhook，并保留订单查询兜底。上游结果未知时不能取消或重复提交；明确失败且响应允许重提时，在原订单重新提交，展示代理商自己的充值入口，不泄露上游兑换码。
 
 退差基准与实际美元成本是两个概念：前者按下单时约定冻结，后者须以该订单对应的已核实上游清算为准。平台退差不冲减代理基础分佣。核算或确认凭证不代表已经退款。
 
@@ -102,7 +102,7 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 ## 4. 商品
 
-`GET /v1/products` 返回当前代理商已授权且可售商品、Quefa 供货价、销售上限、币种和单笔数量上限。不得使用其他代理商看到的商品或价格。
+`GET /v1/products` 返回当前代理商已授权且可售商品、Quefa 供货价、币种和单笔数量上限。`max_sale_price` 是保留的历史兼容字段，当前不作为下单售价上限；整单 `sale_amount` 仍须不低于 `supply_price × quantity`。不得使用其他代理商看到的商品或价格。
 
 当前 GPT 成品的 `fulfillment_mode` 为 `cdk`，并通过 `delivery_modes` 告知代理商可选 `auto_recharge` 或 `cdk`。前者由平台服务端使用订单绑定凭证自动兑换，后者返回代理品牌公开号。代理商不需要、也不会获得平台内部账号、域名、履约参考号或原始兑换凭证。
 
@@ -142,7 +142,7 @@ signature = lowercase_hex(HMAC-SHA256(client_secret, canonical_string_utf8))
 
 `notify_url` 必须与 Quefa 为该代理商预登记的 Webhook 地址完全一致，不能按订单临时指定任意地址；生产必须使用 HTTPS，HTTP 仅允许隔离沙箱本机联调。
 
-平台代收订单的支付入口由平台支付配置生成。代理商应在自己的页面展示付款按钮并轮询订单状态，不需要维护平台支付宝密钥。付款后继续使用代理商自己的订单链接；通过服务端调用 `/v1/redemptions` 提交自动直充，不把客户跳转到平台品牌页。
+平台代收订单的支付入口由平台支付配置生成。自有品牌站按 5.1 节由代理后端取码，在自己的页面展示付款码并轮询订单状态，不需要维护平台支付宝密钥；旧接入仍可使用原付款链接。付款后继续使用代理商自己的订单链接；通过服务端调用 `/v1/redemptions` 提交自动直充，不把客户跳转到平台品牌页。
 
 ### 5.0 上线前 1 元纯支付联调
 
@@ -182,7 +182,7 @@ Content-Type: application/json
 
 代理后端可以把 `qr_image_data_url` 原样转交自己的页面作为 `<img src>`，也可以只使用 `payment_code` 在本地绘码。买家浏览器只能请求代理商后端，不得直接请求 Quefa 接口或第三方绘码网站；API 密钥、签名密钥、供货价和平台域名不得进入浏览器。重复请求应沿用原幂等键；即使使用新键，已生成的有效付款码也会复用原支付记录。过期、已支付、已关闭、非平台支付宝收款或金额绑定不一致时不会重新生成。
 
-此能力由平台对单个代理灰度开通，未开通返回 `403 direct_payment_code_disabled`。旧 `qr_payload` 的含义和旧接入保持不变，不能把它当作新直出码字段。付款是否到账仍只认验签后的 Webhook 或代理后端签名查询 `GET /v1/orders/{order_id}`；晚到款由平台原支付记录继续核对，代理不得仅因二维码过期自行宣布未付款。
+此能力由平台对单个代理灰度开通，未开通返回 `403 direct_payment_code_disabled`。同幂等键重放也会重新校验当前订单状态与开关；已付款、到期或权限关闭后不会返回旧的待付款码。首次生成期间发生付款或到期时，返回前同样复验。旧 `qr_payload` 的含义和旧接入保持不变，不能把它当作新直出码字段。付款是否到账仍只认验签后的 Webhook 或代理后端签名查询 `GET /v1/orders/{order_id}`；晚到款由平台原支付记录继续核对，代理不得仅因二维码过期自行宣布未付款。
 
 ## 6. 查单与支付
 
@@ -427,7 +427,16 @@ CDK 交付模式恢复时仍可由代理后端使用已购买的公开品牌码�
 
 ## 10. Webhook
 
-事件包括：`order.paid`、`order.expired`、`order.closed`、`cdk.issued`、`fulfillment.updated`、`fulfillment.succeeded`、`fulfillment.failed`、`fulfillment.cancelled`、`refund.succeeded`、`refund.rejected`、`procurement.refunded`、`settlement.created`、`settlement.paid`、`webhook.test`。`order.expired` 表示本地付款窗口已结束且没有可继续核对的支付宝交易；`order.closed` 表示支付渠道已明确关闭未付款交易。两者都要求代理商关闭付款入口，但都不表示退款完成。若平台随后收到支付宝验签通过的晚到款，订单仍会改为 `paid` 并发送幂等的 `order.paid`，代理商必须以最新查单结果为准。
+当前实现的事件包括：`order.paid`、`order.expired`、`order.closed`、`cdk.issued`、`cdk.failed`、`cdk.disabled`、`fulfillment.updated`、`fulfillment.succeeded`、`fulfillment.failed`、`fulfillment.cancelled`、`refund.succeeded`、`procurement.refunded`、`wallet.deposit.credited`、`webhook.test`。
+
+- `cdk.issued` 表示订单绑定的 CDK 已就绪；仅 `delivery_mode=cdk` 的通知包含 `voucher_code`，自动直充不返回明文码。
+- `cdk.failed` 表示签发已明确失败，不等同于客户充值失败或退款到账；通知含 `order_id`、`failure_code`，后续以查单及平台处理为准，不重新开单或重复付款。
+- `cdk.disabled` 表示平台侧兑换码已停用，通知含 `order_id`；停止展示或使用旧码。它不证明上游原始码已作废，也不代表退款到账。
+- `wallet.deposit.credited` 表示支付宝采购余额充值已入账，通知含 `deposit_id` 和元金额字符串 `amount`；它不是客户订单付款，也不是平台向代理打款。
+
+退款驳回与每日核算生成、登记打款目前没有独立 Webhook，须通过退款、核算查询接口或工作台查看，不得等待未实现的通知。自动生成核算单不等于自动打款，平台不自动向代理出款。
+
+`order.expired` 表示本地付款窗口已结束且没有可继续核对的支付宝交易；`order.closed` 表示支付渠道已明确关闭未付款交易。两者都要求代理商关闭付款入口，但都不表示退款完成。若平台随后收到支付宝验签通过的晚到款，订单仍会改为 `paid` 并发送幂等的 `order.paid`，代理商必须以最新查单结果为准。
 
 订单对象新增只读同步字段：`fulfillment_status`、`fulfillment_failure_code`、`sync_mark`。当充值已取消（履约 `cancelled`，或失败码 `agent_cancelled`）且订单已退款时，`sync_mark=cancelled_refunded`。`refund.succeeded` 回调也会带上这三项，便于代理商侧直接关闭本地订单。
 
@@ -468,7 +477,7 @@ X-Quefa-Signature: t=1790323200,v1=<hex>
 | 409 | `idempotency_conflict` | 同键请求内容不同，需排查 |
 | 409 | `idempotency_in_progress` | 原请求仍在执行；先查询原业务结果，再按 `Retry-After` 用原业务键和新的时间戳/Nonce退避重试 |
 | 409 | `invalid_state_transition` | 当前状态不允许该动作 |
-| 422 | `price_out_of_range` | 售价低于供货价或高于上限 |
+| 422 | `price_out_of_range` | 整单售价低于供货价乘以数量 |
 | 429 | `rate_limited` | 按 `Retry-After` 退避 |
 | 503 | `temporarily_unavailable` | 使用原幂等键退避重试 |
 

@@ -5,9 +5,11 @@ info:
   description: |
     面向代理商销售渠道服务端的开单、查付、履约、退款申请、账单与结算接口。
     支持平台收款分销，或授权代理自收款后以采购余额支付供货价；后者的 paid 仅代表供货款已扣。
-    GPT 商品由 CDK 库存支撑；代理商下单时可选择直接交付 CDK，或在自有品牌页面调用自动直充接口。
+    正式商品仅为 Plus、Pro 5x、Pro 20x、Pro 50x，由 CDK 库存支撑；代理商下单时可选择直接交付 CDK，或在自有品牌页面调用自动直充接口。
+    固定 1 元 payment_test 是独立支付联调用途，不属于正式套餐，不签发 CDK、不创建充值任务、不计算佣金、不调用上游。
     自动直充失败时只返回可重新提交标志，不返回明文 CDK；客户页面、品牌和订单入口由代理商自行实现。
-    代理自行接入其支付渠道，不向 Quefa 提交支付宝应用或支付密钥。
+    平台收款当前仅支持支付宝，不支持 USDT；代理自收款由代理自行接入自己的支付渠道，不向 Quefa 提交支付宝应用或支付密钥。
+    平台不发送邮件通知；自动生成核算结果不等于自动打款，代理出款须人工确认。
     沙箱与生产使用不同域名、数据及密钥。所有接口均执行租户隔离。
     代理商账号默认开放 API，无需申请或预存。采购余额为零时仍可查单及平台代收下单，但不得使用代理自收款/余额采购；管理员明确停用时返回 403。
     余额采购在订单事务内扣供货价，不得透支；已付订单提交履约不重复扣款。
@@ -477,7 +479,7 @@ paths:
       tags: [Orders]
       operationId: createOrGetPaymentCode
       summary: 为已开通代理复用或生成平台支付宝付款码
-      description: 仅代理后端调用。金额、币种、有效期及支付配置只取服务端原订单，禁止请求覆盖；返回付款码内容和平台本地绘制的 PNG Data URL。旧 qr_payload 含义保持不变。付款结果仍以验签 Webhook 或查单为准。
+      description: 仅已开通 directPaymentCodeEnabled 的代理后端调用，未开通返回 direct_payment_code_disabled。金额、币种、有效期及支付配置只取服务端原订单，禁止请求覆盖；返回付款码内容和平台本地绘制的 PNG Data URL。旧 qr_payload 仍为平台付款页链接，含义保持不变。同幂等键重放和首次生成返回前均复验当前订单及代理直出码开关；已支付、到期或停用后不返回旧码。付款结果仍以验签 Webhook 或查单为准。
       parameters:
         - $ref: '#/components/parameters/XPartnerId'
         - $ref: '#/components/parameters/XKeyId'
@@ -496,7 +498,7 @@ paths:
               maxProperties: 0
       responses:
         '200':
-          description: 原付款记录对应的有效付款码；幂等重放保持相同 data
+          description: 原付款记录对应的有效付款码；仅在当前仍可付款且直出码授权仍有效时重放相同 data
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PaymentCodeEnvelope'}
@@ -793,7 +795,7 @@ paths:
     post:
       tags: [CustomerRecharge]
       operationId: redeemQuefaCdk
-      summary: 客户兑换 Quefa QF 码并提交充值
+      summary: 客户兑换平台签发的代理品牌公开号并提交充值
       security: []
       requestBody:
         required: true
@@ -1155,7 +1157,7 @@ components:
         product_code: {type: string}
         name: {type: string}
         supply_price: {$ref: '#/components/schemas/Money'}
-        max_sale_price: {$ref: '#/components/schemas/Money'}
+        max_sale_price: {$ref: '#/components/schemas/Money', description: 历史兼容字段，当前不作为下单售价上限；销售金额仍须不低于 supply_price 乘以 quantity}
         currency: {type: string, const: CNY}
         max_quantity: {type: integer, minimum: 1}
         available: {type: boolean}
@@ -1170,7 +1172,7 @@ components:
       required: [merchant_order_no, product_code, quantity, sale_amount]
       properties:
         collection_mode: {type: string, enum: [platform_collect, agent_collect], default: platform_collect, description: 自收款须授权，创建订单立即扣供货价}
-        delivery_mode: {type: string, enum: [auto_recharge, cdk], description: auto_recharge 由代理商自有页面提交凭据并使用服务端 CDK；cdk 直接返回公开 QF 码。建议始终显式传值}
+        delivery_mode: {type: string, enum: [auto_recharge, cdk], description: auto_recharge 由代理商自有页面提交凭据并使用服务端 CDK；cdk 返回按代理模板生成的品牌公开号，须作为不透明字符串完整传递，不假定固定前缀或分隔符。建议始终显式传值}
         payment_channel:
           type: string
           enum: [alipay]
@@ -1239,7 +1241,7 @@ components:
         currency: {type: string, const: CNY}
         payment_status: {type: string, enum: [pending, paid, expired, closed, partially_refunded, refunded]}
         metadata: {type: object, maxProperties: 32, additionalProperties: {type: [string, number, boolean, 'null']}}
-        qr_payload: {type: [string, 'null'], description: 平台代收的 Quefa 付款页 URL，应展示为付款按钮，不是支付宝当面付或链上转账二维码内容}
+        qr_payload: {type: [string, 'null'], description: 兼容旧接入的平台付款页 URL，应展示为付款按钮，不是支付宝当面付二维码内容；自有页面直出码使用 payment-code 接口的 payment_code 或 qr_image_data_url}
         qr_image_url: {type: [string, 'null'], format: uri}
         paid_at: {type: [string, 'null'], format: date-time}
         fulfillment_mode: {type: [string, 'null'], enum: [direct, cdk, null]}
