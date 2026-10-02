@@ -1,5 +1,5 @@
 [Unit]
-Description=Quefa SQLite application and future PostgreSQL backups
+Description=Back up the active Quefa SQLite application database
 After=docker.service
 Requires=docker.service
 OnFailure=quefa-health-alert@%n.service
@@ -7,7 +7,6 @@ OnFailure=quefa-health-alert@%n.service
 [Service]
 Type=oneshot
 ExecStart=/bin/sh /opt/recharge-platform/current/deploy/backup-prelaunch.sh
-ExecStart=/bin/sh /opt/recharge-platform/current/deploy/production/backup-production.sh
 Nice=10
 IOSchedulingClass=idle
 NoNewPrivileges=true

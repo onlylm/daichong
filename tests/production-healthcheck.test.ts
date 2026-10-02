@@ -38,6 +38,9 @@ describe("production health monitoring",()=>{
       .map(name=>read(`deploy/production/systemd/${name}`));
     const alert=read("deploy/production/health-alert.sh");
     for(const unit of units)expect(unit).toContain("OnFailure=quefa-health-alert@%n.service");
+    expect(units[1]).toContain("backup-prelaunch.sh");
+    expect(units[1]).not.toContain("backup-production.sh");
+    expect(units[2]).toContain("verify-backup-restore.sh");
     expect(alert).toContain("HEALTH_ALERT_WEBHOOK_URL");
     expect(alert).toContain("must be root-owned mode 0600 or stricter");
     expect(alert).toContain("quefa_unit_failed");
