@@ -51,7 +51,7 @@ describe("Alipay payment reconciliation", () => {
     const paymentProvider = new AlipayPagePaymentProvider(config.publicBaseUrl, runtime.portalTokens);
     const value = new AlipayPaymentService(runtime.repository, runtime.payment, client,
       {appId: "test-app", sellerId: "2088000000000000"}, config.publicBaseUrl, paymentProvider);
-    value.setExternalRefundHandler((orderId, amount, reference) => runtime.refunds.syncProviderRefund(orderId, amount, reference));
+    value.setExternalRefundHandler((orderId, amount, reference, captured) => runtime.refunds.syncProviderRefund(orderId, amount, reference, captured));
     return value;
   }
 
@@ -459,13 +459,20 @@ describe("Alipay payment reconciliation", () => {
       return transaction(action);
     });
 
-    runtime.refunds.syncProviderRefund(paid.id,2_000n,`alipay-query:${tradeNo}:20.00`);
+    runtime.refunds.syncProviderRefund(paid.id,2_000n,`alipay-query:${tradeNo}:20.00`,0n);
     transactionSpy.mockRestore();
     const order=runtime.repository.findOrderInternal(paid.id)!;
     expect(order.ordinaryRefundedMinor).toBe(2_000n);
     expect(order.priceAdjustmentRefundedMinor).toBe(0n);
     expect(runtime.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
-    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))).toBeNull();
+    // This observation started before the manual post: preserve the lock until a
+    // new aggregate query can cover it, without inventing a second refund entry.
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+      .toMatchObject({status:"reviewing",recordedMinor:2_000n,differenceMinor:2_000n});
+    runtime.refunds.syncProviderRefund(paid.id,2_000n,"fresh-after-manual-post",2_000n);
+    expect(runtime.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+      .toMatchObject({status:"resolved",differenceMinor:0n});
+    expect(runtime.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
   });
 
   it("serializes the same manual-versus-worker interleave on the SQLite repository", async () => {
@@ -495,11 +502,16 @@ describe("Alipay payment reconciliation", () => {
         return transaction(action);
       });
 
-      sqlite.refunds.syncProviderRefund(paid.id,2_000n,"alipay-query:2026100100000007:20.00");
+      sqlite.refunds.syncProviderRefund(paid.id,2_000n,"alipay-query:2026100100000007:20.00",0n);
       transactionSpy.mockRestore();
       expect(sqlite.repository.findOrderInternal(paid.id)).toMatchObject({ordinaryRefundedMinor:2_000n,priceAdjustmentRefundedMinor:0n});
       expect(sqlite.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
-      expect(sqlite.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id))).toBeNull();
+      expect(sqlite.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+        .toMatchObject({status:"reviewing",recordedMinor:2_000n,differenceMinor:2_000n});
+      sqlite.refunds.syncProviderRefund(paid.id,2_000n,"fresh-after-sqlite-manual-post",2_000n);
+      expect(sqlite.repository.getOperations("refund_reconciliation",refundReconciliationId(paid.id)))
+        .toMatchObject({status:"resolved",differenceMinor:0n});
+      expect(sqlite.repository.listRefundsForOrder(paid.merchantId,paid.id)).toHaveLength(1);
     }finally{sqlite.close();}
   });
 
@@ -595,12 +607,15 @@ describe("Alipay payment reconciliation", () => {
       discrepancy:input=>runtime.refundReconciliations.observe(input),
       recorded:input=>runtime.refundReconciliations.recorded(input),
     });
-    expect(await exactRefunds.approve(finance,adjustment.id)).toMatchObject({status:"processing"});
-    const processing=runtime.repository.findRefund(paid.merchantId,adjustment.id)!;
-    runtime.repository.updateRefund({...processing,nextCheckAt:new Date(0)});
+    await expect(exactRefunds.approve(finance,adjustment.id)).rejects.toMatchObject({code:"provider_refund_reconciliation_required"});
+    // Model a pre-existing unknown request: querying its real result remains
+    // allowed, but a fresh execution under the discrepancy lock is not.
+    runtime.repository.updateRefund({...adjustment,status:"processing",nextCheckAt:new Date(0),leaseToken:null,leaseUntil:null});
     await exactRefunds.reconcileOne();
     expect(runtime.repository.findRefund(paid.merchantId,adjustment.id)).toMatchObject({status:"succeeded",type:"price_adjustment"});
     expect(runtime.repository.findOrderInternal(paid.id)).toMatchObject({ordinaryRefundedMinor:0n,priceAdjustmentRefundedMinor:1_000n});
+    expect(runtime.repository.getOperations("refund_reconciliation",issue.id)?.status).toBe("reviewing");
+    runtime.refunds.syncProviderRefund(paid.id,1_000n,"fresh-query-after-exact-refund",1_000n);
     expect(runtime.repository.getOperations("refund_reconciliation",issue.id)?.status).toBe("resolved");
     expect((await app.inject({method:"POST",url:"/public/cdk/preview",payload:{code:voucher.publicCode}})).statusCode).toBe(200);
   });

@@ -368,9 +368,13 @@ describe("shipped operations UI regressions", () => {
   it.each(["platform_admin", "agent_owner"])("keeps the refund lock warning outside collapsed sections for %s", role => {
     const {h, body} = harness(vi.fn() as unknown as typeof fetch); h.identity(role);
     const {detail} = mountOrderDetail(h, body, {...detailView(), refundReconciliation: {status: "reviewing",
-      reportedAmount: "20.00", recordedAmount: "10.00", differenceAmount: "10.00"}});
-    const warning = detail.children.find(node => node.tagName !== "details" && node.textContent.includes("新的充值提交"));
+      reportedAmount: "20.00", recordedAmount: "10.00", snapshotCoveredAmount: "0.00", differenceAmount: "20.00"}});
+    const warning = detail.children.find(node => node.tagName !== "details" && node.textContent.includes("新的充值和退款出款"));
     expect(warning).toBeDefined(); expect(warning!.textContent).toContain("已派发任务仍会继续查询结果");
+    if (role === "platform_admin") {
+      expect(warning!.textContent).toContain("可与渠道快照核对的入账 ¥0.00");
+      expect(warning!.textContent).toContain("不能仅凭总额相等解锁");
+    }
     expect(detail.children.some(node => node.className === "order-detail-alert")).toBe(true);
     if (role === "agent_owner") {
       expect(detail.textContent).not.toContain("INTERNAL-CDK-SECRET");

@@ -1,11 +1,13 @@
 import type {Repository} from "../infra/repository.js";
 import type {PaymentChannel} from "../operations/model.js";
 import {AppError} from "../domain/errors.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 import type {PaymentCreation, PaymentProvider} from "./payment-service.js";
 import {PaymentService} from "./payment-service.js";
 import {PortalTokenService} from "./portal-token.js";
 import {PaymentSettingsService} from "./payment-settings.js";
 import {AlipayPagePaymentProvider, AlipayPaymentService, createAlipayClientFromKeys} from "./alipay-payment.js";
+import type {ExternalRefundHandler} from "./alipay-payment.js";
 
 export class ManagedPaymentProvider implements PaymentProvider {
   readonly name = "managed";
@@ -22,7 +24,7 @@ export class ManagedPaymentProvider implements PaymentProvider {
   }
 }
 export class ManagedAlipayService {
-  private externalRefundHandler?: (orderId: string, refundedMinor: bigint, providerReference: string) => void;
+  private externalRefundHandler?: ExternalRefundHandler;
   private readonly precreateInflight = new Map<string, Promise<string>>();
   constructor(private readonly repo: Repository, private readonly settings: PaymentSettingsService, private readonly payment: PaymentService,
     private readonly base: string, private readonly provider: AlipayPagePaymentProvider, private readonly legacy: AlipayPaymentService | null = null) {}
@@ -39,7 +41,7 @@ export class ManagedAlipayService {
       alipayPublicKey: keys.publicKey!, keyType: r.details.keyType as "PKCS1" | "PKCS8"}), identity, this.base, this.provider,
       this.externalRefundHandler);
   }
-  setExternalRefundHandler(handler: (orderId: string, refundedMinor: bigint, providerReference: string) => void): void {
+  setExternalRefundHandler(handler: ExternalRefundHandler): void {
     this.externalRefundHandler = handler;
     this.legacy?.setExternalRefundHandler(handler);
   }
@@ -61,7 +63,11 @@ export class ManagedAlipayService {
   }
   async reconcileOne(): Promise<void> {
     const now=new Date(),o=this.repo.findDuePaymentOrder?this.repo.findDuePaymentOrder("alipay_page",now):this.repo.listOrdersInternal().find(order=>{
-      const attempt=this.repo.findPaymentAttemptByOrder(order.merchantId,order.id);return ["pending","paid","partially_refunded"].includes(order.paymentStatus)&&attempt?.provider==="alipay_page"&&["pending","paid"].includes(attempt.status)&&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
+      const attempt=this.repo.findPaymentAttemptByOrder(order.merchantId,order.id);
+      const refundedReview=order.paymentStatus==="refunded"&&hasUnreconciledProviderRefund(this.repo,order.merchantId,order.id);
+      return (["pending","paid","partially_refunded"].includes(order.paymentStatus)||refundedReview)
+        &&attempt?.provider==="alipay_page"&&(["pending","paid"].includes(attempt.status)||(refundedReview&&attempt.status==="refunded"))
+        &&(!attempt.nextCheckAt||attempt.nextCheckAt<=now);
     });
     if (o) await this.reconcile(o.id);
   }

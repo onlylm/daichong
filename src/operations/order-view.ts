@@ -11,6 +11,7 @@ import type {Actor, OrderVisibilityField} from "./model.js";
 import {isPlatform} from "./accounts.js";
 import {queryRecords, type RecordPage} from "../infra/record-query.js";
 import {manualCompletionBlock} from "./manual-completion.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 export function workspacePayUrl(order: Order): string | null {
   return order.paymentStatus === "pending" ? order.qrPayload : null;
@@ -320,7 +321,9 @@ export function workspaceOrderDetail(
     .filter(item => !["rejected", "cancelled"].includes(item.status))
     .reduce((sum, item) => sum + item.amountMinor, 0n);
   const refundableMinor = order.saleAmountMinor > reservedMinor ? order.saleAmountMinor - reservedMinor : 0n;
+  const refundReviewRequired = hasUnreconciledProviderRefund(repository, order.merchantId, order.id);
   const canRefundCustomer = isPlatform(actor)
+    && !refundReviewRequired
     && (order.collectionMode ?? "platform_collect") === "platform_collect"
     && ["paid", "partially_refunded"].includes(order.paymentStatus)
     && refundableMinor > 0n
@@ -336,6 +339,7 @@ export function workspaceOrderDetail(
   const attempt = repository.findPaymentAttemptByOrder(order.merchantId, order.id);
   const marginMinor = merchantMargin(order);
   const canPriceAdjust = isPlatform(actor)
+    && !refundReviewRequired
     && (order.collectionMode ?? "platform_collect") === "platform_collect"
     && ["paid", "partially_refunded"].includes(order.paymentStatus)
     && refundableMinor > 0n;

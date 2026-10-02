@@ -9,6 +9,8 @@ import {SqliteRepository} from "../src/infra/sqlite-repository.js";
 import {LedgerService} from "../src/modules/ledger-service.js";
 import {WebhookService} from "../src/modules/webhook-service.js";
 import {RefundService, type RefundExecutor} from "../src/modules/refund-service.js";
+import {RefundReconciliationService} from "../src/modules/refund-reconciliation-service.js";
+import {refundReconciliationId} from "../src/domain/provider-refund-review.js";
 import type {Actor} from "../src/operations/model.js";
 
 const admin: Actor = {id: "admin", merchantId: null, role: "platform_admin"};
@@ -188,5 +190,58 @@ describe("refund recovery across two SQLite connections", () => {
     newQuery.reject(new Error("new query timeout")); await newRun;
     expect(execute).not.toHaveBeenCalled(); expect(second.findRefund("merchant", "refund")).toEqual(completed);
     expect(second.findOrderInternal("order")?.ordinaryRefundedMinor).toBe(13500n);
+  });
+
+  function withReconciliation(repo: Repository, executor: RefundExecutor) {
+    const review = new RefundReconciliationService(repo);
+    return new RefundService(repo, new LedgerService(repo), new WebhookService(repo), executor, undefined, {
+      discrepancy: input => review.observe(input), recorded: input => review.recorded(input),
+    });
+  }
+
+  it("sees a discrepancy committed by the other connection before retrying an unknown refund", async () => {
+    seed(first, {type: "partial", amountMinor: 1000n});
+    const pending = deferred<QueryResult>(), execute = vi.fn(async () => "must-not-submit");
+    const worker = withReconciliation(first, {providerFor: () => "alipay_page", execute, query: () => pending.promise});
+    const other = withReconciliation(second, {providerFor: () => "alipay_page", execute});
+    const running = worker.reconcileOne();
+    other.syncProviderRefund("order", 1000n, "synthetic-other-connection-query", 0n);
+    pending.resolve({status: "not_confirmed"}); await running;
+    expect(execute).not.toHaveBeenCalled();
+    expect(first.findRefund("merchant", "refund")).toMatchObject({status: "processing", recoveryAttempts: 0, leaseToken: null});
+    expect(first.getOperations("refund_reconciliation", refundReconciliationId("order")))
+      .toMatchObject({status: "reviewing", differenceMinor: 1000n, snapshotCoveredRecordedMinor: 0n});
+  });
+
+  it("persists an in-flight payout discrepancy across connections and restart without losing ledger or history", async () => {
+    seed(first, {status: "requested", type: "partial", amountMinor: 1000n});
+    const payout = deferred<string>(), execute = vi.fn(() => payout.promise);
+    const refunds = withReconciliation(first, {providerFor: () => "alipay_page", execute});
+    const other = withReconciliation(second, {providerFor: () => "alipay_page", execute});
+    const running = refunds.approve(admin, "refund");
+    other.syncProviderRefund("order", 1000n, "synthetic-independent-channel-refund", 0n);
+    payout.resolve("2026100200000001"); await running;
+    expect(second.findOrderInternal("order")?.ordinaryRefundedMinor).toBe(1000n);
+    expect(second.getOperations("refund_reconciliation", refundReconciliationId("order")))
+      .toMatchObject({status: "reviewing", recordedMinor: 1000n, snapshotCoveredRecordedMinor: 0n, differenceMinor: 1000n});
+    const count = second.listLedger("merchant").length;
+    const events = second.listOperations("refund_reconciliation_event").length;
+
+    first.close(); second.close();
+    first = new SqliteRepository(join(directory, "state.sqlite"));
+    second = new SqliteRepository(join(directory, "state.sqlite"));
+    expect(first.getOperations("refund_reconciliation", refundReconciliationId("order")))
+      .toMatchObject({status: "reviewing", recordedMinor: 1000n, snapshotCoveredRecordedMinor: 0n, differenceMinor: 1000n});
+    expect(first.listOperations("refund_reconciliation_event")).toHaveLength(events);
+    const reopened = withReconciliation(first, {providerFor: () => "alipay_page", execute});
+    reopened.syncProviderRefund("order", 2000n, "synthetic-fresh-query-after-restart", 1000n);
+    expect(second.getOperations("refund_reconciliation", refundReconciliationId("order")))
+      .toMatchObject({status: "reviewing", reportedMinor: 2000n, snapshotCoveredRecordedMinor: 1000n, differenceMinor: 1000n});
+    reopened.syncProviderRefund("order", 1000n, "synthetic-late-old-query-after-restart", 0n);
+    expect(second.getOperations("refund_reconciliation", refundReconciliationId("order")))
+      .toMatchObject({status: "reviewing", reportedMinor: 2000n, snapshotCoveredRecordedMinor: 1000n, differenceMinor: 1000n});
+    expect(second.listLedger("merchant")).toHaveLength(count);
+    expect(second.listOutbox("merchant").filter(value => value.eventType === "refund.succeeded")).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
   });
 });

@@ -124,6 +124,8 @@ export interface RefundReconciliation extends BaseRecord {
   merchantId: string; orderId: string; provider: "alipay_page";
   status: "reviewing" | "resolved";
   reportedMinor: bigint; recordedMinor: bigint; differenceMinor: bigint;
+  /** Local postings covered by a causally newer provider snapshot or explicit external-refund evidence. */
+  snapshotCoveredRecordedMinor?: bigint;
   providerReferenceFingerprint: string;
   /** Historical system tickets are retained for traceability, never used as business state. */
   legacyTicketIds: string[];
@@ -133,6 +135,7 @@ export interface RefundReconciliationEvent extends BaseRecord {
   merchantId: string; reconciliationId: string; orderId: string;
   action: "detected" | "amount_updated" | "reopened" | "resolved" | "legacy_ticket_migrated";
   reportedMinor: bigint; recordedMinor: bigint; differenceMinor: bigint;
+  snapshotCoveredRecordedMinor?: bigint;
   createdAt: Date;
 }
 export interface InvoiceApplication extends BaseRecord {

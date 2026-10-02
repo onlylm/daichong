@@ -111,6 +111,7 @@ function workspaceRefundReconciliations(runtime:Runtime,values:ReturnType<Runtim
   return values.map(value=>{const merchant=merchantMap.get(value.merchantId);return{id:value.id,merchantId:value.merchantId,
     merchantName:merchant?.name??"",partnerId:merchant?.partnerId??"",orderId:value.orderId,status:value.status,
     reportedAmount:minorToMoney(value.reportedMinor),recordedAmount:minorToMoney(value.recordedMinor),
+    snapshotCoveredAmount:minorToMoney(value.snapshotCoveredRecordedMinor??value.recordedMinor),
     differenceAmount:minorToMoney(value.differenceMinor),firstDetectedAt:value.firstDetectedAt,lastCheckedAt:value.lastCheckedAt,
     resolvedAt:value.resolvedAt,legacyTicketIds:value.legacyTicketIds};});
 }
@@ -393,6 +394,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       ), refundReconciliation:refundReview?isPlatform(actor)?{
         id:refundReview.id,status:refundReview.status,reportedAmount:minorToMoney(refundReview.reportedMinor),
         recordedAmount:minorToMoney(refundReview.recordedMinor),differenceAmount:minorToMoney(refundReview.differenceMinor),
+        snapshotCoveredAmount:minorToMoney(refundReview.snapshotCoveredRecordedMinor??refundReview.recordedMinor),
         firstDetectedAt:refundReview.firstDetectedAt,lastCheckedAt:refundReview.lastCheckedAt,resolvedAt:refundReview.resolvedAt,
       }:{status:refundReview.status,lastCheckedAt:refundReview.lastCheckedAt}:null,
         costAccounting: runtime.costs.view(actor, order.id),

@@ -411,6 +411,8 @@ CDK 交付模式恢复时仍可由代理后端使用已购买的公开品牌码�
 
 `GET /v1/refunds/{refund_id}` 查询最终结果。渠道超时保持 `processing` 并保留退款额度，后台按原退款号查询恢复；不重新申请另一笔退款。只有渠道确认成功才更新退款金额和账本。
 
+订单存在尚未核清的渠道退款差异时，新退款申请返回 HTTP 409 `provider_refund_reconciliation_required`；平台审核及后台重提也不会再次出款。请查询原退款并联系平台核对，不换退款号绕过。已发出的请求仍继续查询，可信成功仍只入账一次；新入账不能仅凭累计金额相等抵消旧渠道快照的差异，须由更新的渠道查询或人工核实的既有退款凭证核清。此规则同样适用于差价退款，不改变正常差价不冲减基础佣金的口径。
+
 平台另有独立的美元成本核算与成本节省补差记录。该记录不减少代理基础分佣；“直接退客户”与“退代理代退客户”互斥，且登记已付代理不等于客户收到。已进入该补差记录的订单不能再用旧 `price_adjustment` 路径重复申请；可能返回 `cost_adjustment_path_exists` 或 `cost_payment_conflict`，需联系平台核对现有记录。代理不能调用内部成本核验、付款登记接口，也不能据此自行转账。
 
 订单提供 `notify_url` 时，仅投递到该代理已登记且启用的对应地址；未提供时兼容投递到该代理订阅事件的地址。公网回调拒绝内网、回环和云元数据地址；不会跟随重定向。
@@ -486,6 +488,7 @@ X-Quefa-Signature: t=1790323200,v1=<hex>
 | 409 | `idempotency_conflict` | 同键请求内容不同，需排查 |
 | 409 | `idempotency_in_progress` | 原请求仍在执行；先查询原业务结果，再按 `Retry-After` 用原业务键和新的时间戳/Nonce退避重试 |
 | 409 | `invalid_state_transition` | 当前状态不允许该动作 |
+| 409 | `provider_refund_reconciliation_required` | 渠道退款差异待核；查询原退款、联系平台处理，不换号申请或重复出款 |
 | 422 | `price_out_of_range` | 整单售价低于供货价乘以数量 |
 | 429 | `rate_limited` | 按 `Retry-After` 退避 |
 | 503 | `temporarily_unavailable` | 使用原幂等键退避重试 |

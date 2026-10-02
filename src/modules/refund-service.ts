@@ -11,6 +11,7 @@ import { WebhookService } from "./webhook-service.js";
 import type { Actor } from "../operations/model.js";
 import { isPlatform, requirePermission } from "../operations/accounts.js";
 import {queryRecords} from "../infra/record-query.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 export type RefundExecutor = {
   providerFor(orderId: string): string | null;
@@ -19,8 +20,8 @@ export type RefundExecutor = {
 };
 
 export type ProviderRefundObserver = {
-  discrepancy(input:{merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string}):void;
-  recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint}):void;
+  discrepancy(input:{merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string;capturedRecordedMinor?:bigint}):void;
+  recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint;reconciliationCreditMinor?:bigint}):void;
 };
 
 export class RefundService {
@@ -41,7 +42,7 @@ export class RefundService {
     tenant: TenantContext,
     orderId: string,
     input: {merchantRefundNo: string; type: RefundType; amount: string; reason: string},
-    opts: {allowActiveFulfillment?: boolean} = {},
+    opts: {recordingChannelFact?: boolean} = {},
   ): Refund {
     const existing = this.repository.findRefundByMerchantNo(tenant.merchantId, input.merchantRefundNo);
     if (existing) {
@@ -51,6 +52,9 @@ export class RefundService {
     }
     const order = this.repository.findOrder(tenant.merchantId, orderId);
     if (!order) throw notFound("order");
+    // Only the private, evidence-backed bookkeeping path may cross this lock.
+    // Creating or retrying an outbound refund must not spend unresolved money again.
+    if (!opts.recordingChannelFact) this.assertProviderRefundReconciled(order);
     if (input.type === "price_adjustment" && this.repository.getOperations("order_cost", orderId)?.status === "confirmed") {
       throw new AppError(409, "cost_adjustment_path_exists", "已有独立成本补差记录，禁止再走旧差价退款路径重复支付");
     }
@@ -58,7 +62,7 @@ export class RefundService {
       throw new AppError(409, "cost_payment_conflict", "本单已有真实补差付款，请先核对补差凭证，禁止重复发起客户退款");
     }
     if (order.collectionMode === "agent_collect") throw new AppError(409, "procurement_refund_required", "自收款订单请申请采购退款；客户退款由代理商自己的支付渠道处理");
-    if (input.type !== "price_adjustment" && !opts.allowActiveFulfillment) {
+    if (input.type !== "price_adjustment" && !opts.recordingChannelFact) {
       const voucher = this.repository.findCdkVoucherByOrder(orderId);
       const fulfillments = this.repository.listFulfillments(tenant.merchantId, orderId);
       const activeOrSucceeded = fulfillments.some((item) => ["queued", "running", "succeeded"].includes(item.status));
@@ -274,12 +278,12 @@ export class RefundService {
         type,
         amount: minorToMoney(amountMinor),
         reason,
-      }, {allowActiveFulfillment: true});
+      }, {recordingChannelFact: true});
       const voucher = this.repository.findCdkVoucherByOrder(orderId);
       if (voucher && !["failed", "disabled", "consumed"].includes(voucher.status)) {
         this.repository.updateCdkVoucher({...voucher, status: "disabled", failureCode: voucher.failureCode ?? "external_refund"});
       }
-      return this.completeLocked(order.merchantId, pending.id, providerRefundNo);
+      return this.completeLocked(order.merchantId, pending.id, providerRefundNo, false, true);
     });
   }
 
@@ -289,19 +293,17 @@ export class RefundService {
    * Exact completion happens only through reconcileOne/queryRefund; aggregate
    * deltas become review cases and leave the financial ledger unchanged.
    */
-  syncProviderRefund(orderId: string, providerRefundedMinor: bigint, providerReference: string): Refund | null {
+  syncProviderRefund(orderId: string, providerRefundedMinor: bigint, providerReference: string, capturedRecordedMinor?: bigint): Refund | null {
     if (providerRefundedMinor <= 0n) return null;
     return this.repository.transaction(() => {
       const order = this.repository.findOrderInternal(orderId);
       if (!order || order.collectionMode !== "platform_collect") return null;
       const reported = providerRefundedMinor > order.saleAmountMinor ? order.saleAmountMinor : providerRefundedMinor;
       const recorded = order.ordinaryRefundedMinor + order.priceAdjustmentRefundedMinor;
-      if (reported <= recorded) {
-        this.providerRefundObserver?.recorded({merchantId:order.merchantId,orderId:order.id,recordedMinor:recorded});
-        return null;
-      }
       this.providerRefundObserver?.discrepancy({merchantId:order.merchantId,orderId:order.id,
-        reportedMinor:reported,recordedMinor:recorded,providerReference});
+        reportedMinor:reported,recordedMinor:recorded,providerReference,
+        ...(capturedRecordedMinor === undefined ? {} : {capturedRecordedMinor})});
+      this.scheduleReconciliationRefresh(order);
       return null;
     });
   }
@@ -418,7 +420,8 @@ export class RefundService {
       this.repository.transaction(() => this.completeLocked(refund.merchantId, refund.id, reference, true));
     } catch (error) {
       const blocked = error instanceof AppError && ["fulfillment_blocks_refund", "order_not_refundable",
-        "refund_order_not_found", "refund_provider_changed", "use_customer_refund"].includes(error.code);
+        "refund_order_not_found", "refund_provider_changed", "use_customer_refund",
+        "provider_refund_reconciliation_required"].includes(error.code);
       this.deferOwnedRefund(refund, blocked ? "refund_manual_review" : "refund_result_unknown", blocked ? 300_000 : 60_000);
     }
   }
@@ -554,6 +557,7 @@ export class RefundService {
     const order = this.repository.findOrder(refund.merchantId, refund.orderId);
     if (!order || order.collectionMode !== "platform_collect")
       throw new AppError(409, "refund_order_not_found", "仅平台代收订单可自动退款");
+    this.assertProviderRefundReconciled(order);
     if (this.paymentProvider(order.id) !== expectedProvider)
       throw new AppError(409, "refund_provider_changed", "退款渠道已变化，请刷新后核对");
     if (!["paid", "partially_refunded"].includes(order.paymentStatus))
@@ -564,6 +568,20 @@ export class RefundService {
       throw new AppError(409, "use_customer_refund", "全额退款不能使用差价退款；请先安全处理充值任务，再选择客户退款");
   }
 
+  private assertProviderRefundReconciled(order: Order): void {
+    if (hasUnreconciledProviderRefund(this.repository, order.merchantId, order.id))
+      throw new AppError(409, "provider_refund_reconciliation_required", "渠道退款差异尚未核清，不能再次发起退款；请先查询或登记渠道已发生的退款");
+  }
+
+  private scheduleReconciliationRefresh(order: Order): void {
+    if (!hasUnreconciledProviderRefund(this.repository, order.merchantId, order.id)) return;
+    const attempt=this.repository.findPaymentAttemptByOrder(order.merchantId,order.id);
+    if (!attempt || attempt.provider!=="alipay_page") return;
+    const nextCheckAt=new Date(Date.now()+60_000);
+    if (!attempt.nextCheckAt || attempt.nextCheckAt>nextCheckAt)
+      this.repository.updatePaymentAttempt({...attempt,nextCheckAt,updatedAt:new Date()});
+  }
+
   /** Run while holding the same write transaction that claims the refund for channel execution. */
   private assertOrdinaryRefundExecutable(order: Order): void {
     if (this.repository.getOperations("manual_completion", order.id)
@@ -572,7 +590,7 @@ export class RefundService {
     }
   }
 
-  private completeLocked(merchantId: string, refundId: string, providerRefundNo: string | null = null, providerConfirmed = false): Refund {
+  private completeLocked(merchantId: string, refundId: string, providerRefundNo: string | null = null, providerConfirmed = false, reconcilesExistingFact = false): Refund {
     const current = this.get(merchantId, refundId);
     let status = current.status;
     // A later channel success corrects a local closure; it must not disappear behind an expired lease.
@@ -617,12 +635,14 @@ export class RefundService {
     assertPaymentTransition(order.paymentStatus, nextPaymentStatus);
     updated.paymentStatus = nextPaymentStatus;
     this.repository.updateOrder(updated);
-    this.providerRefundObserver?.recorded({merchantId,orderId:order.id,recordedMinor:totalRefunded});
+    this.providerRefundObserver?.recorded({merchantId,orderId:order.id,recordedMinor:totalRefunded,
+      reconciliationCreditMinor:reconcilesExistingFact?current.amountMinor:0n});
     const attempt = this.repository.findPaymentAttemptByOrder(merchantId, order.id);
     if (attempt && nextPaymentStatus === "refunded") {
       const {nextCheckAt: _nextCheckAt, ...refundedAttempt} = attempt;
       this.repository.updatePaymentAttempt({...refundedAttempt, status: "refunded", updatedAt: new Date()});
     }
+    this.scheduleReconciliationRefresh(updated);
     this.ledger.recordRefund(updated, refund);
     this.onFinancialChange?.(order.id);
     const latestFulfillment = latestFulfillmentOf(this.repository.listFulfillments(merchantId, order.id));

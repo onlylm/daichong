@@ -141,8 +141,8 @@ export function createRuntime(config: AppConfig) {
     discrepancy: input => refundReconciliations.observe(input),
     recorded: input => refundReconciliations.recorded(input),
   });
-  alipay?.setExternalRefundHandler((orderId, refundedMinor, providerReference) => {
-    refunds.syncProviderRefund(orderId, refundedMinor, providerReference);
+  alipay?.setExternalRefundHandler((orderId, refundedMinor, providerReference, capturedRecordedMinor) => {
+    refunds.syncProviderRefund(orderId, refundedMinor, providerReference, capturedRecordedMinor);
   });
   const settlements = new SettlementService(repository);
   const dailySettlements = new DailySettlementService(repository, audit);

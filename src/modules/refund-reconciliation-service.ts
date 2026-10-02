@@ -6,13 +6,13 @@ import type {Actor, RefundReconciliation, RefundReconciliationEvent, Ticket} fro
 import {isPlatform, requirePermission} from "../operations/accounts.js";
 import {AppError} from "../domain/errors.js";
 
-type DiscrepancyInput = {merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string};
+type DiscrepancyInput = {merchantId:string;orderId:string;reportedMinor:bigint;recordedMinor:bigint;providerReference:string;capturedRecordedMinor?:bigint};
 
 /** Durable finance reconciliation for ambiguous cumulative provider refunds. */
 export class RefundReconciliationService {
   constructor(private readonly repository: Repository) {}
 
-  observe(input: DiscrepancyInput): RefundReconciliation {
+  observe(input: DiscrepancyInput): RefundReconciliation | null {
     const id=refundReconciliationId(input.orderId),now=new Date();
     const current=this.repository.getOperations("refund_reconciliation",id);
     // Provider queries are cumulative snapshots and may arrive out of order. Neither the
@@ -21,19 +21,28 @@ export class RefundReconciliationService {
       ? bigintMax(current.reportedMinor,input.reportedMinor):input.reportedMinor;
     const recordedMinor=current&&current.merchantId===input.merchantId
       ? bigintMax(current.recordedMinor,input.recordedMinor):input.recordedMinor;
-    const difference=reportedMinor-recordedMinor;
-    if(difference<=0n) return this.recorded({merchantId:input.merchantId,orderId:input.orderId,recordedMinor})
-      ?? this.snapshotResolved({...input,reportedMinor,recordedMinor},now);
-    const legacyTicketIds=this.migrateLegacyTickets(input.merchantId,input.orderId,id);
+    // A signed asynchronous notification has no query-start watermark. When
+    // there is no prior review and its amount is already locally booked, it is
+    // only a duplicate observation of the known fact; do not manufacture a
+    // discrepancy. A later aggregate query can still create one with its own
+    // capturedRecordedMinor if it was stale at request time.
+    if (!current && input.capturedRecordedMinor === undefined && reportedMinor <= recordedMinor) return null;
+    // A query can cover only postings committed before it started. A notification
+    // has no such watermark. Response arrival time cannot establish this ordering.
+    const previousCovered=current?(current.snapshotCoveredRecordedMinor??current.recordedMinor):0n;
+    const snapshotCoveredRecordedMinor=bigintMin(recordedMinor,bigintMax(previousCovered,input.capturedRecordedMinor??0n));
+    const difference=bigintMax(reportedMinor-snapshotCoveredRecordedMinor,0n);
+    const legacyTicketIds=difference>0n?this.migrateLegacyTickets(input.merchantId,input.orderId,id):[];
     const newLegacyTicketIds=legacyTicketIds.filter(ticketId=>!current?.legacyTicketIds.includes(ticketId));
-    const action:RefundReconciliationEvent["action"]=!current?"detected":current.status==="resolved"?"reopened":"amount_updated";
-    const next:RefundReconciliation={id,merchantId:input.merchantId,orderId:input.orderId,provider:"alipay_page",status:"reviewing",
-      reportedMinor,recordedMinor,differenceMinor:difference,
+    const action:RefundReconciliationEvent["action"]=difference===0n?"resolved":!current?"detected":current.status==="resolved"?"reopened":"amount_updated";
+    const next:RefundReconciliation={id,merchantId:input.merchantId,orderId:input.orderId,provider:"alipay_page",status:difference>0n?"reviewing":"resolved",
+      reportedMinor,recordedMinor,snapshotCoveredRecordedMinor,differenceMinor:difference,
       providerReferenceFingerprint:!current||input.reportedMinor>current.reportedMinor
         ? createHash("sha256").update(input.providerReference).digest("hex").slice(0,32):current.providerReferenceFingerprint,
       legacyTicketIds:[...new Set([...(current?.legacyTicketIds??[]),...legacyTicketIds])],version:(current?.version??0)+1,
-      firstDetectedAt:current?.firstDetectedAt??now,lastCheckedAt:now,resolvedAt:null};
+      firstDetectedAt:current?.firstDetectedAt??now,lastCheckedAt:now,resolvedAt:difference>0n?null:current?.resolvedAt??now};
     const changed=!current||current.status!==next.status||current.reportedMinor!==next.reportedMinor||current.recordedMinor!==next.recordedMinor
+      || current.snapshotCoveredRecordedMinor!==next.snapshotCoveredRecordedMinor
       || current.providerReferenceFingerprint!==next.providerReferenceFingerprint||next.legacyTicketIds.length!==(current.legacyTicketIds?.length??0);
     if(changed){
       this.repository.saveOperations("refund_reconciliation",next,!current);
@@ -46,19 +55,24 @@ export class RefundReconciliationService {
     return checked;
   }
 
-  recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint}):RefundReconciliation|null {
+  recorded(input:{merchantId:string;orderId:string;recordedMinor:bigint;reconciliationCreditMinor?:bigint}):RefundReconciliation|null {
     const id=refundReconciliationId(input.orderId),current=this.repository.getOperations("refund_reconciliation",id);
     if(!current||current.merchantId!==input.merchantId)return null;
     const recordedMinor=bigintMax(current.recordedMinor,input.recordedMinor);
-    const difference=current.reportedMinor-recordedMinor;
+    // Actual outbound success must be booked, but may be unrelated to the older
+    // aggregate discrepancy. Only explicit external-refund evidence credits it.
+    const credit=bigintMin(recordedMinor-current.recordedMinor,bigintMax(input.reconciliationCreditMinor??0n,0n));
+    const snapshotCoveredRecordedMinor=bigintMin(recordedMinor,(current.snapshotCoveredRecordedMinor??current.recordedMinor)+credit);
+    const difference=bigintMax(current.reportedMinor-snapshotCoveredRecordedMinor,0n);
     if(difference>0n){
-      const updated={...current,recordedMinor,differenceMinor:difference,lastCheckedAt:new Date(),version:current.version+1};
+      const updated={...current,recordedMinor,snapshotCoveredRecordedMinor,differenceMinor:difference,lastCheckedAt:new Date(),version:current.version+1};
       this.repository.saveOperations("refund_reconciliation",updated);
       if(current.recordedMinor!==updated.recordedMinor||current.differenceMinor!==updated.differenceMinor)this.event(updated,"amount_updated");
       return updated;
     }
-    if(current.status==="resolved"&&current.differenceMinor===0n)return current;
-    const resolved={...current,status:"resolved" as const,recordedMinor,differenceMinor:0n,
+    if(current.status==="resolved"&&current.differenceMinor===0n&&current.recordedMinor===recordedMinor
+      &&current.snapshotCoveredRecordedMinor===snapshotCoveredRecordedMinor)return current;
+    const resolved={...current,status:"resolved" as const,recordedMinor,snapshotCoveredRecordedMinor,differenceMinor:0n,
       lastCheckedAt:new Date(),resolvedAt:new Date(),version:current.version+1};
     this.repository.saveOperations("refund_reconciliation",resolved);
     this.event(resolved,"resolved");
@@ -97,7 +111,8 @@ export class RefundReconciliationService {
         let value:RefundReconciliation;
         if(group.reportedMinor>recordedMinor||before){
           value=this.observe({merchantId:group.merchantId,orderId:group.orderId,reportedMinor:group.reportedMinor,recordedMinor,
-            providerReference:`legacy-ticket-migration:${group.orderId}:${group.reportedMinor}`});
+            capturedRecordedMinor:before?(before.snapshotCoveredRecordedMinor??before.recordedMinor):recordedMinor,
+            providerReference:`legacy-ticket-migration:${group.orderId}:${group.reportedMinor}`})!;
         }else{
           const legacyTicketIds=this.migrateLegacyTickets(group.merchantId,group.orderId,id);
           const now=new Date();
@@ -124,17 +139,11 @@ export class RefundReconciliationService {
       ...(status==="all"?{}:{filters:[{field:"status",value:status}]})});
   }
 
-  private snapshotResolved(input:DiscrepancyInput,now:Date):RefundReconciliation {
-    return {id:refundReconciliationId(input.orderId),merchantId:input.merchantId,orderId:input.orderId,provider:"alipay_page",
-      status:"resolved",reportedMinor:input.reportedMinor,recordedMinor:input.recordedMinor,differenceMinor:0n,
-      providerReferenceFingerprint:createHash("sha256").update(input.providerReference).digest("hex").slice(0,32),legacyTicketIds:[],
-      version:0,firstDetectedAt:now,lastCheckedAt:now,resolvedAt:now};
-  }
-
   private event(value:RefundReconciliation,action:RefundReconciliationEvent["action"]):void {
     this.repository.saveOperations("refund_reconciliation_event",{id:`refund-reconciliation-event:${randomUUID()}`,
       merchantId:value.merchantId,reconciliationId:value.id,orderId:value.orderId,action,reportedMinor:value.reportedMinor,
-      recordedMinor:value.recordedMinor,differenceMinor:value.differenceMinor,createdAt:new Date()},true);
+      recordedMinor:value.recordedMinor,differenceMinor:value.differenceMinor,
+      snapshotCoveredRecordedMinor:value.snapshotCoveredRecordedMinor??value.recordedMinor,createdAt:new Date()},true);
   }
 
   /** Resolve legacy system cases but retain every ticket/message for audit. */
@@ -156,6 +165,7 @@ export class RefundReconciliationService {
 }
 
 function bigintMax(left:bigint,right:bigint):bigint{return left>right?left:right;}
+function bigintMin(left:bigint,right:bigint):bigint{return left<right?left:right;}
 
 function parseLegacyIssue(ticket:Ticket):{orderId:string;reportedMinor:bigint}|null {
   if(ticket.createdBy!=="system")return null;
