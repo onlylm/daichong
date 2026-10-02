@@ -188,6 +188,7 @@ describe("workspace layout and action preservation", () => {
         const shell = tree("div", "modal-shell", dialog), content = tree("div", "modal-body", shell);
         const modal = effective(dialog, width), layout = effective(shell, width), scroll = effective(content, width);
         expect(modal.margin, `${className} margin at ${width}px`).toBe("auto");
+        expect(modal.height).toBe("fit-content");
         expect(size(modal.width, width, height)).toBeLessThanOrEqual(width - 16);
         expect(size(modal["max-height"], width, height, "height")).toBeLessThanOrEqual(height - 16);
         expect(size(layout["max-height"], width, height, "height")).toBeLessThanOrEqual(height - 16);
