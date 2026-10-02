@@ -23,6 +23,9 @@ describe("production health monitoring",()=>{
     expect(script).toContain("http://127.0.0.1:3200/health/worker");
     expect(script).toContain("quefa-app-worker-1");
     expect(script).toContain("expect_status 404 https://tibo.ink/health/worker");
+    expect(script).toContain("expect_status 200 https://tibo.ink/workspace");
+    expect(script).toContain("expect_status 404 https://tibo.ink/internal/admin");
+    expect(script).toContain("expect_status 404 https://api.tibo.ink/workspace");
     expect(caddy).toMatch(/@blocked path[^\n]*\/health\*/);
     expect(caddy).toMatch(/@private path[^\n]*\/health\*/);
     expect(caddy.match(/header_up X-Forwarded-For \{remote_host\}/g)).toHaveLength(3);

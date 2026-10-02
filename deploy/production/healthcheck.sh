@@ -17,9 +17,11 @@ curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3200/health/rea
 curl --fail --silent --show-error --output /dev/null --max-time 10 http://127.0.0.1:3200/health/worker
 expect_status 200 https://tibo.ink/developers
 expect_status 200 https://tibo.ink/developers/openapi.yaml
-expect_status 404 https://tibo.ink/workspace
+expect_status 200 https://tibo.ink/workspace
+expect_status 404 https://tibo.ink/internal/admin
 expect_status 404 https://tibo.ink/health/ready
 expect_status 404 https://tibo.ink/health/worker
+expect_status 404 https://api.tibo.ink/workspace
 expect_status 302 https://admin.tibo.ink/
 expect_status 200 https://admin.tibo.ink/workspace
 expect_status 401 https://admin.tibo.ink/workspace/api/auth/me

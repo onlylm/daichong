@@ -4,7 +4,7 @@
 
 ## 安全边界
 
-- 公网主站仅开放开发文档、代理 API、支付/兑换页和外部回调；主域名拒绝 `/workspace`、`/internal/admin`、`/sandbox` 与健康检查。
+- 公网主站开放代理商工作台 `/workspace`、开发文档、代理 API、支付/兑换页和外部回调；主域名拒绝 `/internal/admin`、`/sandbox` 与健康检查。`api.tibo.ink` 拒绝 `/workspace`。
 - 管理后台只在 `admin.tibo.ink/workspace` 开放，使用独立账号、强制首次改密和 TOTP MFA；后台域名不提供 `/v1`、支付页或回调。
 - 应用只绑定宿主机 `127.0.0.1:3200`，由 Caddy 终止 HTTPS。
 - 应用只信任 `TRUSTED_PROXY_CIDRS` 中的反向代理来源；Caddy 会覆盖而不是透传来访者自带的 `X-Forwarded-For`。发布脚本按当前“宿主机 Caddy → Docker 回环端口”拓扑写入回环与 Docker bridge 私网，拓扑变化时必须先改为实际代理网段，禁止配置 `0.0.0.0/0` 或 `::/0`。
