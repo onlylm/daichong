@@ -481,7 +481,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/external-customer-refunds", async request => {
     const actor = account(request);
     const input = z.object({
-      amount: money.optional(),
+      amount: money,
       reason: text,
       requestKey,
       providerRefundNo: z.string().trim().min(6).max(128),
@@ -492,7 +492,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
       requestKey: input.requestKey,
       providerRefundNo: input.providerRefundNo,
       confirmAlreadyRefundedAtChannel: true,
-      ...(input.amount ? {amount: input.amount} : {}),
+      amount: input.amount,
     });
     runtime.audit.record({merchantId:refund.merchantId,actorId:actor.id,actorType:"platform_user",
       action:"refund.external.record",targetType:"refund",targetId:refund.id,requestId:request.id});

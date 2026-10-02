@@ -1,14 +1,169 @@
 import {runInNewContext} from "node:vm";
-import {describe,expect,it,vi} from "vitest";
+import {afterEach,describe,expect,it,vi} from "vitest";
 import {workspaceJs} from "../src/operations/workspace-page.js";
 function harness(fetcher:typeof fetch){const context:{hooks?:any;[key:string]:unknown}={fetch:fetcher,AbortController,setTimeout,clearTimeout,URL,URLSearchParams,location:{origin:"https://tibo.test",hostname:"tibo.test",protocol:"https:",search:""},document:{querySelector:()=>null,addEventListener:()=>{},hidden:false},window:{addEventListener:()=>{}},localStorage:{getItem:()=>null}};
   runInNewContext(workspaceJs.split("\napplyEntryQuery();")[0]+"\nglobalThis.hooks={api,readPage,cache:responseCache,inflight,invalidateCachedPath,identity:(id,tenant)=>{me={id,role:'agent_owner'};merchant=tenant;},detailNeedsLiveSync,detailProgressState,orderDetailRenderMark,paymentStatusLabel,refundStatusLabel,fulfillmentStatusLabel,invoiceStatusLabel,settlementStatusLabel,withdrawalStatusLabel,depositStatusLabel};",context);return context.hooks!;}
 const response=(value:unknown)=>({ok:true,status:200,text:async()=>JSON.stringify(value)}) as Response;
+
+// Execute the shipped browser functions with a minimal DOM, not a reimplementation of overview logic.
+class TestNode {
+  className="";
+  dataset:Record<string,string>={};
+  children:TestNode[]=[];
+  parent:TestNode|null=null;
+  attributes=new Map<string,string>();
+  listeners=new Map<string,Array<()=>unknown>>();
+  constructor(readonly tagName:string,private text=""){}
+  get textContent():string{return this.text+this.children.map(child=>child.textContent).join("");}
+  set textContent(value:string){this.text=value;this.children=[];}
+  get childElementCount(){return this.children.filter(child=>child.tagName!=="#text").length;}
+  classList={
+    contains:(name:string)=>this.className.split(/\s+/).includes(name),
+    add:(name:string)=>{this.classList.toggle(name,true);},
+    remove:(name:string)=>{this.classList.toggle(name,false);},
+    toggle:(name:string,force?:boolean)=>{const values=new Set(this.className.split(/\s+/).filter(Boolean)),add=force??!values.has(name);if(add)values.add(name);else values.delete(name);this.className=[...values].join(" ");return add;}
+  };
+  setAttribute(name:string,value:string){if(name==="class")this.className=value;else this.attributes.set(name,value);}
+  getAttribute(name:string){return name==="class"?this.className:this.attributes.get(name)??null;}
+  removeAttribute(name:string){this.attributes.delete(name);}
+  append(...children:TestNode[]){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
+  replaceChildren(...children:TestNode[]){for(const child of this.children)child.parent=null;this.children=[];this.text="";this.append(...children);}
+  remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
+  addEventListener(name:string,listener:()=>unknown){this.listeners.set(name,[...(this.listeners.get(name)||[]),listener]);}
+  async click(){for(const listener of this.listeners.get("click")||[])await listener();}
+  querySelectorAll(selector:string):TestNode[]{
+    const matches=(node:TestNode)=>selector.startsWith("#")?node.getAttribute("id")===selector.slice(1):selector.startsWith(".")?node.classList.contains(selector.slice(1)):node.tagName===selector;
+    return this.children.flatMap(child=>[...(matches(child)?[child]:[]),...child.querySelectorAll(selector)]);
+  }
+  querySelector(selector:string){return this.querySelectorAll(selector)[0]??null;}
+}
+function overviewHarness(fetcher:typeof fetch,{topbar=false}={}){
+  const body=new TestNode("body"),app=new TestNode("div"),content=new TestNode("main"),notice=new TestNode("div"),toolbar=new TestNode("div");
+  app.setAttribute("id","app");content.setAttribute("id","content");notice.setAttribute("id","notice");toolbar.setAttribute("id","topbar-toolbar");
+  body.append(app,notice);app.append(content);if(topbar)app.append(toolbar);
+  const listeners=new Map<string,Array<()=>void>>(),document={hidden:false,body,querySelector:(selector:string)=>body.querySelector(selector),createElement:(tag:string)=>new TestNode(tag),createTextNode:(text:string)=>new TestNode("#text",text),addEventListener:(name:string,listener:()=>void)=>listeners.set(name,[...(listeners.get(name)||[]),listener])};
+  const context:{hooks?:any;[key:string]:unknown}={fetch:fetcher,Node:TestNode,AbortController,setTimeout,clearTimeout,URL,URLSearchParams,Date,document,location:{origin:"https://tibo.test",hostname:"tibo.test",protocol:"https:",search:""},window:{addEventListener:()=>{}},localStorage:{getItem:()=>null}};
+  // Skip only auto-login; retain appended paymentSettings so render uses its real route table.
+  const source=workspaceJs.split("\n").filter(line=>!line.startsWith("applyEntryQuery();")&&!line.startsWith('api("/auth/config")')&&!line.startsWith('api("/auth/me")')).join("\n");
+  runInNewContext(source+"\nglobalThis.hooks={render,refreshOverview,stopOverviewPolling,hydrateTopbarWallet,cache:responseCache,get snapshot(){return overviewSnapshot;},clearViewCache:()=>viewLoadedAt.clear(),setTab:name=>{tab=name;},identity:(role='platform_admin',tenant='',user='test-admin')=>{me={id:user,role};merchant=tenant;perms=['wallet.read'];}};",context);
+  context.hooks.identity();
+  return {h:context.hooks,document,content,toolbar,emit:(name:string)=>{for(const listener of listeners.get(name)||[])listener();}};
+}
+const financeResponse=(amount:string)=>response({data:{today:{day:"2026-10-02",paidOrders:2,saleAmount:amount,netSaleAmount:amount,refundedAmount:"5.00",succeededOrders:1,marginAmount:"25.00"}}});
+const actionResponse=()=>response({data:{counts:{},worker:{status:"healthy"},checks:{},moduleStatus:{}}});
+const walletResponse=(procurement="135.00",earnings="25.00")=>response({data:{procurementAvailable:procurement,earningsAvailable:earnings}});
+
+describe("real topbar balance refresh behavior",()=>{
+  afterEach(()=>vi.useRealTimers());
+  it("makes forced page refresh bypass both the ten-second throttle and GET cache",async()=>{
+    vi.useFakeTimers();let amount="135.00";
+    const fetcher=vi.fn(async()=>walletResponse(amount)),{h,toolbar}=overviewHarness(fetcher as typeof fetch,{topbar:true});h.identity("agent_owner","m1");
+    try{
+      await h.render();await vi.advanceTimersByTimeAsync(0);expect(toolbar.textContent).toContain("¥135.00");
+      amount="250.00";await h.render({force:true});await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(2);expect(toolbar.textContent).toContain("¥250.00");expect(toolbar.getAttribute("data-state")).toBe("fresh");
+    }finally{h.stopOverviewPolling();}
+  });
+  it("retains nonzero balances with a visible stale label on failure, then clears it only after success",async()=>{
+    vi.useFakeTimers();let fail=false;
+    const fetcher=vi.fn(async()=>{if(fail)throw new Error("offline");return walletResponse();}),{h,toolbar}=overviewHarness(fetcher as typeof fetch,{topbar:true});h.identity("agent_owner","m1");
+    await h.hydrateTopbarWallet();vi.setSystemTime(Date.now()+11000);fail=true;await h.hydrateTopbarWallet();
+    expect(toolbar.textContent).toContain("¥135.00");expect(toolbar.textContent).toContain("¥25.00");expect(toolbar.textContent).toContain("余额已过期");expect(toolbar.getAttribute("data-state")).toBe("stale");
+    await h.hydrateTopbarWallet();expect(toolbar.getAttribute("data-state")).toBe("stale");
+    fail=false;await h.hydrateTopbarWallet();expect(toolbar.getAttribute("data-state")).toBe("fresh");expect(toolbar.textContent).not.toContain("余额已过期");
+  });
+  it.each(["tenant","identity"])("rejects an older %s wallet response after the current balance is displayed",async kind=>{
+    const pending:Array<(response:Response)=>void>=[],fetcher=vi.fn(()=>new Promise<Response>(resolve=>pending.push(resolve))),{h,toolbar}=overviewHarness(fetcher as typeof fetch,{topbar:true});h.identity("agent_owner","m1","user-1");
+    const old=h.hydrateTopbarWallet();h.identity("agent_owner",kind==="tenant"?"m2":"m1",kind==="identity"?"user-2":"user-1");const current=h.hydrateTopbarWallet();
+    pending[1]!(walletResponse("250.00","40.00"));await current;pending[0]!(walletResponse());await old;
+    expect(toolbar.textContent).toContain("¥250.00");expect(toolbar.textContent).toContain("¥40.00");expect(toolbar.textContent).not.toContain("¥135.00");
+  });
+  it("does not publish a cancelled wallet request even if the transport finishes later",async()=>{
+    let resolve!:(response:Response)=>void;const fetcher=vi.fn(()=>new Promise<Response>(done=>resolve=done)),{h,toolbar}=overviewHarness(fetcher as typeof fetch,{topbar:true});h.identity("agent_owner","m1");
+    const controller=new AbortController(),pending=h.hydrateTopbarWallet({signal:controller.signal});controller.abort();resolve(walletResponse());await pending;
+    expect(toolbar.textContent).not.toContain("¥135.00");expect(toolbar.getAttribute("data-state")).not.toBe("fresh");
+  });
+});
+
+describe("real homepage refresh behavior",()=>{
+  afterEach(()=>vi.useRealTimers());
+  it("keeps the latest nonzero receipts through force, failure and a subsequent cached render",async()=>{
+    vi.useFakeTimers();let amount="135.00",fail=false;
+    const fetcher=vi.fn(async(url:string)=>{if(url.includes("/finance/summary")){if(fail)throw new Error("offline");return financeResponse(amount);}return actionResponse();});
+    const {h,content}=overviewHarness(fetcher as typeof fetch);
+    try{
+      await h.render();expect(content.textContent).toContain("¥135.00");
+      amount="250.00";
+      const refresh=content.querySelectorAll("button").find(button=>button.textContent==="刷新总览")!;
+      await refresh.click();expect(content.textContent).toContain("¥250.00");expect(fetcher).toHaveBeenCalledTimes(4);
+      fail=true;await h.refreshOverview();
+      expect(content.textContent).toContain("¥250.00");expect(content.textContent).not.toContain("¥135.00");
+      expect(content.querySelector(".overview-freshness")?.getAttribute("data-state")).toBe("stale");
+      expect(content.querySelector(".overview-module-errors")?.textContent).toContain("经营数据：offline（保留旧值）");
+      h.clearViewCache();await h.render();
+      expect(content.textContent).toContain("¥250.00");expect(content.textContent).not.toContain("¥135.00");expect(fetcher).toHaveBeenCalledTimes(6);
+    }finally{h.stopOverviewPolling();}
+  });
+  it("ignores an older response even when the transport resolves after abort",async()=>{
+    vi.useFakeTimers();const pending:Array<{url:string;resolve:(response:Response)=>void;signal:AbortSignal}>=[];
+    const fetcher=vi.fn((url:string,opts:RequestInit)=>new Promise<Response>(resolve=>pending.push({url,resolve,signal:opts.signal as AbortSignal}))),{h,content}=overviewHarness(fetcher as typeof fetch);
+    try{
+      const old=h.render({force:true});expect(pending).toHaveLength(2);
+      const current=h.render({force:true});expect(pending).toHaveLength(4);expect(pending[0]!.signal.aborted).toBe(true);
+      for(const request of pending.slice(2))request.resolve(request.url.includes("finance")?financeResponse("250.00"):actionResponse());
+      await current;
+      for(const request of pending.slice(0,2))request.resolve(request.url.includes("finance")?financeResponse("135.00"):actionResponse());
+      await old;
+      expect(content.textContent).toContain("¥250.00");expect(content.textContent).not.toContain("¥135.00");
+      expect(h.snapshot.modules.finance.data.today.saleAmount).toBe("250.00");
+      expect(h.cache.size).toBe(2);
+      h.clearViewCache();await h.render();expect(fetcher).toHaveBeenCalledTimes(4);expect(content.textContent).toContain("¥250.00");
+    }finally{h.stopOverviewPolling();}
+  });
+  it("does not repaint or cache an aborted overview after leaving the page",async()=>{
+    vi.useFakeTimers();const pending:Array<{url:string;resolve:(response:Response)=>void}>=[];
+    const fetcher=vi.fn((url:string)=>new Promise<Response>(resolve=>pending.push({url,resolve}))),{h,content}=overviewHarness(fetcher as typeof fetch);
+    try{
+      const old=h.render();h.setTab("docs");await h.render();const visible=content.querySelector("#view-docs")!;
+      expect(visible.textContent).toContain("开发者中心");expect(visible.classList.contains("hidden")).toBe(false);
+      for(const request of pending)request.resolve(request.url.includes("finance")?financeResponse("135.00"):actionResponse());
+      await old;await Promise.resolve();await Promise.resolve();
+      expect(visible.textContent).not.toContain("¥135.00");expect(h.snapshot.modules).toEqual({});expect(h.cache.size).toBe(0);
+    }finally{h.stopOverviewPolling();}
+  });
+  it("stops polling while hidden and performs a network refresh when visible again",async()=>{
+    vi.useFakeTimers();const fetcher=vi.fn(async(url:string)=>url.includes("finance")?financeResponse("135.00"):actionResponse()),{h,document,emit,content}=overviewHarness(fetcher as typeof fetch);
+    try{
+      await h.render();expect(fetcher).toHaveBeenCalledTimes(2);document.hidden=true;emit("visibilitychange");
+      await vi.advanceTimersByTimeAsync(90000);await h.refreshOverview();expect(fetcher).toHaveBeenCalledTimes(2);
+      document.hidden=false;emit("visibilitychange");await vi.advanceTimersByTimeAsync(0);expect(fetcher).toHaveBeenCalledTimes(4);
+      expect(content.textContent).toContain("¥135.00");
+      await vi.advanceTimersByTimeAsync(30000);expect(fetcher).toHaveBeenCalledTimes(6);
+    }finally{h.stopOverviewPolling();}
+  });
+});
+
 describe("workspace request and progress plumbing",()=>{
   it("deduplicates live reads and does not let one aborted view cancel the other reader",async()=>{let resolve!:(v:Response)=>void;const fetcher=vi.fn(()=>new Promise<Response>(r=>resolve=r)),h=harness(fetcher as typeof fetch);h.identity("a","m1");const controller=new AbortController(),first=h.api("/orders","GET",undefined,{signal:controller.signal}),rejected=expect(first).rejects.toMatchObject({name:"AbortError"}),second=h.api("/orders");controller.abort();await rejected;const third=h.api("/orders");expect(fetcher).toHaveBeenCalledTimes(1);resolve(response({data:[]}));await Promise.all([second,third]);expect(h.inflight.size).toBe(0);});
   it("retains metadata after a GET, invalidates after writes, and isolates cache by identity and tenant",async()=>{const fetcher=vi.fn(async()=>response({data:[]})),h=harness(fetcher as typeof fetch);h.identity("a","m1");await h.api("/agents");await h.api("/orders");await h.api("/agents");expect(fetcher).toHaveBeenCalledTimes(2);h.identity("a","m2");await h.api("/agents");h.identity("b","m2");await h.api("/agents");expect(fetcher).toHaveBeenCalledTimes(4);await h.api("/agents","PUT",{});await h.api("/agents");expect(fetcher).toHaveBeenCalledTimes(6);});
   it("does not repopulate stale cache after an intervening write",async()=>{let resolve!:(v:Response)=>void;const fetcher=vi.fn((url:string)=>url.endsWith("/agents")?new Promise<Response>(r=>resolve=r):Promise.resolve(response({}))),h=harness(fetcher as typeof fetch);const p=h.api("/agents");await h.api("/products/x","PUT",{});resolve(response({data:["stale"]}));await p;expect(h.cache.size).toBe(0);});
-  it("forces a fresh homepage read, fixes path invalidation, and retains the last good cache after failure",async()=>{let fail=false,calls=0;const fetcher=vi.fn(async()=>{calls++;if(fail)throw new Error("offline");return response({data:{revision:calls}});}),h=harness(fetcher as typeof fetch);h.identity("admin","platform");const first=await h.api("/action-center");expect(first.data.revision).toBe(1);expect((await h.api("/action-center")).data.revision).toBe(1);expect(calls).toBe(1);expect((await h.api("/action-center","GET",undefined,{fresh:true})).data.revision).toBe(2);expect(calls).toBe(2);fail=true;await expect(h.api("/action-center","GET",undefined,{fresh:true})).rejects.toThrow("offline");expect((await h.api("/action-center")).data.revision).toBe(1);h.invalidateCachedPath("/action-center");expect(h.cache.size).toBe(0);});
+  it("forces a fresh homepage read, fixes path invalidation, and retains the last good cache after failure",async()=>{let fail=false,calls=0;const fetcher=vi.fn(async()=>{calls++;if(fail)throw new Error("offline");return response({data:{revision:calls}});}),h=harness(fetcher as typeof fetch);h.identity("admin","platform");const first=await h.api("/action-center");expect(first.data.revision).toBe(1);expect((await h.api("/action-center")).data.revision).toBe(1);expect(calls).toBe(1);expect((await h.api("/action-center","GET",undefined,{fresh:true})).data.revision).toBe(2);expect(calls).toBe(2);fail=true;await expect(h.api("/action-center","GET",undefined,{fresh:true})).rejects.toThrow("offline");expect((await h.api("/action-center")).data.revision).toBe(2);h.invalidateCachedPath("/action-center");expect(h.cache.size).toBe(0);});
+  it("starts a new network request for fresh reads and rejects late cache ownership",async()=>{
+    const pending:Array<(value:Response)=>void>=[],fetcher=vi.fn(()=>new Promise<Response>(resolve=>pending.push(resolve))),h=harness(fetcher as typeof fetch);
+    const old=h.api("/wallets/m1"),fresh=h.api("/wallets/m1","GET",undefined,{fresh:true});
+    const calls=fetcher.mock.calls.length;
+    pending[1]?.(response({data:{procurementAvailable:"250.00",earningsAvailable:"40.00"}}));
+    pending[0]!(response({data:{procurementAvailable:"135.00",earningsAvailable:"25.00"}}));
+    await Promise.all([old,fresh]);
+    expect(calls).toBe(2);
+    expect((await h.api("/wallets/m1")).data).toEqual({procurementAvailable:"250.00",earningsAvailable:"40.00"});
+  });
+  it("does not join a read from before an intervening mutation",async()=>{
+    const pending:Array<(value:Response)=>void>=[],fetcher=vi.fn((url:string)=>url.endsWith("/agents")?new Promise<Response>(resolve=>pending.push(resolve)):Promise.resolve(response({}))),h=harness(fetcher as typeof fetch);
+    const old=h.api("/agents");await h.api("/products/x","PUT",{});const current=h.api("/agents"),calls=fetcher.mock.calls.length;
+    pending[1]?.(response({data:["current"]}));pending[0]!(response({data:["old"]}));await Promise.all([old,current]);
+    expect(calls).toBe(3);expect((await h.api("/agents")).data).toEqual(["current"]);
+  });
   it("carries forced refresh and cancellation through the overview page reader",async()=>{const fetcher=vi.fn(async()=>response({data:{ok:true}})),h=harness(fetcher as typeof fetch);h.identity("admin","platform");await h.readPage("/action-center");await h.readPage("/action-center");expect(fetcher).toHaveBeenCalledTimes(1);const controller=new AbortController();await h.readPage("/action-center",{fresh:true,signal:controller.signal});expect(fetcher).toHaveBeenCalledTimes(2);expect(workspaceJs).toContain("if(platform())return platformOverview(opts)");expect(workspaceJs).toContain('readPage("/announcements",opts)');});
   it("guards overview state from late navigation responses and pauses polling while hidden",()=>{expect(workspaceJs).toContain("sequence!==overviewRequestSequence");expect(workspaceJs).toContain("opts.signal?.aborted");expect(workspaceJs).toContain('if(document.hidden)stopOverviewPolling();else refreshOverview()');expect(workspaceJs).toContain("overviewRefreshInFlight");});
   it("keeps terminal dialogs quiet but refreshes pending payment and in-flight recharge",()=>{const h=harness(vi.fn() as unknown as typeof fetch);expect(h.detailNeedsLiveSync({paymentStatus:"pending"})).toBe(true);expect(h.detailNeedsLiveSync({paymentStatus:"paid",timeline:{fulfillmentStatus:"running"}})).toBe(true);expect(h.detailNeedsLiveSync({paymentStatus:"paid",deliveryMode:"cdk",voucherCode:"test",timeline:{fulfillmentStatus:"succeeded"}})).toBe(false);});
