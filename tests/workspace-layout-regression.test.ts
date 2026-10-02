@@ -119,16 +119,16 @@ function tree(tag: string, className: string, parent?: Element): Element {
   const node = new Element(tag); node.className = className; parent?.append(node); return node;
 }
 function fixture() { const html = tree("html", ""), body = tree("body", "", html), shell = tree("div", "shell", body); return {html, body, shell}; }
-function harness() {
+function harness(permissions = ["*"]) {
   const body = new Element("body"), trigger = tree("button", "trigger", body), calls: Array<[string, unknown]> = [];
   const document = {body, activeElement: trigger, hidden: false, querySelector: (s: string) => body.querySelector(s),
     createElement: (tag: string) => new Element(tag), createTextNode: (text: string) => new Element("#text", text), addEventListener() {}, removeEventListener() {}};
   const context: {hooks?: any; [key: string]: unknown} = {document, Node: Element, AbortController, setTimeout, clearTimeout, URL, URLSearchParams,
     crypto: {randomUUID}, window: {addEventListener() {}, removeEventListener() {}}, localStorage: {getItem: () => null},
     location: {origin: "https://layout.test", hostname: "layout.test", protocol: "https:", search: ""},
-    record: (kind: string, value: unknown) => calls.push([kind, value]), fetch: vi.fn()};
+    record: (kind: string, value: unknown) => calls.push([kind, value]), fetch: vi.fn(), testPermissions: permissions};
   const source = workspaceJs.split("\napplyEntryQuery();")[0];
-  runInNewContext(source + `\nme={id:"layout-admin",role:"platform_admin"};perms=["*"];
+  runInNewContext(source + `\nme={id:"layout-admin",role:"platform_admin"};perms=testPermissions;
     gotoTab=value=>record("tab",value);openOrderDetailModal=value=>record("order",value);
     completeCustomerRefund=value=>record("ordinary-refund",value);completePriceAdjustmentRefund=value=>record("adjustment-refund",value);
     openDailySettlementPay=value=>record("settlement",value);openWalletPanel=value=>record("wallet",value);
@@ -223,29 +223,72 @@ describe("workspace layout and action preservation", () => {
     expect(calls).toEqual([["order", {id: "order-23"}]]);
   });
 
-  it("keeps health colours semantic and retains readable status and configuration actions", async () => {
-    const {h, calls} = harness(), tones = new Map<string, string>();
-    for (const [state, tone, label] of [["healthy", "success", "正常"], ["failed", "danger", "检查失败"], ["stale", "danger", "心跳过期"],
-      ["degraded", "danger", "任务异常"], ["stopped", "danger", "已停止"], ["missing", "warning", "尚未收到心跳"],
-      ["disabled", "warning", "已停用"], ["configured", "info", "配置就绪"], ["ready", "info", "配置就绪"], ["undetected", "neutral", "未检测"]]) {
-      const view = h.platformActionCenter(actionFixture({checks: {payment: {status: state, label}}})) as Element;
-      const card = view.querySelectorAll(".operations-check").find(item => item.textContent.includes("支付通道"))!;
-      expect(card.textContent).toContain(label);
-      const {body} = fixture(); body.append(view);
-      const color = effective(card.querySelector("span")!, 1440).color;
-      expect(color, `${state} must expose a resolved text colour`).toMatch(/^#[0-9a-f]{6}$/i);
-      if (tones.has(tone!)) expect(color, `${state} must keep its semantic family`).toBe(tones.get(tone!));
-      tones.set(tone!, color!);
-      await card.click();
+  it("keeps configuration readiness out of home queues and shows no runtime alert when the worker is healthy", () => {
+    const {h} = harness();
+    for (const state of ["healthy", "configured", "ready", "disabled", "missing", "undetected", "failed"]) {
+      const view = h.platformActionCenter(actionFixture({checks: {
+        payment: {status: state, label: "支付宝配置状态"},
+        upstream: {status: state, label: "供应连接配置状态"},
+        backup: {status: state, label: "备份配置状态"},
+      }})) as Element;
+      expect(view.querySelector(".operations-status-rail")).toBeNull();
+      expect(view.querySelector(".operations-check")).toBeNull();
+      expect(view.querySelector(".overview-runtime-alert")).toBeNull();
+      expect(view.querySelectorAll(".action-queue")).toHaveLength(0);
+      for (const label of ["支付宝配置状态", "供应连接配置状态", "备份配置状态", "支付通道", "上游供应", "数据备份"])
+        expect(view.textContent).not.toContain(label);
+      expect(view.textContent).toContain("待办");
     }
-    expect(new Set(tones.values()).size).toBe(5);
-    const rgb = (tone: string) => tones.get(tone)!.slice(1).match(/../g)!.map(value => parseInt(value, 16));
-    const [red, green, blue] = rgb("danger"); expect(red).toBeGreaterThan(green!); expect(red).toBeGreaterThan(blue!);
-    const success = rgb("success"); expect(success[1]).toBeGreaterThan(success[0]!);
-    const info = rgb("info"); expect(info[2]).toBeGreaterThan(info[0]!); expect(info[2]).toBeGreaterThan(info[1]!);
-    const warning = rgb("warning"); expect(warning[0]).toBeGreaterThan(warning[1]!); expect(warning[1]).toBeGreaterThan(warning[2]!);
-    const neutral = rgb("neutral"); expect(Math.max(...neutral) - Math.min(...neutral)).toBeLessThan(64);
-    expect(calls).toHaveLength(10); expect(calls.every(([kind, value]) => kind === "tab" && value === "paymentSettings")).toBe(true);
+  });
+
+  it.each(["degraded", "stale", "stopped"])("shows %s as one compact runtime warning with an exact monitoring link", async status => {
+    const {h, calls} = harness(), view = h.platformActionCenter(actionFixture({worker: {
+      status, failedLanes: ["fulfillment"], stuckLanes: [], heartbeatAt: "2026-10-02T02:00:00.000Z",
+    }})) as Element;
+    const alerts = view.querySelectorAll(".overview-runtime-alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.getAttribute("data-tone")).toBe("danger");
+    expect(alerts[0]!.textContent).toContain("后台任务");
+    expect(view.querySelectorAll(".action-queue")).toHaveLength(0);
+    expect(view.querySelector(".operations-status-rail")).toBeNull();
+    expect(alerts[0]!.querySelector(".action-list")).toBeNull();
+    const open = alerts[0]!.querySelectorAll("button").find(button => button.textContent === "查看运行");
+    expect(open).toBeDefined(); await open!.click();
+    expect(calls).toEqual([["tab", "runtimeStatus"]]);
+  });
+
+  it.each([undefined, {status: "missing"}, {status: "unknown"}])("does not declare missing or unknown runtime evidence healthy or failed: %j", worker => {
+    const {h} = harness(), view = h.platformActionCenter(actionFixture({worker})) as Element;
+    const alert = view.querySelector(".overview-runtime-alert");
+    expect(alert).not.toBeNull(); expect(alert!.getAttribute("data-tone")).toBe("warning");
+    expect(alert!.textContent).toMatch(/未确认|未检测|未知/);
+    expect(alert!.textContent).not.toMatch(/运行正常|系统正常|已故障|已停止|未启动/);
+    expect(view.querySelectorAll(".action-queue")).toHaveLength(0);
+  });
+
+  it("retains actionable business queues beside a runtime alert without counting configuration as a business item", async () => {
+    const {h, calls} = harness(), view = h.platformActionCenter(actionFixture({
+      worker: {status: "stale"}, checks: {payment: {status: "missing", label: "支付宝未启用"}},
+      counts: {tasks: 2}, tasks: [{orderId: "order-alert-1", message: "充值结果需要人工确认"}],
+    })) as Element;
+    expect(view.querySelectorAll(".overview-runtime-alert")).toHaveLength(1);
+    const queues = view.querySelectorAll(".action-queue"); expect(queues).toHaveLength(1);
+    expect(queues[0]!.textContent).toContain("异常订单"); expect(queues[0]!.querySelector(".action-count")!.textContent).toBe("2");
+    expect(view.textContent).not.toContain("支付宝未启用");
+    await queues[0]!.querySelectorAll("button").find(button => button.textContent === "处理订单")!.click();
+    expect(calls).toEqual([["order", {id: "order-alert-1"}]]);
+  });
+
+  it("does not offer admin-only monitoring navigation to read-only staff", () => {
+    const {h} = harness(["orders.read"]), view = h.platformActionCenter(actionFixture({worker: {status: "stopped"}})) as Element;
+    expect(view.querySelector(".overview-runtime-alert")!.textContent).toContain("请联系管理员核查");
+    expect(view.querySelectorAll("button").some(button => button.textContent === "查看运行")).toBe(false);
+  });
+
+  it("does not present an unavailable action-center response as an empty business queue", () => {
+    const {h} = harness(), view = h.platformActionCenter(actionFixture({moduleStatus: {action: {available: false}}})) as Element;
+    expect(view.textContent).toContain("业务待办暂不可用");
+    expect(view.textContent).not.toContain("当前没有业务待办");
   });
 
   it("maps queue severity to distinct styles while preserving totals and per-queue navigation", async () => {

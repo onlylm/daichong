@@ -43,7 +43,7 @@ async function runtimeStatus(opts={}){
   const lanes=w.lanes.map(l=>[l.name,l.inFlight?"执行中":l.consecutiveFailures?"最近失败":"空闲",date(l.lastSucceededAt),date(l.lastFailedAt),String(l.consecutiveFailures)]);
   return [workspaceHeading("运行备份","读取实际运行记录与恢复验证摘要，不代表支付或上游实时连通。",[button("刷新状态",()=>render({force:true}))]),
     el("p",{class:"muted"},"最近成功读取："+date(data.checkedAt)),
-    section("后台任务",el("p",{role:"status"},"Worker："+(names[w.status]||"未检测")+" · 最近心跳："+date(w.heartbeatAt)),lanes.length?table(["通道","状态","最近成功","最近失败","连续失败"],lanes):el("p",{class:"empty"},"尚未收到后台任务心跳。")),
+    section("后台任务",el("p",{role:"status"},"Worker："+(names[w.status]||"未检测")+" · 最近心跳："+date(w.heartbeatAt)),lanes.length?table(["通道","状态","最近成功","最近失败","连续失败"],lanes):el("p",{class:"empty"},"尚未收到后台任务心跳。"),button("查看详情",()=>openWorkerHealthDetail(w))),
     section("任务积压",el("p",{},"排队或运行中："+data.queue.active+" 笔 · 最早进入："+date(data.queue.oldestAt)),data.queue.oldestOrderId?button("查看最早订单",()=>openOrderDetailModal({id:data.queue.oldestOrderId})):el("p",{class:"muted"},"当前没有排队或运行中的任务。"),button("待办中心",()=>gotoTab("notifications"))),
     section("备份验证",el("p",{role:"status"},b.label),el("p",{},"最近恢复验证："+date(b.checkedAt)),el("p",{class:"muted"},"这是备份恢复演练的脱敏结果，不是实时备份成功证明，也不代表异机灾备已经验证。")),
     el("p",{class:"muted"},data.scope)];
