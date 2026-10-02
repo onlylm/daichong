@@ -107,6 +107,7 @@ export class SqliteRepository implements Repository {
       CREATE INDEX IF NOT EXISTS records_tenant_payment_created_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.paymentStatus'),json_extract(payload,'$.createdAt') DESC,id DESC);
       CREATE INDEX IF NOT EXISTS records_payment_provider_due_idx ON sandbox_records(kind,json_extract(payload,'$.provider'),json_extract(payload,'$.status'),json_extract(payload,'$.nextCheckAt'));
       CREATE INDEX IF NOT EXISTS records_paid_at_idx ON sandbox_records(kind,json_extract(payload,'$.paidAt'));
+      CREATE INDEX IF NOT EXISTS records_refunded_at_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.refundedAt'));
       CREATE INDEX IF NOT EXISTS records_task_attempt_idx ON sandbox_records(kind,merchant_id,json_extract(payload,'$.orderId'),CAST(json_extract(payload,'$.attemptNo') AS INTEGER) DESC);
       CREATE INDEX IF NOT EXISTS records_refund_queue_idx ON sandbox_records(kind,json_extract(payload,'$.status'),json_extract(payload,'$.type'),json_extract(payload,'$.createdAt') DESC);
       CREATE INDEX IF NOT EXISTS records_refund_review_checked_idx ON sandbox_records(kind,json_extract(payload,'$.lastCheckedAt') DESC,id DESC);
@@ -141,19 +142,24 @@ export class SqliteRepository implements Repository {
   }
 
   queryRecords<K extends keyof QueryRecords>(kind:K,q:RecordQuery={}):RecordPage<QueryRecords[K]> {
-    const domain=new Set(['order','fulfillment','cdk_voucher','refund','payment_attempt','outbox','audit']);
+    const domain=new Set(['merchant','order','fulfillment','cdk_voucher','refund','payment_attempt','outbox','audit']);
     const storedKind=domain.has(kind)?kind:'ops_'+kind;
     const args:Array<string|number|null>=[storedKind],conditions=['kind=?'];
     const path=(field:string)=>{if(!/^[a-zA-Z][a-zA-Z0-9_.]*$/.test(field))throw new Error('invalid_query_field');return `json_extract(payload,'$.${field}')`;};
     if(q.merchantId!==undefined){conditions.push('merchant_id=?');args.push(q.merchantId);}
     if(q.afterId){conditions.push('id>?');args.push(q.afterId);}
+    if(q.searchAny){
+      if(!q.searchAny.fields.length)conditions.push('0');
+      else {conditions.push('('+q.searchAny.fields.map(field=>`instr(lower(COALESCE(${path(field)},'')),lower(?))>0`).join(' OR ')+')');args.push(...q.searchAny.fields.map(()=>q.searchAny!.text));}
+    }
     for(const f of q.filters??[]){
       const expr=path(f.field),op=f.op??'eq';
       if(op==='is_null'){conditions.push(expr+' IS NULL');continue;}
       if(op==='not_null'){conditions.push(expr+' IS NOT NULL');continue;}
       if(op==='in'){const values=f.value as Array<string|number>;if(!values.length){conditions.push('0');continue;}conditions.push(expr+` IN (${values.map(()=>'?').join(',')})`);args.push(...values);continue;}
       if(op==='lte_or_null'){conditions.push(`(${expr} IS NULL OR ${expr}<=?)`);const value=f.value;args.push(value instanceof Date?value.toISOString():value as string|number|null);continue;}
-      const operators={eq:'=',ne:'!=',lte:'<=',gte:'>=',gt:'>'};
+      if(op==='contains'){conditions.push(`instr(lower(COALESCE(${expr},'')),lower(?))>0`);args.push(String(f.value??''));continue;}
+      const operators={eq:'=',ne:'!=',lt:'<',lte:'<=',gte:'>=',gt:'>'};
       conditions.push(expr+(operators[op]??'=')+'?');
       const value=f.value;args.push(value instanceof Date?value.toISOString():typeof value==='boolean'?Number(value):value as string|number|null);
     }
@@ -276,15 +282,47 @@ export class SqliteRepository implements Repository {
       SUM(CASE WHEN ${retail} THEN 1 ELSE 0 END) AS platformCollectOrders,SUM(CASE WHEN NOT (${retail}) THEN 1 ELSE 0 END) AS agentCollectOrders,
       ${sum(`CASE WHEN ${retail} THEN ${amount('saleAmountMinor')} ELSE 0 END`)} AS saleAmountMinor,
       ${sum(`CASE WHEN ${retail} THEN ${amount('supplyAmountMinor')} ELSE 0 END`)} AS supplyAmountMinor,
-      ${sum(`CASE WHEN ${retail} THEN ${amount('ordinaryRefundedMinor')} ELSE 0 END`)} AS ordinaryRefundedMinor,
-      ${sum(`CASE WHEN ${retail} THEN ${amount('priceAdjustmentRefundedMinor')} ELSE 0 END`)} AS priceAdjustmentRefundedMinor,
+      ${sum(`CASE WHEN ${retail} THEN ${amount('ordinaryRefundedMinor')} ELSE 0 END`)} AS paidCohortOrdinaryRefundedMinor,
+      ${sum(`CASE WHEN ${retail} THEN ${amount('priceAdjustmentRefundedMinor')} ELSE 0 END`)} AS paidCohortPriceAdjustmentRefundedMinor,
       ${sum(`CASE WHEN ${retail} THEN max(0,${amount('saleAmountMinor')}-${amount('ordinaryRefundedMinor')}-${amount('supplyAmountMinor')}) ELSE 0 END`)} AS marginMinor,
       ${sum(`CASE WHEN NOT (${retail}) THEN ${amount('supplyAmountMinor')} ELSE 0 END`)} AS agentCollectSupplyMinor,
       SUM(CASE WHEN EXISTS(SELECT 1 FROM sandbox_records f WHERE f.kind='fulfillment' AND f.merchant_id=o.merchant_id AND json_extract(f.payload,'$.orderId')=o.id AND json_extract(f.payload,'$.status')='succeeded') THEN 1 ELSE 0 END) AS succeededOrders
       ${base} GROUP BY day`).all(from,to) as Array<Record<string,string|number>>;
+    const refundDays=this.db.prepare(`SELECT strftime('%Y-%m-%d',json_extract(r.payload,'$.refundedAt'),'+8 hours') AS day,
+      COUNT(*) AS refundTransactions,
+      ${sum(`CASE WHEN json_extract(r.payload,'$.type')!='price_adjustment' THEN CAST(json_extract(r.payload,'$.amountMinor.__bigint') AS INTEGER) ELSE 0 END`)} AS ordinaryRefundedMinor,
+      ${sum(`CASE WHEN json_extract(r.payload,'$.type')='price_adjustment' THEN CAST(json_extract(r.payload,'$.amountMinor.__bigint') AS INTEGER) ELSE 0 END`)} AS priceAdjustmentRefundedMinor
+      FROM sandbox_records r JOIN sandbox_records o ON o.kind='order' AND o.id=json_extract(r.payload,'$.orderId') AND o.merchant_id=r.merchant_id
+      WHERE r.kind='refund' AND json_extract(r.payload,'$.status')='succeeded'
+      AND json_extract(r.payload,'$.refundedAt')>=? AND json_extract(r.payload,'$.refundedAt')<?
+      AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0 AND ${retail}
+      AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded','refunded') GROUP BY day`).all(from,to) as Array<Record<string,string|number>>;
+    for(const refunds of refundDays){const index=daily.findIndex(item=>item.day===refunds.day);
+      if(index<0)daily.push(refunds);else daily[index]={...daily[index],...refunds};}
     const todayStart=new Date(Date.parse(to)-86400000).toISOString();
     const todayOrders=this.db.prepare(`SELECT o.payload${base} ORDER BY json_extract(o.payload,'$.paidAt') DESC,o.id DESC LIMIT 50`).all(todayStart,to).map(r=>decode<Order>(String(r.payload)));
     return {daily,todayOrders};
+  }
+  queryFinanceCashflow(merchantIds:string[],q:{from:string;to:string;refundsOnly:boolean;page:number;limit:number}) {
+    const limit=Math.max(1,Math.min(100,q.limit)),empty={entries:[] as Array<{order:Order;refund:Refund|null;occurredAt:Date}>,
+      meta:{total:0,page:1,limit,pages:1}};
+    if(!merchantIds.length)return empty;
+    const scope=`o.kind='order' AND o.merchant_id IN (${merchantIds.map(()=>'?').join(',')})
+      AND COALESCE(json_extract(o.payload,'$.liveTest'),0)=0
+      AND COALESCE(json_extract(o.payload,'$.collectionMode'),'platform_collect')='platform_collect'
+      AND json_extract(o.payload,'$.paymentStatus') IN ('paid','partially_refunded','refunded')`;
+    const receipt=`SELECT 'receipt:'||o.id AS entry_id,o.payload AS order_payload,NULL AS refund_payload,json_extract(o.payload,'$.paidAt') AS occurred_at
+      FROM sandbox_records o WHERE ${scope} AND json_extract(o.payload,'$.paidAt')>=? AND json_extract(o.payload,'$.paidAt')<?`;
+    const refund=`SELECT 'refund:'||r.id AS entry_id,o.payload AS order_payload,r.payload AS refund_payload,json_extract(r.payload,'$.refundedAt') AS occurred_at
+      FROM sandbox_records r JOIN sandbox_records o ON o.id=json_extract(r.payload,'$.orderId') AND o.merchant_id=r.merchant_id
+      WHERE ${scope} AND r.kind='refund' AND json_extract(r.payload,'$.status')='succeeded'
+      AND json_extract(r.payload,'$.refundedAt')>=? AND json_extract(r.payload,'$.refundedAt')<?`;
+    const union=q.refundsOnly?refund:receipt+' UNION ALL '+refund,args=q.refundsOnly?[...merchantIds,q.from,q.to]:[...merchantIds,q.from,q.to,...merchantIds,q.from,q.to];
+    const total=Number(this.db.prepare(`SELECT COUNT(*) AS total FROM (${union})`).get(...args)?.total??0),pages=Math.max(1,Math.ceil(total/limit));
+    const page=Math.min(Math.max(1,q.page),pages);
+    const rows=this.db.prepare(`SELECT * FROM (${union}) ORDER BY occurred_at DESC,entry_id DESC LIMIT ? OFFSET ?`).all(...args,limit,(page-1)*limit);
+    return {entries:rows.map(row=>({order:decode<Order>(String(row.order_payload)),refund:row.refund_payload?decode<Refund>(String(row.refund_payload)):null,
+      occurredAt:new Date(String(row.occurred_at))})),meta:{total,page,limit,pages}};
   }
   outboxSince(cursor:number,merchantId:string|null,limit:number) {
     const rows=merchantId===null?this.db.prepare("SELECT rowid,payload FROM sandbox_records WHERE rowid>? AND kind='outbox' ORDER BY rowid LIMIT ?").all(cursor,Math.min(limit,100))

@@ -23,6 +23,7 @@ export class InvoiceAlipayService {
       const application = this.invoices.application(applicationId);
       if (actor.merchantId !== application.merchantId) throw new AppError(404, "invoice_not_found", "开票申请不存在");
       if (application.status !== "awaiting_payment") throw new AppError(409, "invoice_already_submitted", "补差价已支付，开票申请已提交");
+      this.invoices.assertPaymentEligible(application.id);
       const now = new Date();
       const pending = queryRecords(this.repository,"invoice_fee_payment",{merchantId:application.merchantId,
         filters:[{field:"applicationId",value:application.id},{field:"status",value:"pending"}],orderBy:"createdAt",direction:"desc",limit:1,count:false}).data[0];
@@ -55,6 +56,7 @@ export class InvoiceAlipayService {
       const payment=this.payment(id);
       if(payment.status!=="pending"||payment.expiresAt<=now)
         throw new AppError(409,"payment_not_available","补差价支付单已过期，请返回开票申请重新发起");
+      this.invoices.assertPaymentEligible(payment.applicationId);
       if(payment.qrPayload&&isAlipayPrecreateQr(payment.qrPayload))return {payment,existing:payment.qrPayload};
       if(payment.precreateLeaseUntil&&payment.precreateLeaseUntil>now)
         throw new AppError(409,"payment_code_generating","付款码正在生成，请稍后重试",true);
@@ -72,14 +74,20 @@ export class InvoiceAlipayService {
       }, {validateSign: true});
       const qrCode = typeof result.qr_code === "string" ? result.qr_code : "";
       if (result.code !== "10000" || !qrCode) throw new AppError(503, "payment_provider_unavailable", "支付宝补差价收款暂不可用，请稍后重试");
-      return this.repository.transaction(()=>{
+      const generated = this.repository.transaction(()=>{
         const current=this.payment(id);
-        if(current.qrPayload&&isAlipayPrecreateQr(current.qrPayload))return current.qrPayload;
-        if(current.precreateLeaseToken!==leaseToken||current.status!=="pending")
+        if(current.precreateLeaseToken!==leaseToken)
           throw new AppError(409,"payment_code_generation_changed","付款码生成状态已变化，请重新查询",true);
-        this.repository.saveOperations("invoice_fee_payment",{...current,qrPayload:qrCode,precreateLeaseToken:null,
-          precreateLeaseUntil:null,updatedAt:new Date()});return qrCode;
+        const qrPayload=current.qrPayload&&isAlipayPrecreateQr(current.qrPayload)?current.qrPayload:qrCode;
+        this.repository.saveOperations("invoice_fee_payment",{...current,qrPayload,precreateLeaseToken:null,
+          precreateLeaseUntil:null,updatedAt:new Date()});
+        return {qrPayload,available:current.status==="pending"&&current.expiresAt>new Date()};
       });
+      // Preserve the channel-created payment record even if the order was refunded
+      // while awaiting Alipay. Revalidation must not roll that evidence back.
+      this.invoices.assertPaymentEligible(claimed.payment.applicationId);
+      if(!generated.available)throw new AppError(409,"payment_not_available","补差价支付状态已变化或已过期，请返回开票申请核对");
+      return generated.qrPayload;
     }catch(error){
       this.repository.transaction(()=>{const current=this.repository.getOperations("invoice_fee_payment",id);
         if(current?.precreateLeaseToken===leaseToken)this.repository.saveOperations("invoice_fee_payment",{...current,

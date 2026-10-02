@@ -3,7 +3,7 @@ import type {FastifyInstance} from "fastify";
 import {z} from "zod";
 import type {Runtime} from "../bootstrap.js";
 import type {Fulfillment} from "../domain/model.js";
-import {partnerFulfillmentDetails, partnerFulfillmentMessage, partnerFulfillmentProgress} from "./fulfillment-public.js";
+import {partnerFulfillmentDetails, partnerFulfillmentMessage, partnerFulfillmentProgress, partnerNextAction} from "./fulfillment-public.js";
 import type {OrderVisibilityField} from "../operations/model.js";
 import {AppError} from "../domain/errors.js";
 import {CDK_PUBLIC_CODE_PATTERN} from "./cdk-code.js";
@@ -29,7 +29,7 @@ export function redemptionView(task: Fulfillment, visibility?: OrderVisibilityFi
     attempt_no: task.attemptNo, ...partnerFulfillmentProgress(task),
     failure_code: task.failureCode, message: partnerFulfillmentMessage(task), ...partnerFulfillmentDetails(task, visibility), account_email_masked: task.accountEmailMasked,
     fallback_recharge_available: fallbackRechargeAvailable && retryAllowed,
-    retry_allowed: retryAllowed, next_action: task.status === "succeeded" ? "none" : retryAllowed ? "resubmit" : "wait",
+    retry_allowed: retryAllowed, next_action: partnerNextAction(task, retryAllowed),
     created_at: task.createdAt.toISOString(), finished_at: task.finishedAt?.toISOString() ?? null};
 }
 export function registerPartnerRedemptionRoutes(app: FastifyInstance, runtime: Runtime): void {

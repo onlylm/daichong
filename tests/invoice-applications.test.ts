@@ -17,9 +17,12 @@ describe("order invoice applications", () => {
     owner = {id: "owner", role: "agent_owner", merchantId: credential.merchant.id};
     const order = await runtime.orders.create({merchantId: credential.merchant.id, partnerId: credential.merchant.partnerId,
       appId: credential.app.appId, keyId: credential.key.keyId}, {merchantOrderNo: "invoice-order", productCode: "chatgpt_plus_cdk_1m",
-      quantity: 1, saleAmount: "135.00", collectionMode: "platform_collect"});
+      quantity: 1, saleAmount: "1000.00", collectionMode: "platform_collect"});
     runtime.repository.updateOrder({...order, paymentStatus: "paid", paidAt: new Date(), paymentReceivedMinor: order.saleAmountMinor,
       paymentProviderRef: "ali-order-paid", updatedAt: new Date()});
+    const attempt=runtime.repository.findPaymentAttemptByOrder(order.merchantId,order.id)!;
+    runtime.repository.updatePaymentAttempt({...attempt,status:"paid",receivedMinor:order.saleAmountMinor,
+      providerRef:"ali-order-paid",paidAt:new Date(),updatedAt:new Date()});
     orderId = order.id;
   });
 
@@ -45,7 +48,7 @@ describe("order invoice applications", () => {
     const first=runtime.invoices.create(owner,orderId,input);
     expect(runtime.invoices.create(owner,orderId,{...input,requestKey:"invoice-order-same"}).id).toBe(first.id);
     expect(()=>runtime.invoices.create(owner,orderId,{...input,invoiceAmount:"1200.00",requestKey:"invoice-order-conflict"}))
-      .toThrow("该订单已有不同资料的开票申请");
+      .toThrow("发票金额必须与关联订单已确认的客户实付金额一致");
     expect(runtime.repository.listOperations("invoice_application",owner.merchantId!)).toHaveLength(1);
   });
 

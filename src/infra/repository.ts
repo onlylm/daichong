@@ -54,6 +54,10 @@ export interface Repository {
     meta:{total:number;page:number;limit:number;pages:number};
   };
   financeWindow?(from:string,to:string):{daily:Array<Record<string,string|number>>;todayOrders:Order[]};
+  queryFinanceCashflow?(merchantIds:string[],query:{from:string;to:string;refundsOnly:boolean;page:number;limit:number}):{
+    entries:Array<{order:Order;refund:Refund|null;occurredAt:Date}>;
+    meta:{total:number;page:number;limit:number;pages:number};
+  };
   outboxCursor?():number;
   outboxSince?(cursor:number,merchantId:string|null,limit:number):Array<{cursor:number;event:OutboxEvent}>;
   queryWorkspaceOrders?(merchantIds:string[],query:{productCodes?:string[];search?:string;status?:string;page:number;limit:number;today:string;createdFrom?:string;createdTo?:string;paidFrom?:string;paidTo?:string;collectionMode?:string;financeMetric?:string;includeSupplierTrace?:boolean}):{
@@ -178,6 +182,8 @@ export interface Repository {
   rescheduleWebhookDelivery(deliveryId: string, nextAttemptAt: Date | null, errorCode: string): void;
   appendAudit(value: AuditLog): void;
   listAudit(merchantId: string): AuditLog[];
+  /** Global audit fallback, including platform-only and historical tenant records. */
+  listAllAudit?(): AuditLog[];
 
   getIdempotency(merchantId: string, appId: string, routeKey: string, key: string): IdempotencyRecord | null;
   saveIdempotency(value: IdempotencyRecord): void;

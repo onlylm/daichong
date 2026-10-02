@@ -1129,6 +1129,7 @@ components:
             progress_version: {type: integer, minimum: 0, description: 同一任务公开进度版本；历史记录未更新时为 0}
             progress_updated_at: {type: string, format: date-time, description: 最近进度变化时间；非每次查询时间}
             recovery_action: {type: [string, 'null'], enum: [retry, refund, null], description: 平台取消后的处理选择；退款关闭原单重提入口}
+            error_category: {$ref: '#/components/schemas/RechargeErrorCategory'}
             retry_allowed: {type: boolean, description: 仅最新尝试明确失败且可安全重提时为 true}
             next_action: {type: string, enum: [wait, resubmit, none]}
             order_id: {type: string}
@@ -1259,6 +1260,10 @@ components:
       type: string
       description: 默认公开的统一业务阶段；与敏感字段可见性无关，不包含上游身份或内部引用
       enum: [queued, logging_in, preparing_funds, awaiting_card, dispatching, processing, requires_action, confirming, review, upgrading, completed, failed, cancelled]
+    RechargeErrorCategory:
+      type: [string, 'null']
+      enum: [credential, account, product, resource, service, confirmation, unknown, null]
+      description: 脱敏业务分类，不是上游原始报文，也不代表重提授权；以 status/retry_allowed/next_action 为准
     FulfillmentWebhookEnvelope:
       type: object
       required: [event_id, event, occurred_at, data]
@@ -1281,6 +1286,7 @@ components:
         progress_version: {type: integer, minimum: 0, description: 同任务公开状态版本，不是轮询次数}
         progress_updated_at: {type: string, format: date-time}
         recovery_action: {type: [string, 'null'], enum: [retry, refund, null], description: 平台的处理选择；refund 关闭重提，但不代表退款到账}
+        error_category: {$ref: '#/components/schemas/RechargeErrorCategory'}
         failure_code: {type: [string, 'null']}
         message: {type: [string, 'null'], description: 可用于代理品牌页面的安全说明，不用于机器状态判断}
         retry_allowed: {type: boolean, description: 仅最近的安全结束尝试和仍可履约订单允许重提；须最新查询核验}
@@ -1307,6 +1313,7 @@ components:
         progress_version: {type: integer, minimum: 0}
         progress_updated_at: {type: string, format: date-time}
         recovery_action: {type: [string, 'null'], enum: [retry, refund, null]}
+        error_category: {$ref: '#/components/schemas/RechargeErrorCategory'}
         status: {type: string, enum: [queued, running, succeeded, failed, cancelled]}
         failure_code: {type: [string, 'null'], enum: [session_invalid, mailbox_login_failed, account_has_subscription, precheck_rejected, subscription_required, account_unavailable, product_unavailable, order_rejected, region_unsupported, payment_blocked, payment_declined, precharge_failed, cancelled, verification_timeout, service_unavailable, other, null]}
         message: {type: [string, 'null']}

@@ -40,7 +40,7 @@ describe("persistent SQLite invoice flow", () => {
         const owner: Actor = {id: "invoice-e2e-owner", role: "agent_owner", merchantId};
         const order = await runtime.orders.create({merchantId, partnerId: credential.merchant.partnerId,
           appId: credential.app.id, keyId: credential.key.keyId}, {merchantOrderNo: "invoice-e2e-" + randomUUID(),
-          productCode: "chatgpt_plus_cdk_1m", quantity: 1, saleAmount: "135.00", collectionMode: "platform_collect"});
+          productCode: "chatgpt_plus_cdk_1m", quantity: 1, saleAmount: "1000.00", collectionMode: "platform_collect"});
         runtime.payment.markPaid(merchantId, order.id, {providerRef: "invoice-e2e-order-paid", receivedMinor: order.saleAmountMinor});
         orderId = order.id;
 

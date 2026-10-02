@@ -341,6 +341,7 @@ export function workspaceOrderDetail(
     && refundableMinor > 0n;
   return {
     ...row,
+    ...(isPlatform(actor) ? {cdkDiagnostic: voucher?.diagnostic ?? null} : {}),
     paidAt: order.paidAt?.toISOString() ?? null,
     ordinaryRefunded: minorToMoney(order.ordinaryRefundedMinor),
     priceAdjustmentRefunded: minorToMoney(order.priceAdjustmentRefundedMinor),

@@ -52,7 +52,11 @@ describe.each(["memory","sqlite"] as const)("subscription release (%s)", driver=
       r.repository.saveMerchant({...b.merchant,status:"suspended"});
       const page=financeDrilldown(r.repository,admin,{day,metric:"margin",page:2,limit:20});expect(page.meta).toMatchObject({total:106,page:2,pages:6});expect(page.data).toHaveLength(20);
       const net=financeDrilldown(r.repository,admin,{day,metric:"net_receipts",page:6,limit:20});expect(net.data).toHaveLength(6);
-      expect(net.data.find(p=>p.orderId===o.id)).toMatchObject({netReceipts:"120.00",margin:"20.00",recognizedEarning:"0.00"});
+      // No successful refund transaction was seeded: cumulative order fields must
+      // not invent a refund on the payment date.
+      const cashflow=financeDrilldown(r.repository,admin,{day,metric:"net_receipts",page:1,limit:100});
+      const tail=financeDrilldown(r.repository,admin,{day,metric:"net_receipts",page:2,limit:100});
+      expect([...cashflow.data,...tail.data].find(p=>p.orderId===o.id)).toMatchObject({netReceipts:"135.00",margin:"20.00",recognizedEarning:"0.00"});
       expect(()=>financeDrilldown(r.repository,{...admin,role:"agent_owner",merchantId:b.merchant.id},{day,metric:"margin",page:1,limit:20})).toThrow("仅平台");
       expect(()=>financeDrilldown(r.repository,admin,{day:"2026-02-30",metric:"margin",page:1,limit:20})).toThrow("日期无效");
     }finally{r.close();}

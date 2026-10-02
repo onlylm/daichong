@@ -172,15 +172,26 @@ export function registerAlipayRoutes(app: FastifyInstance, runtime: Runtime, wor
     return invoiceAlipay.payment(id);
   };
   const invoiceCheckoutStatus = async (payment: import("../operations/model.js").InvoiceFeePayment) => {
-    const expired=payment.status==="expired"||payment.expiresAt<=new Date(),canStart=payment.status==="pending"&&!expired
-      &&(!payment.paymentConfigId||runtime.paymentSettings.available().includes("alipay_page"));
-    const qr=canStart&&payment.qrPayload&&isAlipayPrecreateQr(payment.qrPayload)?payment.qrPayload:null;
-    return {status: payment.status, expired,
-      amount: minorToMoney(payment.amountMinor), expires_at: payment.expiresAt.toISOString(),
-      can_start: canStart,
-      qr_code: qr, qr_image_data_url: qr ? await paymentQrDataUrl(qr) : null,
-      invoice_home: "/workspace/app?view=invoices",
-      channel_enabled: !payment.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page")};
+    const snapshot = () => {
+      const current = invoiceAlipay!.payment(payment.id);
+      const eligibility = runtime.invoices.paymentEligibility(current.applicationId);
+      const expired = current.status === "expired" || current.expiresAt <= new Date();
+      const channelEnabled = !current.paymentConfigId || runtime.paymentSettings.available().includes("alipay_page");
+      const canStart = current.status === "pending" && !expired && channelEnabled && !eligibility.requiresReview;
+      return {status: current.status, expired, amount: minorToMoney(current.amountMinor),
+        expires_at: current.expiresAt.toISOString(), can_start: canStart,
+        requires_review: eligibility.requiresReview, review_reason: eligibility.reviewReason,
+        qr_code: canStart && current.qrPayload && isAlipayPrecreateQr(current.qrPayload) ? current.qrPayload : null,
+        invoice_home: "/workspace/app?view=invoices", channel_enabled: channelEnabled};
+    };
+    const initial = snapshot();
+    const image = initial.qr_code ? await paymentQrDataUrl(initial.qr_code) : null;
+    // Image generation is asynchronous: a refund or payment may arrive meanwhile.
+    // Preserve the payment fact, but never return a stale payable QR after that change.
+    const current = snapshot();
+    const unchangedQr = current.qr_code === initial.qr_code;
+    return {...current, qr_code: unchangedQr ? current.qr_code : null,
+      qr_image_data_url: unchangedQr && current.qr_code ? image : null};
   };
   if (invoiceAlipay) app.get<InvoiceParams>("/invoice-payments/:paymentId", async (request, reply) => {
     invoicePaymentFor(request.params.paymentId, request.query.token);

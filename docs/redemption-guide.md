@@ -156,6 +156,8 @@ GET /v1/redemptions/{redemption_id}
 
 你的后端应保存当前任务号，持续同步安全业务反馈，而不是只保存“已提交”。`status/message/failure_code/retry_allowed/next_action` 是基础反馈字段；细分 `result_code/result_stage` 当前需平台按代理开放，没有返回时显示基础状态。
 
+`error_category` 提供脱敏业务分类（`credential/account/product/resource/service/confirmation/unknown` 或 null），不能替代任务终态或重提授权。未知新错误、超时、无效响应均不能当作可重提失败；必须继续查询原任务。平台选择退款后的失败／取消任务，查询和回调统一给 `next_action=none`、`retry_allowed=false`；展示退款处理入口，不能重新开放充值表单，也不能据此宣称已经退款到账。
+
 已返回的阶段可显示为“验证登录资料”“准备充值资源”“安排充值”“结果确认中”。`plus_paid` 表示升级仍在进行，`review/pending/requires_action` 不代表失败或成功；没有验证链接字段时不要自行拼接上游入口。不得模拟百分比或预计完成时间。
 
 本版本支持 `fulfillment.updated` 进度推送，平台部署同版后生效。通知和查询都带 `attempt_no/progress_stage/progress_version/progress_updated_at/recovery_action`；统一公开阶段不需要开放上游敏感字段。回调需订阅该事件或 `*`。相同状态轮询不会重复通知；同任务按版本去旧，原订单按尝试序号去旧。

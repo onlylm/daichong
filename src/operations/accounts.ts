@@ -11,7 +11,7 @@ const permissions: Record<Actor["role"], string[]> = {
   platform_admin: ["*"],
   platform_support: ["tickets.read", "tickets.write", "tickets.manage", "announcements.read", "announcements.manage", "agents.read"],
   platform_finance: ["tickets.read", "announcements.read", "agents.read", "orders.read", "wallet.read", "wallet.review", "invoices.read", "invoices.manage"],
-  platform_auditor: ["tickets.read", "announcements.read", "agents.read", "orders.read", "wallet.read", "accounts.read", "invoices.read"],
+  platform_auditor: ["tickets.read", "announcements.read", "agents.read", "orders.read", "wallet.read", "accounts.read", "invoices.read", "audit.read"],
   agent_owner: ["orders.read", "orders.write", "tickets.read", "tickets.write", "announcements.read", "wallet.read", "wallet.deposit", "wallet.withdraw", "wallet.transfer", "accounts.read", "accounts.manage", "tiers.read", "tiers.apply", "api.read", "api.apply", "api.keys", "invoices.read", "invoices.write"],
   agent_staff: ["orders.read", "tickets.read", "tickets.write", "announcements.read", "tiers.read"],
   agent_finance: ["orders.read", "tickets.read", "announcements.read", "wallet.read", "wallet.deposit", "tiers.read", "invoices.read", "invoices.write"],

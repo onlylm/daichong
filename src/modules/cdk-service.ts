@@ -10,6 +10,7 @@ import {LiveTestPolicy} from "./live-test-policy.js";
 import {createPublicCdkCode, normalizeCdkPrefix, normalizeCdkTemplate} from "./cdk-code.js";
 import {isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
 import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
+import {diagnosticCategory, safeRechargeDiagnostic} from "./upstream-feedback.js";
 
 export class CdkService {
   constructor(
@@ -32,14 +33,19 @@ export class CdkService {
         const latest = this.repository.findCdkVoucherByOrder(order.id)!;
         if (latest.status !== "issuing" || latest.issueLeaseToken !== pending.issueLeaseToken) return null;
         const issueAttempts = latest.issueAttempts + 1;
-        if (!(error instanceof UpstreamRequestError) || error.retryable || ["upstream_configuration_error", "production_supplier_required", "production_execution_disabled"].includes(error.failureCode)) {
+        const diagnostic = safeRechargeDiagnostic(error, "issue");
+        const definitelyRejected = error instanceof UpstreamRequestError && !error.retryable
+          && ["upstream_balance_insufficient", "upstream_product_unavailable", "product_unavailable", "out_of_stock"].includes(error.failureCode);
+        if (!definitelyRejected) {
           const delay = Math.min(300_000, 1_000 * (2 ** Math.min(issueAttempts, 8)));
-          this.repository.updateCdkVoucher({...latest, issueLeaseToken: null, issueAttempts, nextAttemptAt: new Date(Date.now() + delay), failureCode: "service_unavailable"});
+          this.repository.updateCdkVoucher({...latest, diagnostic, issueLeaseToken: null, issueAttempts, nextAttemptAt: new Date(Date.now() + delay), failureCode: "service_unavailable"});
           return null;
         }
-        this.repository.updateCdkVoucher({...latest, status: "failed", issueLeaseToken: null, issueAttempts, failureCode: "service_unavailable", upstreamCodePayload: this.cipher.clear(latest.upstreamCodePayload)});
+        this.repository.updateCdkVoucher({...latest, diagnostic, status: "failed", issueLeaseToken: null, issueAttempts, failureCode: "service_unavailable", upstreamCodePayload: this.cipher.clear(latest.upstreamCodePayload)});
         this.webhooks.emit(order.merchantId, `${latest.id}:cdk.failed`, "cdk.failed", latest.id, {
           event: "cdk.failed", order_id: order.id, failure_code: "service_unavailable",
+          error_category: diagnosticCategory(diagnostic.code),
+          message: diagnosticCategory(diagnostic.code) === "resource" ? "兑换资源暂不可用，请等待平台处理，不要重复采购" : "兑换码签发未完成，请等待平台处理，不要重复采购",
         });
         return null;
       });

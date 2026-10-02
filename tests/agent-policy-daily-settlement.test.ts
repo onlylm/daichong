@@ -80,7 +80,8 @@ describe("2026-10-01 agent policy", () => {
     expect(runtime.dailySettlements.generate("2026-09-30")).toMatchObject({generated: false, count: 0});
     const statement = runtime.dailySettlements.list(admin).find(item => item.merchantId === created.merchantId)!;
     expect(statement).toMatchObject({status: "pending_payment", orderCount: 1, supplyAmount: "110.00",
-      platformCost: "108.00", platformProfit: "2.00", agentEarnings: "25.00", payable: "25.00"});
+      platformCost: "108.00", platformProfit: "2.00", standardGrossProfit: "2.00", agentEarnings: "25.00", payable: "25.00"});
+    expect(statement.standardGrossProfitBasis).toContain("不代表实际净利润");
     expect(runtime.repository.listOperations("wallet_entry", created.merchantId).reduce((sum, item) => sum + item.earningsDelta, 0n)).toBe(2_500n);
     expect(() => runtime.dailySettlements.confirmPaid(admin, statement.id,
       {method: "alipay", reference: "202610010001", evidence: ""})).toThrow("付款凭证");

@@ -1,6 +1,7 @@
 import type {PreflightResult, RechargeCredential, RechargeProduct, RechargeUpstreamProvider, SubmissionCheckpoint, UpstreamOrderState} from "./recharge-provider.js";
 import {UpstreamRequestError} from "./recharge-provider.js";
 import {matchOrderTrades, type UpstreamCostFacts} from "./cost-facts.js";
+import {safeBusinessMessage} from "../domain/safe-business-message.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -248,13 +249,8 @@ function mapUpstreamError(status: number, code: string, message: string | null):
   if (code === "GPT_DIRECT_ORDER_REJECTED") return new UpstreamRequestError("order_rejected", false, safeBusinessMessage(message, "充值请求未通过业务校验"));
   if (["INSUFFICIENT_BALANCE", "insufficient_balance", "RECHARGE_REQUIRED"].includes(code)) return new UpstreamRequestError("upstream_balance_insufficient", false);
   if ([401, 403].includes(status)) return new UpstreamRequestError("upstream_configuration_error", false);
-  return new UpstreamRequestError("other", false, "充值请求未被受理");
-}
-
-function safeBusinessMessage(value: string | null, fallback: string): string {
-  if (!value || /(?:zovo\s*card|spacex\s*card|supplier|upstream|api[ _-]*key|secret|token|https?:\/\/)/i.test(value)) return fallback;
-  const sanitized = value.trim().replace(/\b\d{12,19}\b/g, "****").replace(/\s+/g, " ").slice(0, 240).trim();
-  return sanitized || fallback;
+  // An unrecognised provider code is not proof that no recharge/CDK was created.
+  return new UpstreamRequestError("upstream_result_unknown", true, "充值请求结果待核对，请勿重复提交");
 }
 
 function requireAccountEmail(value: unknown): string {

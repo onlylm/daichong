@@ -487,6 +487,10 @@ export class MemoryRepository implements Repository {
     return this.audit.filter((item) => item.merchantId === merchantId).map(clone);
   }
 
+  listAllAudit(): AuditLog[] {
+    return this.audit.map(clone);
+  }
+
   getIdempotency(merchantId: string, appId: string, routeKey: string, key: string): IdempotencyRecord | null {
     return copyOrNull(this.idempotency.get(idempotencyKey(merchantId, appId, routeKey, key)));
   }

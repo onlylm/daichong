@@ -11,7 +11,7 @@ import {registerSupplierAdminRoutes} from "./modules/supplier-admin-routes.js";
 import {registerAlipayRoutes} from "./modules/alipay-routes.js";
 import {registerLiveTestAdminPage} from "./modules/live-test-admin-page.js";
 import {registerOperationsRoutes} from "./operations/routes.js";
-import {partnerFulfillmentDetails, partnerFulfillmentMessage, partnerFulfillmentProgress} from "./modules/fulfillment-public.js";
+import {partnerFulfillmentDetails, partnerFulfillmentMessage, partnerFulfillmentProgress, partnerNextAction} from "./modules/fulfillment-public.js";
 import {latestFulfillmentOf, orderSyncMark} from "./domain/order-sync-mark.js";
 import {canResubmitFulfillment} from "./domain/recharge-policy.js";
 import type {OrderVisibilityField} from "./operations/model.js";
@@ -531,7 +531,7 @@ function publicFulfillment(value: Fulfillment, visibility?: OrderVisibilityField
     fulfillment_id: value.id, order_id: value.orderId, attempt_no: value.attemptNo, status: value.status,
     ...partnerFulfillmentProgress(value),
     retry_allowed: retryAllowed,
-    next_action: value.status === "succeeded" ? "none" : retryAllowed ? "resubmit" : "wait",
+    next_action: partnerNextAction(value, retryAllowed),
     failure_code: value.failureCode, message: partnerFulfillmentMessage(value), account_email_masked: value.accountEmailMasked,
     ...partnerFulfillmentDetails(value, visibility),
     fulfillment_mode: value.mode ?? "direct",

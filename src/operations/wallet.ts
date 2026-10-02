@@ -128,7 +128,8 @@ export class WalletService {
 
   /**
    * Platform GMV / order dashboard (Asia/Shanghai calendar days).
-   * "收入" = platform_collect sale amounts confirmed paid that day (buyer money into Quefa).
+   * Receipts use paidAt; successful refunds use refundedAt. Paid-cohort aggregates
+   * remain separate: refunding yesterday's order must not rewrite today's receipts.
    */
   platformFinanceSummary(actor: Actor, days = 7) {
     requirePermission(actor, "wallet.read");
@@ -153,6 +154,17 @@ export class WalletService {
     }> = [];
 
     for (const order of orders) {
+      if(!sql&&!order.liveTest&&(order.collectionMode??"platform_collect")==="platform_collect"
+        &&["paid","partially_refunded","refunded"].includes(order.paymentStatus)) {
+        for(const refund of this.repository.listRefundsForOrder(order.merchantId,order.id)) {
+          if(refund.status!=="succeeded"||!refund.refundedAt)continue;
+          const refundBucket=dayMap.get(shanghaiDayKey(refund.refundedAt));
+          if(!refundBucket)continue;
+          refundBucket.refundTransactions++;
+          if(refund.type==="price_adjustment")refundBucket.priceAdjustmentRefundedMinor+=refund.amountMinor;
+          else refundBucket.ordinaryRefundedMinor+=refund.amountMinor;
+        }
+      }
       const paidAt = order.paidAt;
       if (!paidAt) continue;
       if (!["paid", "partially_refunded", "refunded"].includes(order.paymentStatus)) continue;
@@ -165,8 +177,8 @@ export class WalletService {
         bucket.platformCollectOrders += 1;
         bucket.saleAmountMinor += order.saleAmountMinor;
         bucket.supplyAmountMinor += order.supplyAmountMinor;
-        bucket.ordinaryRefundedMinor += order.ordinaryRefundedMinor;
-        bucket.priceAdjustmentRefundedMinor += order.priceAdjustmentRefundedMinor;
+        bucket.paidCohortOrdinaryRefundedMinor += order.ordinaryRefundedMinor;
+        bucket.paidCohortPriceAdjustmentRefundedMinor += order.priceAdjustmentRefundedMinor;
         bucket.marginMinor += merchantMargin(order);
       } else {
         bucket.agentCollectOrders += 1;
@@ -206,6 +218,7 @@ export class WalletService {
 
     return {
       timezone: "Asia/Shanghai",
+      basis: "收款按付款成功日，退款按退款成功日；当日净流入=当日收款-当日成功退款，可为负数。供货、佣金及履约统计仍按付款批次。",
       today: serializeDay(today),
       daily,
       todayOrders: todayOrders.slice(0, 50),
@@ -575,25 +588,29 @@ type DayBucket = {
   platformCollectOrders: number;
   agentCollectOrders: number;
   succeededOrders: number;
+  refundTransactions: number;
   saleAmountMinor: bigint;
   supplyAmountMinor: bigint;
   ordinaryRefundedMinor: bigint;
   priceAdjustmentRefundedMinor: bigint;
+  paidCohortOrdinaryRefundedMinor: bigint;
+  paidCohortPriceAdjustmentRefundedMinor: bigint;
   marginMinor: bigint;
   agentCollectSupplyMinor: bigint;
 };
 
 function emptyDay(day: string): DayBucket {
   return {
-    day, paidOrders: 0, platformCollectOrders: 0, agentCollectOrders: 0, succeededOrders: 0,
+    day, paidOrders: 0, platformCollectOrders: 0, agentCollectOrders: 0, succeededOrders: 0, refundTransactions: 0,
     saleAmountMinor: 0n, supplyAmountMinor: 0n, ordinaryRefundedMinor: 0n, priceAdjustmentRefundedMinor: 0n,
+    paidCohortOrdinaryRefundedMinor: 0n, paidCohortPriceAdjustmentRefundedMinor: 0n,
     marginMinor: 0n, agentCollectSupplyMinor: 0n,
   };
 }
 
 function serializeDay(bucket: DayBucket) {
   const refunded = bucket.ordinaryRefundedMinor + bucket.priceAdjustmentRefundedMinor;
-  const netSale = bucket.saleAmountMinor > refunded ? bucket.saleAmountMinor - refunded : 0n;
+  const paidCohortRefunded = bucket.paidCohortOrdinaryRefundedMinor + bucket.paidCohortPriceAdjustmentRefundedMinor;
   return {
     day: bucket.day,
     paidOrders: bucket.paidOrders,
@@ -602,7 +619,12 @@ function serializeDay(bucket: DayBucket) {
     succeededOrders: bucket.succeededOrders,
     saleAmount: minorToMoney(bucket.saleAmountMinor),
     refundedAmount: minorToMoney(refunded),
-    netSaleAmount: minorToMoney(netSale),
+    ordinaryRefundedAmount: minorToMoney(bucket.ordinaryRefundedMinor),
+    priceAdjustmentRefundedAmount: minorToMoney(bucket.priceAdjustmentRefundedMinor),
+    refundTransactions: bucket.refundTransactions,
+    netSaleAmount: minorToMoney(bucket.saleAmountMinor-refunded),
+    paidCohortRefundedAmount: minorToMoney(paidCohortRefunded),
+    paidCohortNetSaleAmount: minorToMoney(bucket.saleAmountMinor-paidCohortRefunded),
     supplyAmount: minorToMoney(bucket.supplyAmountMinor),
     marginAmount: minorToMoney(bucket.marginMinor),
     agentCollectSupplyAmount: minorToMoney(bucket.agentCollectSupplyMinor),

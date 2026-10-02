@@ -19,6 +19,8 @@
 
 退差基准与实际美元成本是两个概念：前者按下单时约定冻结，后者须以该订单对应的已核实上游清算为准。平台退差不冲减代理基础分佣。核算或确认凭证不代表已经退款。
 
+开票申请当前在代理工作台按订单办理，不新增公开开票 API。公司名称、税号必填；票面金额由服务端按已确认的客户实付金额确定，不允许填写采购价或任意金额。代理商另付票面金额的 5%（不足一分向上取整），支付宝显示「订单补差价」，不计入客户订单、佣金或每日核算。支付后平台收集资料并人工开具、交付，收票邮箱用于人工交付，不表示平台启用了邮件通知。订单已有退款、退款待处理、渠道差异或历史票额不符时显示待核，暂停继续收款和开具；晚到付款仍保留，不覆盖、不抹账。自收款采购凭证不能替代客户实付凭证，此类订单暂不能直接发起申请。
+
 > 2026-10-01 重要说明：开发不是使用平台的前置条件。代理商可以直接在 Quefa 代理工作台完成商品购买、平台收款订单、CDK、自动直充、进度查询、资金、开票和工单操作；需要自有品牌商城时，再选择服务端 API 对接。两种入口共用同一代理账号、订单、余额和售后数据，也可以同时使用。当前 GPT 成品统一由 CDK 支撑；API 创建订单时可选 `delivery_mode=cdk`（直接交付公开号）或 `delivery_mode=auto_recharge`（平台服务端用订单绑定 CDK 自动兑换）。自动直充失败后只返回 `fallback_recharge_available=true`，由代理商自有订单页重新显示提交入口，不返回明文 CDK。自建链路阅读 [自有品牌商城与自动直充接入指南](https://tibo.ink/developers/partner-guide.md)。
 
 版本：v1 生产接入版（2026-10-01 更新刷新与失败反馈规范）  
@@ -262,6 +264,7 @@ Content-Type: application/json
 | `status` | 基础字段；`queued/running/succeeded/failed/cancelled` |
 | `message` | 安全处理后的业务说明，可在代理品牌页展示；作为补充文案，不作为机器状态判断依据 |
 | `failure_code` | 基础失败码；通过稳定码提示修正资料、联系支持或核查原任务 |
+| `error_category` | 脱敏错误分类：`credential/account/product/resource/service/confirmation/unknown` 或 null；仅辅助解释，不代表允许重提 |
 | `retry_allowed` | 最近尝试明确失败且可安全重提时为 true；不能由代理自行推断 |
 | `next_action` | `wait/resubmit/none`；与最近尝试、支付和退款状态共同判断可用动作 |
 | `fallback_recharge_available` | 任务查询提供的自动直充恢复标记；为 true 且允许重提时开放代理自有充值入口 |
@@ -271,6 +274,8 @@ Content-Type: application/json
 | `progress_version/progress_updated_at` | 同一尝试的公开进度版本及最后变化时间；重复查询不会增加版本，历史记录初始版本可为 0 |
 | `recovery_action` | 平台选择的恢复方式：retry/refund/null；选择退款后不可重提 |
 | `created_at/finished_at` | 尝试创建与完成时间 |
+
+失败／取消任务一旦选择退款（`recovery_action=refund`），查询与回调均返回 `retry_allowed=false`、`next_action=none`；此处只表示不再充值，并不表示退款已到账。退款是否完成仍以退款查询或 `refund.succeeded` 确认。
 
 建议客户页面显示如下反馈：
 
@@ -453,6 +458,10 @@ X-Quefa-Signature: t=1790323200,v1=<hex>
 签名内容为 `timestamp + "." + 原始请求体字节`，使用独立 `webhook_secret` 做 HMAC-SHA256。先校验时间戳与签名，再以 `event_id` 作为业务去重键、`delivery_id` 作为投递尝试标识，最后返回 HTTP 2xx。建议先持久化后异步处理，5 秒内响应。投递失败按约 1、5、15、60、360 分钟及后续退避重试；代理商仍应定期主动对账。
 
 ## 11. 错误格式与常用错误码
+
+充值任务的 `error_category` 是公开业务分类，不是上游原始错误：`credential` 为凭据问题，`account` 为账号条件或预检问题，`product` 为套餐不可用，`resource` 为充值资源问题，`service` 为服务暂不可用，`confirmation` 为结果待确认，`unknown` 为尚未分类。具体账号预检原因在不包含密钥、Session、密码、地址或账号隐私的前提下提供安全说明，否则使用分类提示。渠道配置、余额、无效响应等细节仅供平台查看受控诊断；不会把供应关系和原始报文发送给代理商。
+
+无法识别的新错误码、网络超时和无效响应不能作为明确失败或重复充值依据。已提交的任务仍查询原任务；未派发任务保留原请求，等待系统重试或平台核对。即使 `error_category=resource/service/unknown`，也只能按 `status/retry_allowed/next_action` 决定操作。CDK 签发失败事件保留兼容的 `failure_code=service_unavailable`，附安全 `error_category/message`；签发结果不明时仍在原签发记录下核对，不另建采购单。
 
 ```json
 {

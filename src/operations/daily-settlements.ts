@@ -218,6 +218,8 @@ export class DailySettlementService {
       return {...statement, merchantName: merchant?.name ?? "历史代理商", partnerId: merchant?.partnerId ?? "",
         supplyAmount: minorToMoney(statement.supplyAmountMinor), agentEarnings: minorToMoney(statement.agentEarningsMinor),
         platformCost: minorToMoney(statement.platformCostMinor), platformProfit: minorToMoney(statement.platformProfitMinor),
+        standardGrossProfit: minorToMoney(statement.platformProfitMinor),
+        standardGrossProfitBasis: "核算单供货总额减冻结的标准固定成本；未扣支付手续费、实际成本偏差、退款及其他费用，不代表实际净利润。",
         payable: minorToMoney(statement.payableMinor)};
     });
   }

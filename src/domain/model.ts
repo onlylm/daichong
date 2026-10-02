@@ -156,6 +156,18 @@ export interface EncryptedPayload {
   clearedAt: Date | null;
 }
 
+/** Allow-listed operational diagnosis only; never persist provider response text or credentials here. */
+export interface RechargeDiagnostic {
+  code: "credential_invalid" | "mailbox_login_failed" | "account_has_subscription" | "precheck_rejected"
+    | "subscription_required" | "account_unavailable" | "order_rejected" | "product_unavailable"
+    | "balance_insufficient" | "configuration_error" | "service_unavailable" | "invalid_response"
+    | "quote_unavailable" | "cdk_unavailable" | "result_unknown" | "unexpected_error"
+    | "payment_declined" | "precharge_failed";
+  phase: "submit" | "query" | "issue" | "result";
+  observedAt: string;
+}
+export type RechargeErrorCategory = "credential" | "account" | "product" | "resource" | "service" | "confirmation" | "unknown";
+
 export interface Fulfillment {
   /** A separately evidenced administrator entry; never an upstream response. */
   completionSource?: "manual";
@@ -171,6 +183,8 @@ export interface Fulfillment {
   attemptNo: number;
   status: FulfillmentStatus;
   failureCode: string | null;
+  diagnostic?: RechargeDiagnostic | null;
+  errorCategory?: RechargeErrorCategory | null;
   message: string | null;
   accountEmailMasked: string | null;
   sessionPayload: EncryptedPayload;
@@ -208,6 +222,7 @@ export interface CdkVoucher {
   issueLeaseToken?: string | null;
   nextAttemptAt: Date;
   failureCode: string | null;
+  diagnostic?: RechargeDiagnostic | null;
   createdAt: Date;
   consumedAt: Date | null;
 }

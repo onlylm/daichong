@@ -7,6 +7,9 @@ import {AuditService} from "../modules/audit-service.js";
 import {isPlatform, requirePermission, requireTenantScope} from "./accounts.js";
 import type {Actor, InvoiceApplication, InvoiceFeePayment, InvoicePaymentReconciliation} from "./model.js";
 import {queryRecords} from "../infra/record-query.js";
+import type {Order} from "../domain/model.js";
+import {hasConfirmedOrderPayment} from "../domain/payment-confirmation.js";
+import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 
 export interface InvoiceDetailsInput {
   invoiceTitle: string;
@@ -18,7 +21,8 @@ export interface InvoiceDetailsInput {
 }
 
 export interface CreateInvoiceInput extends InvoiceDetailsInput {
-  invoiceAmount: string;
+  /** Legacy clients may echo the amount, but cannot choose the invoice face value. */
+  invoiceAmount?: string | undefined;
   requestKey: string;
 }
 
@@ -32,9 +36,6 @@ export class InvoiceService {
     requirePermission(actor, "invoices.write");
     if (isPlatform(actor) || !actor.merchantId) throw new AppError(403, "invoice_agent_required", "开票申请须由代理商提交");
     const details = this.normalizeDetails(input);
-    const amountMinor = moneyToMinor(input.invoiceAmount);
-    if (amountMinor <= 0n || amountMinor > 100_000_000n) throw new AppError(422, "invoice_amount_invalid", "开票金额须在 0.01 至 100 万元之间");
-    const feeAmountMinor = (amountMinor * FEE_RATE_BPS + 9_999n) / 10_000n;
     return this.repository.transaction(() => {
       const order = this.repository.findOrder(actor.merchantId!, orderId);
       if (!order) throw new AppError(404, "order_not_found", "订单不存在");
@@ -42,6 +43,12 @@ export class InvoiceService {
       if (!["paid", "partially_refunded"].includes(order.paymentStatus)) {
         throw new AppError(409, "invoice_order_not_paid", "只有已付款且未全额退款的订单可以申请开票");
       }
+      this.assertEligibility(this.assessOrder(order));
+      const amountMinor = order.saleAmountMinor;
+      if (input.invoiceAmount !== undefined && moneyToMinor(input.invoiceAmount) !== amountMinor) {
+        throw new AppError(422, "invoice_amount_mismatch", "发票金额必须与关联订单已确认的客户实付金额一致，不能自行填写其他金额");
+      }
+      const feeAmountMinor = (amountMinor * FEE_RATE_BPS + 9_999n) / 10_000n;
       const idempotent = queryRecords(this.repository,"invoice_application",{merchantId:actor.merchantId!,
         filters:[{field:"requestKey",value:input.requestKey}],limit:1,count:false}).data[0];
       if (idempotent) {
@@ -213,6 +220,9 @@ export class InvoiceService {
       if (input.action === "processing" && current.status !== "submitted") throw new AppError(409, "invoice_status_invalid", "只有已提交申请可以开始处理");
       if (input.action === "needs_correction" && !["submitted", "processing"].includes(current.status)) throw new AppError(409, "invoice_status_invalid", "当前申请不能退回补充资料");
       if (input.action === "issued" && current.status !== "processing") throw new AppError(409, "invoice_status_invalid", "请先开始处理，再登记开票完成");
+      // Payment and refund facts may change after the application was submitted.
+      // Do not use the earlier application check as permission to issue an invoice.
+      if (input.action !== "needs_correction") this.assertPaymentEligible(current.id);
       const now = new Date();
       const value: InvoiceApplication = {...current, status: input.action, reviewNote: note,
         invoiceNo: input.action === "issued" ? invoiceNo : current.invoiceNo,
@@ -299,6 +309,65 @@ export class InvoiceService {
     return value;
   }
 
+  canApplyToOrder(order: Order): boolean {
+    return !this.assessOrder(order).requiresReview;
+  }
+
+  /** Derived review state preserves historical amounts, issued invoices and all payment facts. */
+  paymentEligibility(id: string) {
+    const item = this.application(id);
+    const order = this.repository.findOrder(item.merchantId, item.orderId);
+    const assessment = this.assessOrder(order);
+    const reasons = [...assessment.reviewReasonCodes];
+    const messages = [...assessment.reviewReasons];
+    if (order && item.invoiceAmountMinor !== order.saleAmountMinor) {
+      reasons.push("invoice_amount_mismatch");
+      messages.push("历史申请票面金额与关联订单客户实付金额不一致，须人工核对");
+    }
+    const expectedFee = (item.invoiceAmountMinor * FEE_RATE_BPS + 9_999n) / 10_000n;
+    if (item.feeRateBps !== 500 || item.feeAmountMinor !== expectedFee) {
+      reasons.push("invoice_fee_mismatch");
+      messages.push("历史补差金额与票面金额的 5% 不一致，须人工核对");
+    }
+    return {...assessment, requiresReview: reasons.length > 0, reviewReasonCodes: reasons,
+      reviewReasons: messages, reviewReason: messages.join("；") || null};
+  }
+
+  assertPaymentEligible(id: string): void {
+    this.assertEligibility(this.paymentEligibility(id));
+  }
+
+  private assertEligibility(assessment: {requiresReview: boolean; reviewReason: string | null}): void {
+    if (assessment.requiresReview) throw new AppError(409, "invoice_review_required",
+      "开票申请待核对：" + assessment.reviewReason + "；不得继续收取补差或登记开票，已有付款与发票记录保留");
+  }
+
+  private assessOrder(order: Order | null) {
+    const reviewReasonCodes: string[] = [], reviewReasons: string[] = [];
+    const add = (code: string, reason: string) => { reviewReasonCodes.push(code); reviewReasons.push(reason); };
+    if (!order) add("invoice_order_missing", "关联订单不存在");
+    else {
+      if (order.paymentPurpose === "payment_test") add("invoice_payment_test_denied", "支付联调订单不能开票");
+      if (order.collectionMode === "agent_collect") add("invoice_customer_payment_unverified", "自收款订单仅有采购付款，客户实付未经平台确认");
+      const attempt = this.repository.findPaymentAttemptByOrder(order.merchantId, order.id);
+      if (order.paymentStatus !== "paid" || order.paymentReceivedMinor !== order.saleAmountMinor
+          || !hasConfirmedOrderPayment(order, attempt)) add("invoice_order_payment_unconfirmed", "关联订单未处于金额与流水一致的已付款状态");
+      if (order.saleAmountMinor <= 0n || order.saleAmountMinor > 100_000_000n) add("invoice_amount_invalid", "订单金额不在 0.01 至 100 万元开票范围内");
+      if (order.ordinaryRefundedMinor > 0n || order.priceAdjustmentRefundedMinor > 0n || order.paymentStatus === "refunded"
+          || order.paymentStatus === "partially_refunded") add("invoice_order_refunded", "关联订单已发生退款，需先核对可开票金额及已付补差");
+      if (this.repository.listRefundsForOrder(order.merchantId, order.id)
+        .some(refund => ["requested", "approved", "processing", "failed"].includes(refund.status))) {
+        add("invoice_order_refund_pending", "关联订单仍有待处理或可重试的退款");
+      }
+      if (hasUnreconciledProviderRefund(this.repository, order.merchantId, order.id)) {
+        add("invoice_order_refund_difference", "关联订单渠道退款差异尚未核实");
+      }
+    }
+    return {requiresReview: reviewReasonCodes.length > 0, reviewReasonCodes, reviewReasons,
+      reviewReason: reviewReasons.join("；") || null,
+      expectedInvoiceAmount: order && order.collectionMode !== "agent_collect" ? minorToMoney(order.saleAmountMinor) : null};
+  }
+
   private view(actor: Actor, item: InvoiceApplication) {
     requireTenantScope(actor, item.merchantId);
     const merchant = this.repository.findMerchantById(item.merchantId);
@@ -306,7 +375,7 @@ export class InvoiceService {
     if (item.taxIdEncrypted) {
       try { taxId = String(this.cipher.decrypt(item.taxIdEncrypted, "invoice-tax:" + item.id)); } catch { taxId = null; }
     }
-    return {...item, taxIdEncrypted: undefined, taxId, merchantName: merchant?.name ?? "",
+    return {...item, ...this.paymentEligibility(item.id), taxIdEncrypted: undefined, taxId, merchantName: merchant?.name ?? "",
       invoiceAmount: minorToMoney(item.invoiceAmountMinor), feeAmount: minorToMoney(item.feeAmountMinor)};
   }
 

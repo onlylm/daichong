@@ -13,6 +13,7 @@ import {latestFulfillmentOf, orderSyncMark} from "../domain/order-sync-mark.js";
 import {canResubmitFulfillment, isConfirmedUnsuccessfulFulfillment} from "../domain/recharge-policy.js";
 import {hasUnreconciledProviderRefund} from "../domain/provider-refund-review.js";
 import {manualCompletionBlock} from "../operations/manual-completion.js";
+import {diagnosticCategory, fulfillmentErrorCategory, publicFailureCode, publicFailureMessage, queuedFailureMessage, safeRechargeDiagnostic} from "./upstream-feedback.js";
 
 interface QueuedPayload {
   credential: RechargeCredential;
@@ -420,6 +421,7 @@ export class FulfillmentService {
   private applyCurrentState(current: Fulfillment, state: UpstreamOrderState): Fulfillment {
     const resultCode = state.status.trim().toLowerCase();
     const resultStage = state.stage?.trim().toLowerCase() ?? null;
+    const knownStatus = ["queued", "awaiting_card", "funding_pending", "dispatching", "running", "processing", "requires_action", "pending", "plus_paid", "review", "completed", "declined", "failed_precharge", "cancelled"].includes(resultCode);
     const active: Fulfillment = current.status === "queued" ? {...current, status: "running"} : current;
     const common: Fulfillment = {
       ...active,
@@ -437,16 +439,18 @@ export class FulfillmentService {
       upstreamCardLastFour: state.cardLastFour ?? active.upstreamCardLastFour ?? null,
       upstreamCurrency: state.currency,
       accountEmailMasked: maskEmail(state.accountEmail) ?? active.accountEmailMasked,
+      errorCategory: ["requires_action", "pending", "review"].includes(resultCode) ? "confirmation" : knownStatus ? null : "confirmation",
+      ...(!knownStatus ? {diagnostic: safeRechargeDiagnostic(new UpstreamRequestError("upstream_result_unknown", true), "result")} : {}),
     };
     if (resultCode === "completed") {
       assertFulfillmentTransition(active.status, "succeeded");
       return this.finish({...common, status: "succeeded", failureCode: null, message: safeResultMessage(state.message, "充值成功"), sessionPayload: this.cipher.clear(common.sessionPayload), finishedAt: new Date()});
     }
     if (resultCode === "declined") {
-      return this.fail({...common, retryAllowed: true}, "payment_declined", safeResultMessage(state.message, "支付被拒，充值未成功"));
+      return this.fail({...common, retryAllowed: true, errorCategory: "resource", diagnostic: safeRechargeDiagnostic(new UpstreamRequestError("payment_declined", false), "result")}, "payment_declined", safeResultMessage(state.message, "支付被拒，充值未成功"));
     }
     if (resultCode === "failed_precharge") {
-      return this.fail({...common, retryAllowed: true}, "precharge_failed", safeResultMessage(state.message, "扣款前校验失败，充值未成功"));
+      return this.fail({...common, retryAllowed: true, errorCategory: "account", diagnostic: safeRechargeDiagnostic(new UpstreamRequestError("precharge_failed", false), "result")}, "precharge_failed", safeResultMessage(state.message, "扣款前校验失败，充值未成功"));
     }
     if (resultCode === "cancelled") {
       assertFulfillmentTransition(active.status, "cancelled");
@@ -456,7 +460,7 @@ export class FulfillmentService {
       ...common,
       status: "running",
       failureCode: null,
-      message: safeResultMessage(state.message, runningMessage(resultCode)),
+      message: knownStatus ? safeResultMessage(state.message, runningMessage(resultCode)) : "充值结果尚未确认，平台正在核对，请勿重复提交",
       nextCheckAt: new Date(Date.now() + 5_000),
     };
     return this.saveProgress(running);
@@ -471,12 +475,15 @@ export class FulfillmentService {
   }
 
   private handleCurrentError(current: Fulfillment, error: unknown, polling: boolean): Fulfillment {
+    const diagnostic = safeRechargeDiagnostic(error, polling ? "query" : "submit");
     const explicitRejection = error instanceof UpstreamRequestError && !error.retryable
       && ["session_invalid", "mailbox_login_failed", "account_has_subscription", "precheck_rejected", "subscription_required", "account_unavailable", "order_rejected", "product_unavailable", "upstream_product_unavailable"].includes(error.failureCode);
     if (polling || !explicitRejection) {
       const retrying: Fulfillment = {
         ...current,
-        message: current.status === "running" ? "充值结果确认中，请勿重复提交" : "充值服务暂时繁忙，系统将自动重试",
+        diagnostic,
+        errorCategory: current.status === "running" ? "confirmation" : diagnosticCategory(diagnostic.code),
+        message: current.status === "running" ? "充值结果确认中，请勿重复提交" : queuedFailureMessage(diagnostic),
         leaseToken: null,
         leaseUntil: null,
         nextCheckAt: new Date(Date.now() + 15_000),
@@ -485,7 +492,7 @@ export class FulfillmentService {
     }
     const code = error instanceof UpstreamRequestError ? publicFailureCode(error) : "other";
     const message = publicFailureMessage(code, error instanceof UpstreamRequestError ? error.message : null);
-    return this.fail({...current, retryAllowed: true}, code, message);
+    return this.fail({...current, retryAllowed: true, diagnostic, errorCategory: diagnosticCategory(diagnostic.code)}, code, message);
   }
 
   private fail(current: Fulfillment, failureCode: string, message: string): Fulfillment {
@@ -579,7 +586,7 @@ export class FulfillmentService {
 
 function progressSignature(value: Fulfillment): string {
   return JSON.stringify([value.status, partnerProgressStage(value), value.upstreamStatus ?? null,
-    value.failureCode, partnerFulfillmentMessage(value), canResubmitFulfillment(value), value.recoveryAction ?? null]);
+    value.failureCode, partnerFulfillmentMessage(value), canResubmitFulfillment(value), value.recoveryAction ?? null, fulfillmentErrorCategory(value)]);
 }
 
 function normalizeCredential(input: Record<string, unknown>): RechargeCredential {
@@ -625,31 +632,6 @@ function maskEmail(value: string | null): string | null {
 
 function isTerminal(status: Fulfillment["status"]): boolean {
   return ["succeeded", "failed", "cancelled"].includes(status);
-}
-
-function publicFailureCode(error: UpstreamRequestError): string {
-  if (["session_invalid", "mailbox_login_failed", "account_has_subscription", "precheck_rejected", "subscription_required", "account_unavailable",
-    "product_unavailable", "order_rejected", "payment_blocked", "verification_timeout"].includes(error.failureCode)) {
-    return error.failureCode;
-  }
-  if (error.failureCode === "upstream_product_unavailable") return "product_unavailable";
-  return error.retryable ? "service_unavailable" : "other";
-}
-
-function publicFailureMessage(code: string, detail: string | null = null): string {
-  const fallback = code === "session_invalid" ? "账号凭据无效，请重新提交"
-    : code === "mailbox_login_failed" ? "邮箱登录失败，请检查邮箱和密码，或改用 Session / Access Token 后重新提交"
-    : code === "account_has_subscription" ? "账号已有有效订阅"
-      : code === "precheck_rejected" ? "账号预检未通过"
-        : code === "subscription_required" ? "当前账号不支持订购此套餐：需已有有效订阅"
-          : code === "account_unavailable" ? "当前账号不可用于本次充值"
-            : code === "product_unavailable" ? "当前套餐暂不支持订购"
-              : code === "order_rejected" ? "充值请求未通过业务校验"
-                : code === "payment_blocked" ? "充值未成功，请联系 Quefa 客服"
-                  : code === "verification_timeout" ? "账号验证超时，请稍后重试"
-                    : code === "service_unavailable" ? "充值服务暂时繁忙，系统将自动重试"
-                      : "充值未成功，请联系 Quefa 客服";
-  return code === "mailbox_login_failed" ? fallback : safeResultMessage(detail, fallback);
 }
 
 function runningMessage(code: string): string {

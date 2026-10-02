@@ -1,20 +1,16 @@
 import type {Fulfillment} from "../domain/model.js";
 import {canResubmitFulfillment} from "../domain/recharge-policy.js";
 import {defaultOrderVisibility, type OrderVisibilityField} from "../operations/model.js";
+import {safeBusinessMessage} from "../domain/safe-business-message.js";
+import {fulfillmentErrorCategory} from "./upstream-feedback.js";
 
 /** Strip upstream provider tokens from text shown to agents, API partners, or end users. */
 export function safeResultMessage(value: string | null | undefined, fallback: string): string {
-  if (!value) return fallback;
-  if (/(?:zovo\s*card|spacex\s*card|raw[ _-]*supplier|supplier|upstream|api[ _-]*key|secret|token|https?:\/\/)/i.test(value)) return fallback;
-  const sanitized = value.trim()
-    .replace(/\b\d{12,19}\b/g, "****")
-    .replace(/\s+/g, " ")
-    .slice(0, 240)
-    .trim();
-  return sanitized || fallback;
+  return safeBusinessMessage(value, fallback);
 }
 
 export function partnerFulfillmentMessage(value: Fulfillment): string | null {
+  if (value.failureCode === "mailbox_login_failed") return "邮箱登录失败，请检查邮箱和密码，或改用 Session / Access Token 后重新提交";
   const fallback = rechargeStageLabel(value.upstreamStage, value.upstreamStatus)
     ?? (value.status === "failed" ? "充值未完成" : value.status === "succeeded" ? "充值成功" : value.status === "cancelled" ? "充值已取消" : "充值处理中");
   return safeResultMessage(value.message, fallback);
@@ -116,7 +112,14 @@ export function partnerFulfillmentProgress(value: Fulfillment) {
     progress_version: value.progressVersion ?? 0,
     progress_updated_at: (value.progressUpdatedAt ?? value.finishedAt ?? value.createdAt).toISOString(),
     recovery_action: value.recoveryAction ?? null,
+    error_category: fulfillmentErrorCategory(value),
   };
+}
+
+/** Query responses and webhooks must agree; this field is not an independent retry authorization. */
+export function partnerNextAction(value: Fulfillment, retryAllowed = canResubmitFulfillment(value)): "none" | "resubmit" | "wait" {
+  if (value.status === "succeeded" || (value.recoveryAction === "refund" && ["failed", "cancelled"].includes(value.status))) return "none";
+  return retryAllowed ? "resubmit" : "wait";
 }
 
 export function partnerFulfillmentSnapshot(value: Fulfillment, configured?: OrderVisibilityField[], retryAllowed = canResubmitFulfillment(value)) {
@@ -126,7 +129,7 @@ export function partnerFulfillmentSnapshot(value: Fulfillment, configured?: Orde
     ...(value.completionSource === "manual" ? {completion_source: "manual"} : {}),
     ...partnerFulfillmentProgress(value),
     retry_allowed: retryAllowed,
-    next_action: value.status === "succeeded" || (value.recoveryAction === "refund" && ["failed", "cancelled"].includes(value.status)) ? "none" : retryAllowed ? "resubmit" : "wait",
+    next_action: partnerNextAction(value, retryAllowed),
     failure_code: value.failureCode,
     message: partnerFulfillmentMessage(value),
     account_email_masked: value.accountEmailMasked,
@@ -150,6 +153,7 @@ export function partnerFulfillmentDetails(value: Fulfillment, configured?: Order
 
 export function platformFulfillmentDetails(value: Fulfillment) {
   return {
+    diagnostic: value.diagnostic ?? null,
     ...publicFulfillmentResult(value),
     upstream_order_id: value.upstreamOrderId,
     card_last_four: publicLastFour(value.upstreamCardLastFour),

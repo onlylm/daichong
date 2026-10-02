@@ -22,6 +22,7 @@ import {listGlobalWorkspaceProducts, saveGlobalWorkspaceProduct, seedGlobalProdu
 import {queryRecords} from "../infra/record-query.js";
 import {readWorkerHealth} from "../worker/worker-health.js";
 import {readBackupRestoreCheck} from "./backup-health.js";
+import {workspaceSearch, workspaceAudit, searchKinds} from "./workspace-tools.js";
 
 const text = z.string().trim().min(1).max(5000);
 const identifier = z.string().min(1).max(160);
@@ -141,6 +142,24 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   app.get("/workspace/api/notifications/tasks", async request => {
     const q=z.object({page:z.coerce.number().int().positive().default(1),limit:z.coerce.number().int().min(1).max(100).default(30)}).parse(request.query);
     return wire(runtime.notifications.tasksPage(account(request),q.page,q.limit));
+  });
+  app.get("/workspace/api/search", async request => {
+    const q=z.object({q:z.string().trim().min(2).max(120),kind:z.enum(searchKinds).default("all"),page:z.coerce.number().int().min(1).max(10000).default(1)}).strict().parse(request.query);
+    return wire({data:workspaceSearch(runtime.repository,account(request),q)});
+  });
+  app.get("/workspace/api/audit", async request => {
+    const q=z.object({merchantId:identifier.optional(),target:identifier.optional(),action:z.string().trim().max(120).optional(),
+      from:calendarDay.optional(),to:calendarDay.optional(),page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(100).default(30)})
+      .refine(v=>!v.from||!v.to||v.from<=v.to,"开始日期不能晚于结束日期").parse(request.query);
+    return wire(workspaceAudit(runtime.repository,account(request),q));
+  });
+  app.get("/workspace/api/runtime-status", async request => {
+    const actor=account(request);requirePermission(actor,"*");
+    if(!isPlatform(actor))throw new AppError(403,"permission_denied","仅管理员可查看运行备份");
+    const now=new Date(),pending=queryRecords(runtime.repository,"fulfillment",{filters:[{field:"status",op:"in",value:["queued","running"]}],limit:1,orderBy:"createdAt",direction:"asc"});
+    return wire({data:{checkedAt:now,worker:readWorkerHealth(runtime.repository,now),backup:readBackupRestoreCheck(config.backupHealthReportPath,config.backupRestoreMaxAgeMs,now),
+      queue:{active:pending.meta.total,oldestAt:pending.data[0]?.createdAt??null,oldestOrderId:pending.data[0]?.orderId??null},
+      scope:"本页只读取运行与恢复验证记录，不会执行备份、恢复、部署或真实交易。异机灾备与外部告警尚待后续验证。"}});
   });
   app.get("/workspace/api/action-center", async request => {
     const actor = account(request);
@@ -379,7 +398,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
         costAccounting: runtime.costs.view(actor, order.id),
         invoiceApplication: permissions.has("*") || permissions.has("invoices.read") ? runtime.invoices.forOrder(actor, order.id) : null,
         canApplyInvoice: !isPlatform(actor) && (permissions.has("*") || permissions.has("invoices.write"))
-          && ["paid", "partially_refunded"].includes(order.paymentStatus)},
+          && runtime.invoices.canApplyToOrder(order)},
     });
   });
   app.post<{Params:{id:string}}>("/workspace/api/orders/:id/manual-completion", async request => {
@@ -439,7 +458,7 @@ export function registerOperationsRoutes(app: FastifyInstance, config: AppConfig
   });
   app.post<{Params: {id: string}}>("/workspace/api/orders/:id/invoices", async request => {
     const actor = account(request);
-    const input = invoiceDetailsInput.extend({invoiceAmount: money, requestKey}).strict().parse(request.body);
+    const input = invoiceDetailsInput.extend({invoiceAmount: money.optional(), requestKey}).strict().parse(request.body);
     const application = runtime.invoices.create(actor, request.params.id, input);
     if (application.status !== "awaiting_payment") return wire({data: runtime.invoices.get(actor, application.id), payUrl: null});
     if (!runtime.invoiceAlipay) throw new AppError(503, "invoice_payment_unavailable", "支付宝补差价收款尚未启用");
