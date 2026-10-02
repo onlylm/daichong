@@ -1,0 +1,266 @@
+import {runInNewContext} from "node:vm";
+import {randomUUID} from "node:crypto";
+import {describe, expect, it, vi} from "vitest";
+import {workspaceAppHtml, workspaceCss, workspaceJs} from "../src/operations/workspace-page.js";
+
+// These are shipped-asset/DOM contracts, not browser layout or accessibility acceptance.
+// Resolve source order, selector specificity, !important and viewport media rules so
+// an obsolete drawer rule cannot pass merely because a newer declaration exists.
+type Rule = {selector: string; declarations: Array<[string, string]>; media: string[]};
+function cssRules(source: string, media: string[] = []): Rule[] {
+  const text = source.replace(/\/\*[\s\S]*?\*\//g, ""), rules: Rule[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf("{", cursor); if (open < 0) break;
+    const selector = text.slice(cursor, open).trim();
+    let depth = 1, end = open + 1;
+    while (end < text.length && depth) { if (text[end] === "{") depth++; if (text[end] === "}") depth--; end++; }
+    const body = text.slice(open + 1, end - 1); cursor = end;
+    if (selector.startsWith("@media")) rules.push(...cssRules(body, [...media, selector]));
+    else if (!selector.startsWith("@")) for (const item of selector.split(",")) {
+      const declarations = body.split(";").flatMap(value => {
+        const colon = value.indexOf(":"); return colon < 0 ? [] : [[value.slice(0, colon).trim(), value.slice(colon + 1).trim()] as [string, string]];
+      });
+      rules.push({selector: item.trim(), declarations, media});
+    }
+  }
+  return rules;
+}
+const rules = cssRules(workspaceCss);
+
+class Element {
+  className = ""; children: Element[] = []; parent: Element | null = null;
+  attributes = new Map<string, string>(); listeners = new Map<string, Array<(...args: any[]) => unknown>>();
+  dataset: Record<string, string> = {}; open = false; disabled = false; value = "";
+  showModal = vi.fn(() => { this.open = true; this.setAttribute("open", ""); });
+  focus = vi.fn(); scrollTo() {}
+  constructor(readonly tagName: string, private text = "") {}
+  get textContent(): string { return this.text + this.children.map(child => child.textContent).join(""); }
+  set textContent(value: string) { this.text = value; this.children = []; }
+  get innerHTML() { return this.textContent; }
+  set innerHTML(value: string) { this.textContent = value.replace(/<[^>]*>/g, ""); }
+  get childNodes() { return this.children; }
+  get childElementCount() { return this.children.filter(child => child.tagName !== "#text").length; }
+  get isConnected(): boolean { return this.tagName === "body" || Boolean(this.parent?.isConnected); }
+  classList = {contains: (value: string) => this.className.split(/\s+/).includes(value),
+    add: (value: string) => { this.className += " " + value; },
+    remove: (value: string) => { this.className = this.className.split(/\s+/).filter(item => item !== value).join(" "); },
+    toggle: (value: string, force?: boolean) => { const on = force ?? !this.classList.contains(value); if (on) this.classList.add(value); else this.classList.remove(value); return on; }};
+  setAttribute(name: string, value: string) {
+    if (name === "class") this.className = value; else this.attributes.set(name, String(value));
+    if (name.startsWith("data-")) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = String(value);
+  }
+  getAttribute(name: string) { return name === "class" ? this.className : this.attributes.get(name) ?? null; }
+  removeAttribute(name: string) { this.attributes.delete(name); }
+  append(...items: Element[]) { for (const item of items) { item.remove(); item.parent = this; this.children.push(item); } }
+  replaceChildren(...items: Element[]) { for (const item of this.children) item.parent = null; this.children = []; this.text = ""; this.append(...items); }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); this.parent = null; }
+  addEventListener(name: string, listener: (...args: any[]) => unknown) { this.listeners.set(name, [...this.listeners.get(name) ?? [], listener]); }
+  async click() { for (const fn of this.listeners.get("click") ?? []) await fn({target: this, preventDefault() {}}); }
+  close() { this.open = false; this.removeAttribute("open"); for (const fn of this.listeners.get("close") ?? []) fn(); }
+  querySelectorAll(selector: string): Element[] { return this.children.flatMap(child => [...(matches(child, selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
+  querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
+}
+function simpleMatches(node: Element, selector: string): boolean {
+  if (selector === ":root") return node.tagName === "html";
+  const has = selector.match(/:has\(([^)]+)\)/);
+  if (has && !node.querySelector(has[1]!)) return false;
+  selector = selector.replace(/:has\([^)]+\)/g, "");
+  if (selector.endsWith(":empty")) { if (node.children.length || node.textContent) return false; selector = selector.slice(0, -6); }
+  // Dynamic pseudoclasses are not active in these resting/open fixtures.
+  if (selector.includes(":")) return false;
+  const attributes = [...selector.matchAll(/\[([\w-]+)(?:=["']?([^\]"']+)["']?)?\]/g)];
+  const base = selector.replace(/\[[^\]]+\]/g, ""), tag = base.match(/^[\w-]+/)?.[0];
+  return (!tag || tag === node.tagName)
+    && [...base.matchAll(/\.([\w-]+)/g)].every(item => node.classList.contains(item[1]!))
+    && [...base.matchAll(/#([\w-]+)/g)].every(item => node.getAttribute("id") === item[1])
+    && attributes.every(item => item[2] === undefined ? node.getAttribute(item[1]!) !== null : node.getAttribute(item[1]!) === item[2]);
+}
+function matches(node: Element, selector: string): boolean {
+  const parts = selector.trim().split(/\s+/); let at: Element | null = node;
+  if (!simpleMatches(node, parts.pop()!)) return false;
+  while (parts.length) {
+    const part = parts.pop()!;
+    if (part === ">") { at = at?.parent ?? null; if (!at || !simpleMatches(at, parts.pop()!)) return false; }
+    else { at = at?.parent ?? null; while (at && !simpleMatches(at, part)) at = at.parent; if (!at) return false; }
+  }
+  return true;
+}
+function effective(node: Element, width: number): Record<string, string> {
+  const inherited = node.parent ? effective(node.parent, width) : {}, result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(inherited)) if (key.startsWith("--") || key === "color") result[key] = value;
+  const ranks = new Map<string, number>();
+  for (const [index, rule] of rules.entries()) {
+    if (!rule.media.every(media => !/prefers-reduced-motion|hover\s*:/.test(media)
+      && [...media.matchAll(/\((min|max)-width\s*:\s*(\d+)px\)/g)]
+        .every(([, op, amount]) => op === "min" ? width >= Number(amount) : width <= Number(amount)))) continue;
+    if (!matches(node, rule.selector)) continue;
+    const specificity = (rule.selector.match(/#/g)?.length ?? 0) * 100 + (rule.selector.match(/[.\[]|:(?!:)/g)?.length ?? 0) * 10
+      + rule.selector.split(/[ >]+/).filter(part => /^[a-z]/i.test(part)).length;
+    for (const [property, raw] of rule.declarations) {
+      const important = /!important\s*$/.test(raw), value = raw.replace(/\s*!important\s*$/, ""), rank = Number(important) * 1e9 + specificity * 1e5 + index;
+      if (rank >= (ranks.get(property) ?? -1)) { result[property] = value; ranks.set(property, rank); }
+    }
+  }
+  const resolve = (value: string, depth = 0): string => depth > 8 ? value : value.replace(/var\((--[\w-]+)\)/g,
+    (whole, key: string) => result[key] ? resolve(result[key]!, depth + 1) : whole);
+  return Object.fromEntries(Object.entries(result).map(([key, value]) => [key, value === "inherit" ? inherited[key] ?? value : resolve(value)]));
+}
+function size(value: string | undefined, width: number, height: number, axis: "width" | "height" = "width"): number {
+  if (!value || value === "none" || value === "auto") return Number.POSITIVE_INFINITY;
+  const expression = value.replace(/(\d*\.?\d+)%/g, (_, amount: string) => String(Number(amount) * (axis === "width" ? width : height) / 100))
+    .replace(/(\d*\.?\d+)(svh|dvh|vh|vw|rem|px)/g, (_, amount: string, unit: string) =>
+    String(Number(amount) * ({svh: height / 100, dvh: height / 100, vh: height / 100, vw: width / 100, rem: 15, px: 1}[unit] ?? 1)))
+    .replace(/calc\(/g, "(").replace(/\bmin\(/g, "Math.min(").replace(/\bmax\(/g, "Math.max(");
+  if (!/^[\d\s.+*/(),-]+$/.test(expression.replace(/Math\.(min|max)/g, ""))) throw new Error("Unsupported CSS size: " + value);
+  return runInNewContext(expression);
+}
+function tree(tag: string, className: string, parent?: Element): Element {
+  const node = new Element(tag); node.className = className; parent?.append(node); return node;
+}
+function fixture() { const html = tree("html", ""), body = tree("body", "", html), shell = tree("div", "shell", body); return {html, body, shell}; }
+function harness() {
+  const body = new Element("body"), trigger = tree("button", "trigger", body), calls: Array<[string, unknown]> = [];
+  const document = {body, activeElement: trigger, hidden: false, querySelector: (s: string) => body.querySelector(s),
+    createElement: (tag: string) => new Element(tag), createTextNode: (text: string) => new Element("#text", text), addEventListener() {}, removeEventListener() {}};
+  const context: {hooks?: any; [key: string]: unknown} = {document, Node: Element, AbortController, setTimeout, clearTimeout, URL, URLSearchParams,
+    crypto: {randomUUID}, window: {addEventListener() {}, removeEventListener() {}}, localStorage: {getItem: () => null},
+    location: {origin: "https://layout.test", hostname: "layout.test", protocol: "https:", search: ""},
+    record: (kind: string, value: unknown) => calls.push([kind, value]), fetch: vi.fn()};
+  const source = workspaceJs.split("\napplyEntryQuery();")[0];
+  runInNewContext(source + `\nme={id:"layout-admin",role:"platform_admin"};perms=["*"];
+    gotoTab=value=>record("tab",value);openOrderDetailModal=value=>record("order",value);
+    completeCustomerRefund=value=>record("ordinary-refund",value);completePriceAdjustmentRefund=value=>record("adjustment-refund",value);
+    openDailySettlementPay=value=>record("settlement",value);openWalletPanel=value=>record("wallet",value);
+    globalThis.hooks={openFormModal,openMessageModal,platformActionCenter,actionQueue,statChips};`, context);
+  return {h: context.hooks, body, trigger, calls};
+}
+function actionFixture(overrides: Record<string, unknown> = {}) {
+  return {counts: {tasks: 0, refunds: 0, refundReviews: 0, invoicePaymentReviews: 0, settlements: 0, withdrawals: 0, tickets: 0, invoices: 0},
+    worker: {status: "healthy", lanes: []}, checks: {}, capabilities: {}, ...overrides};
+}
+
+describe("workspace layout and action preservation", () => {
+  it("preserves explicit metric tones after label changes and beats the old platform-metrics white background", async () => {
+    const {h} = harness(), tones = ["blue", "mint", "warn"], actions = tones.map(() => vi.fn());
+    const backgrounds: string[][] = [];
+    for (const label of ["业务统计", "已更名的经营指标"]) {
+      const view = h.statChips(tones.map((tone, index) => [label, "¥25.00", "点击查看明细", actions[index], tone]),
+        {className: "platform-metrics"}) as Element;
+      const {body} = fixture(); body.append(view);
+      const cards = view.querySelectorAll(".stat-chip-btn");
+      expect(cards).toHaveLength(3);
+      for (const [index, card] of cards.entries()) {
+        expect(card.classList.contains("stat-chip-" + tones[index])).toBe(true);
+        expect(card.textContent).toContain(label); expect(card.textContent).toContain("¥25.00");
+        await card.click();
+      }
+      for (const width of [390, 1440]) {
+        const fills = cards.map(card => effective(card, width).background!);
+        expect(fills.every(fill => Boolean(fill) && !["white", "#fff", "#ffffff", "transparent"].includes(fill.toLowerCase()))).toBe(true);
+        expect(new Set(fills).size).toBe(3); backgrounds.push(fills);
+      }
+    }
+    expect(backgrounds.every(fills => JSON.stringify(fills) === JSON.stringify(backgrounds[0]))).toBe(true);
+    for (const action of actions) expect(action).toHaveBeenCalledTimes(2);
+  });
+
+  it("ships the fluid main pane and a non-floating compact topbar at desktop and phone widths", () => {
+    expect(workspaceAppHtml).toMatch(/<main class="main">/);
+    for (const width of [360, 720, 1440, 2560]) {
+      const {shell} = fixture(), main = tree("main", "main", shell), topbar = tree("header", "topbar topbar-compact", main);
+      expect(effective(main, width)["max-width"], `main cap at ${width}px`).toBe("none");
+      expect(effective(main, width).width).toBe("100%");
+      expect(["static", "relative", undefined]).toContain(effective(topbar, width).position);
+      expect(effective(topbar, width).transform ?? "none").toBe("none");
+      const context = tree("div", "topbar-context", topbar), toolbar = tree("div", "topbar-toolbar", topbar);
+      expect(effective(context, width).display).toBe("none");
+      expect(effective(topbar, width).display).toBe("none");
+      tree("button", "wallet-action", toolbar);
+      expect(effective(topbar, width).display).not.toBe("none");
+    }
+  });
+
+  it.each(["workspace-modal", "workspace-modal workspace-drawer order-detail-modal", "workspace-modal workspace-drawer ticket-detail-drawer"])
+    ("keeps %s centred with a bounded, internally scrolling body on desktop and mobile", className => {
+      for (const [width, height] of [[1440, 900], [390, 844], [320, 568]] as const) {
+        const {body} = fixture(), dialog = tree("dialog", className, body); dialog.setAttribute("open", "");
+        const shell = tree("div", "modal-shell", dialog), content = tree("div", "modal-body", shell);
+        const modal = effective(dialog, width), layout = effective(shell, width), scroll = effective(content, width);
+        expect(modal.margin, `${className} margin at ${width}px`).toBe("auto");
+        expect(size(modal.width, width, height)).toBeLessThanOrEqual(width - 16);
+        expect(size(modal["max-height"], width, height, "height")).toBeLessThanOrEqual(height - 16);
+        expect(size(layout["max-height"], width, height, "height")).toBeLessThanOrEqual(height - 16);
+        expect(["auto", "scroll"]).toContain(scroll["overflow-y"] ?? scroll.overflow);
+        expect(scroll["min-height"]).toMatch(/^0(?:px)?$/);
+        expect(modal.animation ?? "none").not.toContain("drawer-in");
+      }
+    });
+
+  it("opens a native labelled modal, keeps its form, and returns focus after closing", async () => {
+    const {h, body, trigger} = harness(), run = vi.fn();
+    const dialog = h.openFormModal("人工处理", [], "确认登记", run) as Element;
+    expect(dialog.tagName).toBe("dialog"); expect(dialog.showModal).toHaveBeenCalledOnce();
+    expect(dialog.getAttribute("aria-label")).toBe("人工处理"); expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("form")).not.toBeNull(); expect(dialog.textContent).toContain("确认登记");
+    await dialog.querySelectorAll("button").find(button => button.textContent === "关闭")!.click();
+    expect(body.querySelector("dialog")).toBeNull(); expect(trigger.focus).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+  });
+
+  it("keeps per-record refund, order and settlement buttons and respects server capabilities", async () => {
+    const {h, calls} = harness(), refund = {id: "refund-23", orderId: "order-23", type: "partial", status: "failed", amount: "10.00"},
+      settlement = {id: "settlement-9", merchantName: "代理甲", businessDate: "2026-10-02", payable: "25.00", status: "pending_payment"};
+    const data = actionFixture({counts: {tasks: 1, refunds: 1, settlements: 1}, tasks: [{orderId: "order-17", message: "上游结果待核"}],
+      refunds: [refund], settlements: [settlement], capabilities: {canReviewRefunds: true, canManageSettlements: true}});
+    const view = h.platformActionCenter(data) as Element;
+    for (const label of ["处理订单", "重试退款", "确认打款"]) await view.querySelectorAll("button").find(button => button.textContent === label)!.click();
+    expect(calls).toEqual([["order", {id: "order-17"}], ["ordinary-refund", refund], ["settlement", settlement]]);
+    calls.length = 0;
+    const readonly = h.platformActionCenter({...data, capabilities: {}}) as Element;
+    expect(readonly.querySelectorAll("button").some(button => ["重试退款", "确认打款"].includes(button.textContent))).toBe(false);
+    await readonly.querySelectorAll("button").find(button => button.textContent === "查看退款")!.click();
+    expect(calls).toEqual([["order", {id: "order-23"}]]);
+  });
+
+  it("keeps health colours semantic and retains readable status and configuration actions", async () => {
+    const {h, calls} = harness(), tones = new Map<string, string>();
+    for (const [state, tone, label] of [["healthy", "success", "正常"], ["failed", "danger", "检查失败"], ["stale", "danger", "心跳过期"],
+      ["degraded", "danger", "任务异常"], ["stopped", "danger", "已停止"], ["missing", "warning", "尚未收到心跳"],
+      ["disabled", "warning", "已停用"], ["configured", "info", "配置就绪"], ["ready", "info", "配置就绪"], ["undetected", "neutral", "未检测"]]) {
+      const view = h.platformActionCenter(actionFixture({checks: {payment: {status: state, label}}})) as Element;
+      const card = view.querySelectorAll(".operations-check").find(item => item.textContent.includes("支付通道"))!;
+      expect(card.textContent).toContain(label);
+      const {body} = fixture(); body.append(view);
+      const color = effective(card.querySelector("span")!, 1440).color;
+      expect(color, `${state} must expose a resolved text colour`).toMatch(/^#[0-9a-f]{6}$/i);
+      if (tones.has(tone!)) expect(color, `${state} must keep its semantic family`).toBe(tones.get(tone!));
+      tones.set(tone!, color!);
+      await card.click();
+    }
+    expect(new Set(tones.values()).size).toBe(5);
+    const rgb = (tone: string) => tones.get(tone)!.slice(1).match(/../g)!.map(value => parseInt(value, 16));
+    const [red, green, blue] = rgb("danger"); expect(red).toBeGreaterThan(green!); expect(red).toBeGreaterThan(blue!);
+    const success = rgb("success"); expect(success[1]).toBeGreaterThan(success[0]!);
+    const info = rgb("info"); expect(info[2]).toBeGreaterThan(info[0]!); expect(info[2]).toBeGreaterThan(info[1]!);
+    const warning = rgb("warning"); expect(warning[0]).toBeGreaterThan(warning[1]!); expect(warning[1]).toBeGreaterThan(warning[2]!);
+    const neutral = rgb("neutral"); expect(Math.max(...neutral) - Math.min(...neutral)).toBeLessThan(64);
+    expect(calls).toHaveLength(10); expect(calls.every(([kind, value]) => kind === "tab" && value === "paymentSettings")).toBe(true);
+  });
+
+  it("maps queue severity to distinct styles while preserving totals and per-queue navigation", async () => {
+    const {h} = harness(), onAll = vi.fn(), backgrounds = new Set<string>();
+    for (const [count, options, tone] of [[null, {}, "danger"], [2, {severity: "urgent"}, "danger"],
+      [2, {}, "warning"], [2, {tone: "info"}, "info"], [0, {}, "success"]] as const) {
+      const view = h.actionQueue("业务队列", count, "原业务说明", [], "当前没有待办", {...options, onAll}) as Element;
+      expect(view.getAttribute("data-tone")).toBe(tone);
+      expect(view.querySelector(".action-count")?.textContent).toBe(count === null ? "—" : String(count));
+      expect(view.textContent).toContain("原业务说明");
+      const {body} = fixture(); body.append(view);
+      backgrounds.add(effective(view, 1440).background!);
+      await view.querySelectorAll("button").find(button => button.textContent === "查看全部")!.click();
+    }
+    expect(backgrounds.size).toBe(4); expect(onAll).toHaveBeenCalledTimes(5);
+    const tickets = h.platformActionCenter(actionFixture({counts: {tickets: 1}, tickets: [{id: "ticket-8", title: "代理咨询", status: "open"}]})) as Element;
+    expect(tickets.querySelectorAll(".action-queue").find(item => item.textContent.includes("售后工单"))?.getAttribute("data-tone")).toBe("info");
+  });
+});
