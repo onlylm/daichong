@@ -2,6 +2,7 @@ import {runInNewContext} from "node:vm";
 import {randomUUID} from "node:crypto";
 import {describe, expect, it, vi} from "vitest";
 import {workspaceAppHtml, workspaceCss, workspaceJs} from "../src/operations/workspace-page.js";
+import {workspaceCss as sharedWorkspaceCss} from "../src/operations/workspace-styles.js";
 
 // These are shipped-asset/DOM contracts, not browser layout or accessibility acceptance.
 // Resolve source order, selector specificity, !important and viewport media rules so
@@ -132,6 +133,10 @@ function harness(permissions = ["*"]) {
     gotoTab=value=>record("tab",value);openOrderDetailModal=value=>record("order",value);
     completeCustomerRefund=value=>record("ordinary-refund",value);completePriceAdjustmentRefund=value=>record("adjustment-refund",value);
     openDailySettlementPay=value=>record("settlement",value);openWalletPanel=value=>record("wallet",value);
+    reconcileDailySettlement=value=>record("reconcile-settlement",value);
+    actOnWithdrawal=(value,action)=>record("withdrawal",{value,action});
+    openInvoiceDetail=value=>record("invoice",value);openInvoicePaymentReview=value=>record("invoice-review",value);
+    ticketDetail=value=>record("ticket",value);
     globalThis.hooks={openFormModal,openMessageModal,platformActionCenter,actionQueue,statChips};`, context);
   return {h: context.hooks, body, trigger, calls};
 }
@@ -141,9 +146,13 @@ function actionFixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("workspace layout and action preservation", () => {
-  it("preserves explicit metric tones after label changes and beats the old platform-metrics white background", async () => {
+  it("keeps the extracted stylesheet identical to the workspace asset export", () => {
+    expect(workspaceCss.length).toBeGreaterThan(0);
+    expect(workspaceCss).toBe(sharedWorkspaceCss);
+  });
+
+  it("preserves metric semantics and click targets after label changes in the shared accounting band", async () => {
     const {h} = harness(), tones = ["blue", "mint", "warn"], actions = tones.map(() => vi.fn());
-    const backgrounds: string[][] = [];
     for (const label of ["业务统计", "已更名的经营指标"]) {
       const view = h.statChips(tones.map((tone, index) => [label, "¥25.00", "点击查看明细", actions[index], tone]),
         {className: "platform-metrics"}) as Element;
@@ -155,14 +164,26 @@ describe("workspace layout and action preservation", () => {
         expect(card.textContent).toContain(label); expect(card.textContent).toContain("¥25.00");
         await card.click();
       }
-      for (const width of [390, 1440]) {
-        const fills = cards.map(card => effective(card, width).background!);
-        expect(fills.every(fill => Boolean(fill) && !["white", "#fff", "#ffffff", "transparent"].includes(fill.toLowerCase()))).toBe(true);
-        expect(new Set(fills).size).toBe(3); backgrounds.push(fills);
-      }
     }
-    expect(backgrounds.every(fills => JSON.stringify(fills) === JSON.stringify(backgrounds[0]))).toBe(true);
     for (const action of actions) expect(action).toHaveBeenCalledTimes(2);
+  });
+
+  it("lays the six operating metrics out as one desktop accounting band and two mobile columns", () => {
+    const {h} = harness(), {body} = fixture(), section = tree("section", "section business-layer", body);
+    const band = h.statChips(["今日收款", "今日净流入", "今日退款", "代理佣金", "今日已付", "履约成功"]
+      .map(label => [label, "25", "", () => {}]), {className: "platform-metrics"}) as Element;
+    section.append(band);
+    expect(band.querySelectorAll("button")).toHaveLength(6);
+    for (const width of [1280, 1440, 2560]) {
+      const style = effective(band, width);
+      expect(style.display).toBe("grid");
+      expect(style["grid-template-columns"], `accounting band at ${width}px`).toMatch(/^repeat\(6,\s*minmax\(0,\s*1fr\)\)$/);
+    }
+    for (const width of [360, 390, 720]) {
+      const style = effective(band, width);
+      expect(style.display).toBe("grid");
+      expect(style["grid-template-columns"], `accounting band at ${width}px`).toMatch(/^repeat\(2,\s*minmax\(0,\s*1fr\)\)$/);
+    }
   });
 
   it("ships the fluid main pane and a non-floating compact topbar at desktop and phone widths", () => {
@@ -221,6 +242,51 @@ describe("workspace layout and action preservation", () => {
     expect(readonly.querySelectorAll("button").some(button => ["重试退款", "确认打款"].includes(button.textContent))).toBe(false);
     await readonly.querySelectorAll("button").find(button => button.textContent === "查看退款")!.click();
     expect(calls).toEqual([["order", {id: "order-23"}]]);
+  });
+
+  it("keeps every actionable queue, its exact record action and its full-list destination", async () => {
+    const {h, calls} = harness();
+    const refund = {id: "refund-23", orderId: "order-23", type: "partial", status: "failed", amount: "10.00"};
+    const withdrawal = {id: "withdrawal-8", merchantName: "代理甲", amount: "80.00", status: "requested", payoutMethod: "bank"};
+    const settlement = {id: "settlement-9", merchantName: "代理甲", businessDate: "2026-10-02", payable: "25.00", status: "paid"};
+    const invoice = {id: "invoice-6", merchantName: "代理甲", invoiceAmount: "100.00", feeAmount: "5.00", status: "submitted"};
+    const duplicate = {id: "invoice-review-4", merchantName: "代理甲", amount: "5.00", canonicalProviderRef: "paid-first", duplicateProviderRef: "paid-second"};
+    const view = h.platformActionCenter(actionFixture({
+      counts: {tasks: 1, refunds: 1, refundReviews: 1, invoicePaymentReviews: 1, settlements: 1, withdrawals: 1, tickets: 1, invoices: 1},
+      tasks: [{orderId: "order-17", message: "待核对"}], refunds: [refund], withdrawals: [withdrawal], settlements: [settlement],
+      invoices: [invoice], invoicePaymentReviews: [duplicate],
+      refundReviews: [{orderId: "order-44", differenceAmount: "5.00", reportedAmount: "15.00", recordedAmount: "10.00"}],
+      tickets: [{id: "ticket-8", title: "售后咨询", status: "open"}],
+      capabilities: {canReviewRefunds: true, canManageSettlements: true, canReviewWithdrawals: true, canManageInvoices: true},
+    })) as Element;
+    const queues = view.querySelectorAll(".action-queue");
+    expect(queues.map(queue => queue.querySelector("h3")!.textContent))
+      .toEqual(["补差重复到账", "退款差异", "异常订单", "退款处理", "提现审核", "每日核算", "开票申请", "售后工单"]);
+    expect(queues.map(queue => queue.querySelector(".action-count")!.textContent)).toEqual(Array(8).fill("1"));
+    for (const label of ["核对两笔流水", "核对订单", "处理订单", "重试退款", "审核提现", "驳回", "到账核销", "处理申请", "回复工单"])
+      await view.querySelectorAll("button").find(button => button.textContent === label)!.click();
+    expect(calls).toEqual([
+      ["invoice-review", duplicate], ["order", {id: "order-44"}], ["order", {id: "order-17"}], ["ordinary-refund", refund],
+      ["withdrawal", {value: withdrawal, action: "approve"}], ["withdrawal", {value: withdrawal, action: "reject"}],
+      ["reconcile-settlement", settlement], ["invoice", invoice], ["ticket", "ticket-8"],
+    ]);
+    calls.length = 0;
+    for (const queue of queues) await queue.querySelectorAll("button").find(button => button.textContent === "查看全部")!.click();
+    expect(calls).toEqual([["tab", "invoices"], ["wallet", "refund-review"], ["tab", "notifications"], ["wallet", "refunds"],
+      ["wallet", "withdrawals"], ["wallet", "settlements"], ["tab", "invoices"], ["tab", "tickets"]]);
+  });
+
+  it("keeps record lookup available while withholding withdrawal and invoice management without server capabilities", async () => {
+    const {h, calls} = harness(["wallet.read", "invoices.read"]);
+    const invoice = {id: "invoice-readonly", merchantName: "代理甲", invoiceAmount: "100.00", feeAmount: "5.00", status: "submitted"};
+    const view = h.platformActionCenter(actionFixture({counts: {withdrawals: 1, invoices: 1},
+      withdrawals: [{id: "withdrawal-readonly", amount: "80.00", status: "requested", payoutMethod: "bank"}], invoices: [invoice],
+    })) as Element;
+    const buttons = view.querySelectorAll("button"), labels = buttons.map(button => button.textContent);
+    for (const label of ["审核提现", "确认打款", "驳回", "处理申请"]) expect(labels).not.toContain(label);
+    await buttons.find(button => button.textContent === "查看提现")!.click();
+    await buttons.find(button => button.textContent === "查看申请")!.click();
+    expect(calls).toEqual([["wallet", "withdrawals"], ["invoice", invoice]]);
   });
 
   it("keeps configuration readiness out of home queues and shows no runtime alert when the worker is healthy", () => {
@@ -291,20 +357,40 @@ describe("workspace layout and action preservation", () => {
     expect(view.textContent).not.toContain("当前没有业务待办");
   });
 
-  it("maps queue severity to distinct styles while preserving totals and per-queue navigation", async () => {
-    const {h} = harness(), onAll = vi.fn(), backgrounds = new Set<string>();
+  it("preserves queue severity, totals and per-queue navigation in the lightweight grouped list", async () => {
+    const {h} = harness(), onAll = vi.fn();
     for (const [count, options, tone] of [[null, {}, "danger"], [2, {severity: "urgent"}, "danger"],
       [2, {}, "warning"], [2, {tone: "info"}, "info"], [0, {}, "success"]] as const) {
       const view = h.actionQueue("业务队列", count, "原业务说明", [], "当前没有待办", {...options, onAll}) as Element;
       expect(view.getAttribute("data-tone")).toBe(tone);
       expect(view.querySelector(".action-count")?.textContent).toBe(count === null ? "—" : String(count));
       expect(view.textContent).toContain("原业务说明");
-      const {body} = fixture(); body.append(view);
-      backgrounds.add(effective(view, 1440).background!);
+      expect(view.getAttribute("data-state")).toBe(count === null ? "error" : "ready");
+      expect(view.getAttribute("data-severity")).toBe("severity" in options ? options.severity : "normal");
       await view.querySelectorAll("button").find(button => button.textContent === "查看全部")!.click();
     }
-    expect(backgrounds.size).toBe(4); expect(onAll).toHaveBeenCalledTimes(5);
+    expect(onAll).toHaveBeenCalledTimes(5);
     const tickets = h.platformActionCenter(actionFixture({counts: {tickets: 1}, tickets: [{id: "ticket-8", title: "代理咨询", status: "open"}]})) as Element;
     expect(tickets.querySelectorAll(".action-queue").find(item => item.textContent.includes("售后工单"))?.getAttribute("data-tone")).toBe("info");
+  });
+
+  it("uses shared neutral queue headers and keeps every record and navigation action at least 40px high", () => {
+    const {h} = harness(), {body} = fixture(), headings = new Set<string>();
+    for (const tone of ["danger", "warning", "info", "success"]) {
+      const action = tree("button", "primary");
+      action.textContent = "处理记录";
+      const view = h.actionQueue("业务队列", 1, "保留业务说明", [action], "无待办", {tone, onAll: () => {}}) as Element;
+      body.append(view);
+      for (const width of [390, 1440]) {
+        const header = effective(view.querySelector("header")!, width);
+        headings.add(header.background ?? header["background-color"] ?? "transparent");
+        for (const button of view.querySelectorAll("button")) {
+          const minimum = effective(button, width)["min-height"];
+          expect(minimum, `${button.textContent} at ${width}px`).toBeDefined();
+          expect(size(minimum, width, 900, "height"), `${button.textContent} at ${width}px`).toBeGreaterThanOrEqual(40);
+        }
+      }
+    }
+    expect(headings.size).toBe(1);
   });
 });

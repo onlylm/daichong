@@ -1,0 +1,517 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T10:01:43.959Z",
+  "title": "Design System: Quefa 运营工作台",
+  "extensions": {
+    "colorMeta": {
+      "signal": {
+        "role": "primary",
+        "displayName": "操作蓝",
+        "tonalRamp": [
+          "oklch(15% 0.1826 261.88)",
+          "oklch(26.43% 0.1826 261.88)",
+          "oklch(37.86% 0.1826 261.88)",
+          "oklch(49.29% 0.1826 261.88)",
+          "oklch(60.71% 0.1826 261.88)",
+          "oklch(72.14% 0.1826 261.88)",
+          "oklch(83.57% 0.1826 261.88)",
+          "oklch(95% 0.1826 261.88)"
+        ]
+      },
+      "signal-deep": {
+        "role": "primary",
+        "displayName": "深操作蓝",
+        "tonalRamp": [
+          "oklch(15% 0.1580 260.93)",
+          "oklch(26.43% 0.1580 260.93)",
+          "oklch(37.86% 0.1580 260.93)",
+          "oklch(49.29% 0.1580 260.93)",
+          "oklch(60.71% 0.1580 260.93)",
+          "oklch(72.14% 0.1580 260.93)",
+          "oklch(83.57% 0.1580 260.93)",
+          "oklch(95% 0.1580 260.93)"
+        ]
+      },
+      "night": {
+        "role": "neutral",
+        "displayName": "深蓝墨水",
+        "tonalRamp": [
+          "oklch(15% 0.0510 254.93)",
+          "oklch(26.43% 0.0510 254.93)",
+          "oklch(37.86% 0.0510 254.93)",
+          "oklch(49.29% 0.0510 254.93)",
+          "oklch(60.71% 0.0510 254.93)",
+          "oklch(72.14% 0.0510 254.93)",
+          "oklch(83.57% 0.0510 254.93)",
+          "oklch(95% 0.0510 254.93)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "正文墨水",
+        "tonalRamp": [
+          "oklch(15% 0.0437 254.17)",
+          "oklch(26.43% 0.0437 254.17)",
+          "oklch(37.86% 0.0437 254.17)",
+          "oklch(49.29% 0.0437 254.17)",
+          "oklch(60.71% 0.0437 254.17)",
+          "oklch(72.14% 0.0437 254.17)",
+          "oklch(83.57% 0.0437 254.17)",
+          "oklch(95% 0.0437 254.17)"
+        ]
+      },
+      "secondary": {
+        "role": "neutral",
+        "displayName": "说明蓝灰",
+        "tonalRamp": [
+          "oklch(15% 0.0426 256.06)",
+          "oklch(26.43% 0.0426 256.06)",
+          "oklch(37.86% 0.0426 256.06)",
+          "oklch(49.29% 0.0426 256.06)",
+          "oklch(60.71% 0.0426 256.06)",
+          "oklch(72.14% 0.0426 256.06)",
+          "oklch(83.57% 0.0426 256.06)",
+          "oklch(95% 0.0426 256.06)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "辅助蓝灰",
+        "tonalRamp": [
+          "oklch(15% 0.0408 257.42)",
+          "oklch(26.43% 0.0408 257.42)",
+          "oklch(37.86% 0.0408 257.42)",
+          "oklch(49.29% 0.0408 257.42)",
+          "oklch(60.71% 0.0408 257.42)",
+          "oklch(72.14% 0.0408 257.42)",
+          "oklch(83.57% 0.0408 257.42)",
+          "oklch(95% 0.0408 257.42)"
+        ]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "蓝灰台面",
+        "tonalRamp": [
+          "oklch(15% 0.0045 258.32)",
+          "oklch(26.43% 0.0045 258.32)",
+          "oklch(37.86% 0.0045 258.32)",
+          "oklch(49.29% 0.0045 258.32)",
+          "oklch(60.71% 0.0045 258.32)",
+          "oklch(72.14% 0.0045 258.32)",
+          "oklch(83.57% 0.0045 258.32)",
+          "oklch(95% 0.0045 258.32)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "纸张白",
+        "tonalRamp": [
+          "oklch(15% 0.0000 0.00)",
+          "oklch(26.43% 0.0000 0.00)",
+          "oklch(37.86% 0.0000 0.00)",
+          "oklch(49.29% 0.0000 0.00)",
+          "oklch(60.71% 0.0000 0.00)",
+          "oklch(72.14% 0.0000 0.00)",
+          "oklch(83.57% 0.0000 0.00)",
+          "oklch(95% 0.0000 0.00)"
+        ]
+      },
+      "inset": {
+        "role": "neutral",
+        "displayName": "浅蓝灰",
+        "tonalRamp": [
+          "oklch(15% 0.0045 258.32)",
+          "oklch(26.43% 0.0045 258.32)",
+          "oklch(37.86% 0.0045 258.32)",
+          "oklch(49.29% 0.0045 258.32)",
+          "oklch(60.71% 0.0045 258.32)",
+          "oklch(72.14% 0.0045 258.32)",
+          "oklch(83.57% 0.0045 258.32)",
+          "oklch(95% 0.0045 258.32)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "结构线",
+        "tonalRamp": [
+          "oklch(15% 0.0144 254.61)",
+          "oklch(26.43% 0.0144 254.61)",
+          "oklch(37.86% 0.0144 254.61)",
+          "oklch(49.29% 0.0144 254.61)",
+          "oklch(60.71% 0.0144 254.61)",
+          "oklch(72.14% 0.0144 254.61)",
+          "oklch(83.57% 0.0144 254.61)",
+          "oklch(95% 0.0144 254.61)"
+        ]
+      },
+      "soft-line": {
+        "role": "neutral",
+        "displayName": "记录细线",
+        "tonalRamp": [
+          "oklch(15% 0.0093 242.84)",
+          "oklch(26.43% 0.0093 242.84)",
+          "oklch(37.86% 0.0093 242.84)",
+          "oklch(49.29% 0.0093 242.84)",
+          "oklch(60.71% 0.0093 242.84)",
+          "oklch(72.14% 0.0093 242.84)",
+          "oklch(83.57% 0.0093 242.84)",
+          "oklch(95% 0.0093 242.84)"
+        ]
+      },
+      "mint": {
+        "role": "semantic",
+        "displayName": "核验绿",
+        "tonalRamp": [
+          "oklch(15% 0.0895 171.11)",
+          "oklch(26.43% 0.0895 171.11)",
+          "oklch(37.86% 0.0895 171.11)",
+          "oklch(49.29% 0.0895 171.11)",
+          "oklch(60.71% 0.0895 171.11)",
+          "oklch(72.14% 0.0895 171.11)",
+          "oklch(83.57% 0.0895 171.11)",
+          "oklch(95% 0.0895 171.11)"
+        ]
+      },
+      "amber": {
+        "role": "semantic",
+        "displayName": "待处理琥珀",
+        "tonalRamp": [
+          "oklch(15% 0.1080 70.07)",
+          "oklch(26.43% 0.1080 70.07)",
+          "oklch(37.86% 0.1080 70.07)",
+          "oklch(49.29% 0.1080 70.07)",
+          "oklch(60.71% 0.1080 70.07)",
+          "oklch(72.14% 0.1080 70.07)",
+          "oklch(83.57% 0.1080 70.07)",
+          "oklch(95% 0.1080 70.07)"
+        ]
+      },
+      "danger-ink": {
+        "role": "semantic",
+        "displayName": "风险红",
+        "tonalRamp": [
+          "oklch(15% 0.1552 19.68)",
+          "oklch(26.43% 0.1552 19.68)",
+          "oklch(37.86% 0.1552 19.68)",
+          "oklch(49.29% 0.1552 19.68)",
+          "oklch(60.71% 0.1552 19.68)",
+          "oklch(72.14% 0.1552 19.68)",
+          "oklch(83.57% 0.1552 19.68)",
+          "oklch(95% 0.1552 19.68)"
+        ]
+      },
+      "ops-info-surface": {
+        "role": "semantic",
+        "displayName": "信息浅蓝面",
+        "tonalRamp": [
+          "oklch(15% 0.0132 262.38)",
+          "oklch(26.43% 0.0132 262.38)",
+          "oklch(37.86% 0.0132 262.38)",
+          "oklch(49.29% 0.0132 262.38)",
+          "oklch(60.71% 0.0132 262.38)",
+          "oklch(72.14% 0.0132 262.38)",
+          "oklch(83.57% 0.0132 262.38)",
+          "oklch(95% 0.0132 262.38)"
+        ]
+      },
+      "ops-info-line": {
+        "role": "semantic",
+        "displayName": "信息浅蓝边界",
+        "tonalRamp": [
+          "oklch(15% 0.0377 262.13)",
+          "oklch(26.43% 0.0377 262.13)",
+          "oklch(37.86% 0.0377 262.13)",
+          "oklch(49.29% 0.0377 262.13)",
+          "oklch(60.71% 0.0377 262.13)",
+          "oklch(72.14% 0.0377 262.13)",
+          "oklch(83.57% 0.0377 262.13)",
+          "oklch(95% 0.0377 262.13)"
+        ]
+      },
+      "ops-success-surface": {
+        "role": "semantic",
+        "displayName": "核验浅绿面",
+        "tonalRamp": [
+          "oklch(15% 0.0124 164.80)",
+          "oklch(26.43% 0.0124 164.80)",
+          "oklch(37.86% 0.0124 164.80)",
+          "oklch(49.29% 0.0124 164.80)",
+          "oklch(60.71% 0.0124 164.80)",
+          "oklch(72.14% 0.0124 164.80)",
+          "oklch(83.57% 0.0124 164.80)",
+          "oklch(95% 0.0124 164.80)"
+        ]
+      },
+      "ops-success-line": {
+        "role": "semantic",
+        "displayName": "核验浅绿边界",
+        "tonalRamp": [
+          "oklch(15% 0.0342 163.18)",
+          "oklch(26.43% 0.0342 163.18)",
+          "oklch(37.86% 0.0342 163.18)",
+          "oklch(49.29% 0.0342 163.18)",
+          "oklch(60.71% 0.0342 163.18)",
+          "oklch(72.14% 0.0342 163.18)",
+          "oklch(83.57% 0.0342 163.18)",
+          "oklch(95% 0.0342 163.18)"
+        ]
+      },
+      "ops-warning-surface": {
+        "role": "semantic",
+        "displayName": "待处理浅琥珀面",
+        "tonalRamp": [
+          "oklch(15% 0.0215 83.26)",
+          "oklch(26.43% 0.0215 83.26)",
+          "oklch(37.86% 0.0215 83.26)",
+          "oklch(49.29% 0.0215 83.26)",
+          "oklch(60.71% 0.0215 83.26)",
+          "oklch(72.14% 0.0215 83.26)",
+          "oklch(83.57% 0.0215 83.26)",
+          "oklch(95% 0.0215 83.26)"
+        ]
+      },
+      "ops-warning-line": {
+        "role": "semantic",
+        "displayName": "待处理浅琥珀边界",
+        "tonalRamp": [
+          "oklch(15% 0.0597 84.49)",
+          "oklch(26.43% 0.0597 84.49)",
+          "oklch(37.86% 0.0597 84.49)",
+          "oklch(49.29% 0.0597 84.49)",
+          "oklch(60.71% 0.0597 84.49)",
+          "oklch(72.14% 0.0597 84.49)",
+          "oklch(83.57% 0.0597 84.49)",
+          "oklch(95% 0.0597 84.49)"
+        ]
+      },
+      "ops-danger-surface": {
+        "role": "semantic",
+        "displayName": "风险浅红面",
+        "tonalRamp": [
+          "oklch(15% 0.0151 17.42)",
+          "oklch(26.43% 0.0151 17.42)",
+          "oklch(37.86% 0.0151 17.42)",
+          "oklch(49.29% 0.0151 17.42)",
+          "oklch(60.71% 0.0151 17.42)",
+          "oklch(72.14% 0.0151 17.42)",
+          "oklch(83.57% 0.0151 17.42)",
+          "oklch(95% 0.0151 17.42)"
+        ]
+      },
+      "ops-danger-line": {
+        "role": "semantic",
+        "displayName": "风险浅红边界",
+        "tonalRamp": [
+          "oklch(15% 0.0420 12.46)",
+          "oklch(26.43% 0.0420 12.46)",
+          "oklch(37.86% 0.0420 12.46)",
+          "oklch(49.29% 0.0420 12.46)",
+          "oklch(60.71% 0.0420 12.46)",
+          "oklch(72.14% 0.0420 12.46)",
+          "oklch(83.57% 0.0420 12.46)",
+          "oklch(95% 0.0420 12.46)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "页面标题",
+        "purpose": "工作台页首标题；窄屏缩小。"
+      },
+      "title": {
+        "displayName": "分区标题",
+        "purpose": "组织内容组。"
+      },
+      "body": {
+        "displayName": "正文字体",
+        "purpose": "界面文字的基础字体和根字号。"
+      },
+      "label": {
+        "displayName": "统计标签",
+        "purpose": "经营数值的说明文字。"
+      },
+      "metric": {
+        "displayName": "经营数值",
+        "purpose": "首页六项经营带的主要数值。"
+      },
+      "table-amount": {
+        "displayName": "表格金额",
+        "purpose": "独立金额列中的重点数值。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "dialog",
+        "value": "0 20px 80px #182b432b",
+        "purpose": "居中弹窗与背景分层。"
+      },
+      {
+        "name": "input-focus",
+        "value": "0 0 0 3px #245dcc12",
+        "purpose": "输入聚焦光圈；仍保留兼容键盘外框。"
+      },
+      {
+        "name": "nav-active",
+        "value": "inset 2px 0 var(--signal)",
+        "purpose": "当前主导航位置。"
+      },
+      {
+        "name": "metric-hover",
+        "value": "inset 0 -2px var(--signal)",
+        "purpose": "可点击经营项的悬停提示。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-transition",
+        "value": "background-color .12s, border-color .12s, color .12s",
+        "purpose": "常规按钮颜色过渡。"
+      },
+      {
+        "name": "modal-enter",
+        "value": "160ms ease-out; opacity .6 → 1; translateY(8px) → translateY(0)",
+        "purpose": "居中弹窗进入；不是侧滑抽屉。"
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition-duration:.01ms; animation-duration:.01ms; animation-iteration-count:1; scroll-behavior:auto",
+        "purpose": "遵循 prefers-reduced-motion:reduce。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "workspace-medium-max",
+        "value": "1180px"
+      },
+      {
+        "name": "workspace-mobile-max",
+        "value": "720px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "蓝色主按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "用于当前流程的常规主操作；悬停加深，按下不位移。",
+      "html": "<button type=\"button\" class=\"ds-primary\">刷新订单</button>",
+      "css": ".ds-primary{min-height:40px;padding:8px 14px;border:1px solid var(--line,#dce3ec);border-radius:6px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:13px;font-weight:600;cursor:pointer;box-shadow:none;transition:background-color .12s,border-color .12s,color .12s}.ds-primary:active{transform:none}.ds-primary:disabled{opacity:.55;cursor:not-allowed}.ds-primary:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-primary{transition-duration:.01ms}}.ds-primary{background:var(--signal,#245dcc);color:var(--paper,#fff);border-color:var(--signal,#245dcc)}.ds-primary:hover{background:var(--signal-deep,#194da9);border-color:var(--signal-deep,#194da9);color:var(--paper,#fff)}"
+    },
+    {
+      "name": "边框次按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "用于关闭、查看与同组次要操作。",
+      "html": "<button type=\"button\" class=\"ds-secondary\">查看记录</button>",
+      "css": ".ds-secondary{min-height:40px;padding:8px 14px;border:1px solid var(--line,#dce3ec);border-radius:6px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:13px;font-weight:600;cursor:pointer;box-shadow:none;transition:background-color .12s,border-color .12s,color .12s}.ds-secondary:active{transform:none}.ds-secondary:disabled{opacity:.55;cursor:not-allowed}.ds-secondary:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-secondary{transition-duration:.01ms}}.ds-secondary{background:var(--paper,#fff);color:var(--ink,#25364b)}.ds-secondary:hover{border-color:var(--signal,#245dcc);color:var(--signal,#245dcc)}"
+    },
+    {
+      "name": "风险确认按钮",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "仅呈现风险确认外观；预览不执行交易。",
+      "html": "<button type=\"button\" class=\"ds-danger\">确认退款</button>",
+      "css": ".ds-danger{min-height:40px;padding:8px 14px;border:1px solid var(--line,#dce3ec);border-radius:6px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:13px;font-weight:600;cursor:pointer;box-shadow:none;transition:background-color .12s,border-color .12s,color .12s}.ds-danger:active{transform:none}.ds-danger:disabled{opacity:.55;cursor:not-allowed}.ds-danger:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-danger{transition-duration:.01ms}}.ds-danger{background:var(--danger-ink,#b13943);border-color:var(--danger-ink,#b13943);color:var(--paper,#fff)}.ds-danger:hover{background:#922831;border-color:#922831;color:var(--paper,#fff)}"
+    },
+    {
+      "name": "带标签输入框",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "显示实际的输入焦点光圈，以及仍保留的兼容外框。",
+      "html": "<label class=\"ds-field\">订单检索<input class=\"ds-input\" type=\"search\" placeholder=\"代理单号 / 平台单号 / 兑换码 / 充值邮箱\"></label>",
+      "css": ".ds-field{display:grid;gap:6px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:12px;color:var(--secondary,#506178)}.ds-input{width:100%;min-width:0;min-height:40px;padding:9px 12px;background:var(--paper,#fff);color:var(--ink,#25364b);border:1px solid var(--line,#dce3ec);border-radius:6px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:13px;box-shadow:none}.ds-input:focus{box-shadow:0 0 0 3px #245dcc12;border-color:var(--signal,#245dcc)}.ds-input:focus-visible{outline:3px solid #719fd9;outline-offset:4px}"
+    },
+    {
+      "name": "主导航",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "浅蓝选中面与内侧蓝色细线标记当前位置。",
+      "html": "<nav class=\"ds-nav\" aria-label=\"工作台导航预览\"><a class=\"ds-nav-link ds-nav-current\" aria-current=\"page\" href=\"#overview\">经营概览</a><a class=\"ds-nav-link\" href=\"#orders\">订单管理</a></nav>",
+      "css": ".ds-nav{display:grid;gap:2px;padding:12px;background:#f8fafc;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif}.ds-nav-link{display:flex;align-items:center;min-height:40px;padding:10px 12px;border-radius:6px;color:var(--secondary,#506178);font-size:13px;font-weight:550;text-decoration:none}.ds-nav-link:hover{background:#edf1f6;color:var(--night,#182b43)}.ds-nav-current,.ds-nav-current:hover{background:#e7eefb;color:var(--signal-deep,#194da9);box-shadow:inset 2px 0 var(--signal,#245dcc);font-weight:650}.ds-nav-link:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}"
+    },
+    {
+      "name": "业务状态标签",
+      "kind": "chip",
+      "refersTo": "status-success",
+      "description": "颜色配合明确文字；支付与履约分别显示。",
+      "html": "<div class=\"ds-tags\"><span class=\"ds-tag ds-paid\">已付款</span><span class=\"ds-tag ds-pending\">处理中</span><span class=\"ds-tag ds-review\">待核对</span></div>",
+      "css": ".ds-tags{display:flex;gap:8px;flex-wrap:wrap}.ds-tag{display:inline-block;padding:3px 7px;border-radius:4px;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:11px;line-height:1.5;font-weight:550;letter-spacing:0;white-space:nowrap}.ds-paid{background:var(--ops-success-surface,#edf7f2);color:var(--mint,#19735c)}.ds-pending{background:var(--ops-warning-surface,#fff7e8);color:var(--amber,#946014)}.ds-review{background:var(--ops-danger-surface,#fff1f1);color:var(--danger-ink,#b13943)}"
+    },
+    {
+      "name": "经营带单元",
+      "kind": "custom",
+      "refersTo": "metric-band-item",
+      "description": "首页连续经营带中的可点击单元；预览数值为合成示例。",
+      "html": "<button type=\"button\" class=\"ds-metric\"><span class=\"ds-metric-label\">今日收款</span><strong class=\"ds-metric-value\">¥12,480.00</strong></button>",
+      "css": ".ds-metric{display:grid;gap:10px;min-height:104px;padding:20px;border:0;border-right:1px solid var(--line,#dce3ec);border-radius:0;background:transparent;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;text-align:left;cursor:pointer;box-shadow:none;transition:background-color .12s,border-color .12s,color .12s}.ds-metric-label{font-size:12px;font-weight:500;letter-spacing:0;color:var(--secondary,#506178)}.ds-metric-value{font-size:26px;line-height:1.25;font-weight:650;letter-spacing:-.6px;font-variant-numeric:tabular-nums;color:var(--night,#182b43)}.ds-metric:hover{background:var(--inset,#f6f8fb);box-shadow:inset 0 -2px var(--signal,#245dcc)}.ds-metric:active{transform:none}.ds-metric:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(max-width:720px){.ds-metric{min-height:88px;padding:16px}.ds-metric-value{font-size:24px}}@media(prefers-reduced-motion:reduce){.ds-metric{transition-duration:.01ms}}"
+    },
+    {
+      "name": "代理管理页签",
+      "kind": "nav",
+      "refersTo": "agent-tab-active",
+      "description": "同一代理中的管理分区；平直底线标记当前页签，内容可横向滚动。",
+      "html": "<nav class=\"ds-tabs\" aria-label=\"代理商管理分区预览\"><button type=\"button\" class=\"ds-tab ds-tab-active\" aria-current=\"page\">代理概览</button><button type=\"button\" class=\"ds-tab\">订单履约</button><button type=\"button\" class=\"ds-tab\">资金佣金</button></nav>",
+      "css": ".ds-tabs{display:flex;gap:16px;overflow-x:auto;border-bottom:1px solid var(--line,#dce3ec);font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif}.ds-tab{flex:0 0 auto;min-height:44px;padding:12px 4px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--secondary,#506178);font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:13px;font-weight:550;white-space:nowrap;cursor:pointer;transition:background-color .12s,border-color .12s,color .12s}.ds-tab:hover{color:var(--night,#182b43);background:var(--paper,#fff)}.ds-tab-active,.ds-tab-active:hover{background:transparent;border-bottom-color:var(--signal,#245dcc);color:var(--signal-deep,#194da9);box-shadow:none}.ds-tab:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-tab{transition-duration:.01ms}}"
+    },
+    {
+      "name": "低饱和资金卡片",
+      "kind": "card",
+      "refersTo": "wallet-card",
+      "description": "资金内容面用边框和金额层级组织；合成余额仅作外观预览。",
+      "html": "<section class=\"ds-wallet\"><span class=\"ds-wallet-label\">采购余额</span><strong class=\"ds-wallet-value\">¥8,640.00</strong><p class=\"ds-wallet-note\">可用于订单采购 · 合成示例</p><button type=\"button\" class=\"ds-wallet-action\">余额充值</button></section>",
+      "css": ".ds-wallet{display:grid;align-content:start;gap:6px;min-height:128px;padding:20px;border:1px solid var(--line,#dce3ec);border-radius:8px;background:var(--paper,#fff);color:var(--night,#182b43);box-shadow:none;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif}.ds-wallet-label{font-size:12px;font-weight:500;letter-spacing:0;color:var(--secondary,#506178)}.ds-wallet-value{font-size:28px;line-height:1.1;font-weight:650;letter-spacing:-.5px;font-variant-numeric:tabular-nums}.ds-wallet-note{margin:4px 0 0;font-size:12px;line-height:1.55;color:var(--muted,#63738a)}.ds-wallet-action{margin-top:10px;width:fit-content;min-height:42px;padding:8px 16px;border:1px solid var(--ops-info-line,#cddbf4);border-radius:6px;background:var(--ops-info-surface,#eff4fd);color:var(--signal-deep,#194da9);font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;font-size:14px;font-weight:700;cursor:pointer;box-shadow:none;transition:background-color .12s,border-color .12s,color .12s}.ds-wallet-action:hover{background:#e5edfc;border-color:var(--signal,#245dcc);color:var(--signal-deep,#194da9)}.ds-wallet-action:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(prefers-reduced-motion:reduce){.ds-wallet-action{transition-duration:.01ms}}"
+    },
+    {
+      "name": "居中详情外观",
+      "kind": "custom",
+      "refersTo": "dialog",
+      "description": "静态外观片段，不实现真实 dialog 的焦点管理和业务动作；生产使用原生 dialog。",
+      "html": "<section class=\"ds-dialog\" aria-label=\"订单详情外观预览\"><header class=\"ds-dialog-head\"><h2 class=\"ds-dialog-title\">订单详情</h2></header><div class=\"ds-dialog-body\"><p class=\"ds-dialog-note\">完整凭证与历史按需查看。</p><details class=\"ds-detail\"><summary class=\"ds-detail-summary\">订单标识与收款凭证</summary><p class=\"ds-detail-copy\">预览示例，未连接真实订单。</p></details></div></section>",
+      "css": ".ds-dialog{overflow:hidden;border:1px solid var(--line,#dce3ec);border-radius:10px;background:var(--paper,#fff);box-shadow:0 20px 80px #182b432b;font-family:'Segoe UI','Microsoft YaHei UI','Microsoft YaHei',sans-serif;color:var(--ink,#25364b)}.ds-dialog-head{padding:20px 24px;border-bottom:1px solid var(--line,#dce3ec);background:var(--paper,#fff)}.ds-dialog-title{margin:0;font-size:19px;line-height:1.45;font-weight:650;color:var(--night,#182b43)}.ds-dialog-body{padding:24px;overflow:auto}.ds-dialog-note{margin:0 0 16px;color:var(--muted,#63738a);font-size:13px;line-height:1.75}.ds-detail{overflow:hidden;border:1px solid var(--line,#dce3ec);border-radius:6px;box-shadow:none}.ds-detail-summary{padding:14px 16px;background:var(--inset,#f6f8fb);font-size:13px;cursor:pointer}.ds-detail-copy{margin:0;padding:16px;font-size:13px;line-height:1.75}.ds-detail-summary:focus-visible{outline:2px solid var(--signal,#245dcc);outline-offset:3px}@media(max-width:720px){.ds-dialog-head,.ds-dialog-body{padding:16px}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "凭证工作簿",
+    "overview": "“凭证工作簿”把运营后台视为一张可以核对、追溯和继续处理的工作台。纸张白承载内容，蓝灰背景划分空间，深蓝墨水呈现事实，蓝色引导操作。视觉节奏平稳、密度适中，金额、文字状态与下一步动作先于装饰。\n\n本规范依据 2026-10-02 的工作台实现提取，以 src/operations/workspace-styles.ts 末尾的 Operator workspace 覆盖层及实际组件结构为依据。旧 CSS 的前半段保留兼容，未被覆盖的页面、状态和局部样式仍可能使用旧规则；本文件不是所有页面已经完全重写或完成视觉验收的声明。",
+    "keyCharacteristics": [
+      "蓝灰台面、白色内容面与统一蓝色主操作。",
+      "金额使用等宽数字，标签与数值有明确层级。",
+      "分隔线组织记录，语义色主要落在状态和重点数值。",
+      "日期、凭证与历史按需展开，详情使用居中弹窗。"
+    ],
+    "rules": [
+      {
+        "name": "单一操作蓝",
+        "body": "常规主操作使用 signal；风险确认使用 danger-ink。成功、待处理与风险色表达业务状态，不能代替文字标签。",
+        "section": "colors"
+      },
+      {
+        "name": "数字可核对",
+        "body": "金额保持 tabular-nums，数值与其含义成组出现；未知、过期与待核实数据必须显示明确说明。",
+        "section": "typography"
+      },
+      {
+        "name": "平面优先",
+        "body": "经营带、待办、订单与资金容器使用底色和细线区分；投影用于弹窗层级，不为普通卡片增加浮起效果。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 保留 Quefa 名称和既有标识，使用本文件的颜色角色和字号层级。",
+      "Do 将金额、支付状态、履约状态分别呈现，并为状态提供文字。",
+      "Do 在桌面保留六项经营带；订单页使用独立五项统计，移动端按已实现断点重排。",
+      "Do 让次要凭证与历史默认折叠，同时保留当前可执行动作、风险提示和已设置的筛选条件。",
+      "Do 保持居中详情弹窗、可见焦点、内容滚动及已有关闭后焦点返回行为。",
+      "Do 在新增界面中复用统一蓝色主操作、细分隔线和低饱和资金容器。"
+    ],
+    "donts": [
+      "Don't 用大面积高饱和色块、渐变或卡片浮起效果包装经营数据和资金卡片。",
+      "Don't 把金额、支付和履约合并成一个难以扫描的状态列。",
+      "Don't 为压缩界面删除危险操作确认、待核锁、未知结果保护或收费说明。",
+      "Don't 把未知或失效数据解释成零、正常或已完成。",
+      "Don't 将兼容层中尚未迁移的颜色、圆角和局部动效当作新增页面的默认规范。",
+      "Don't 将本文的代码提取范围描述为全站已重写、所有状态已验收或生产已经部署。"
+    ]
+  }
+}

@@ -12,7 +12,6 @@ class UiNode {
   attributes = new Map<string, string>();
   listeners = new Map<string, Array<(...args: any[]) => unknown>>();
   disabled = false;
-  open = false;
   value = "";
   scrollTop = 0;
   constructor(readonly tagName: string, private text = "") {}
@@ -23,6 +22,8 @@ class UiNode {
   get childElementCount() { return this.children.filter(child => child.tagName !== "#text").length; }
   get childNodes() { return this.children; }
   get isConnected(): boolean { return this.tagName === "body" || Boolean(this.parent?.isConnected); }
+  get open(): boolean { return this.attributes.has("open"); }
+  set open(value: boolean) { if (value) this.attributes.set("open", ""); else this.attributes.delete("open"); }
   classList = {
     contains: (name: string) => this.className.split(/\s+/).includes(name),
     add: (name: string) => { this.classList.toggle(name, true); },
@@ -50,7 +51,18 @@ class UiNode {
   replaceChildren(...children: UiNode[]) { for (const child of this.children) child.parent = null; this.children = []; this.text = ""; this.append(...children); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; }
   addEventListener(name: string, listener: (...args: any[]) => unknown) { this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]); }
-  async click() { for (const listener of this.listeners.get("click") ?? []) await listener({target: this, preventDefault() {}}); }
+  async click() {
+    let prevented = false;
+    for (const listener of this.listeners.get("click") ?? []) await listener({target: this, preventDefault() { prevented = true; }});
+    if (!prevented && this.tagName === "summary" && this.parent?.tagName === "details") {
+      this.parent.open = !this.parent.open;
+      for (const listener of this.parent.listeners.get("toggle") ?? []) await listener({target: this.parent});
+    }
+  }
+  async change(value: string) {
+    this.value = value;
+    for (const listener of this.listeners.get("change") ?? []) await listener({target: this});
+  }
   showModal() { this.open = true; this.setAttribute("open", ""); }
   close() { this.open = false; this.removeAttribute("open"); for (const listener of this.listeners.get("close") ?? []) listener(); }
   focus() {}
@@ -76,8 +88,9 @@ function harness(fetcher: typeof fetch) {
   body.append(app, notice); app.append(content);
   const document = {hidden: false, body, activeElement: null, querySelector: (selector: string) => body.querySelector(selector),
     createElement: (tag: string) => new UiNode(tag), createTextNode: (text: string) => new UiNode("#text", text), addEventListener() {}};
+  const history = {pushState: vi.fn(), replaceState: vi.fn()};
   const context: {hooks?: any; [key: string]: unknown} = {fetch: fetcher, Node: UiNode, AbortController, setTimeout, clearTimeout,
-    URL, URLSearchParams, Date, document, crypto: {randomUUID}, history: {pushState() {}, replaceState() {}},
+    URL, URLSearchParams, Date, document, crypto: {randomUUID}, history,
     location: {origin: "https://tibo.test", hostname: "tibo.test", protocol: "https:", pathname: "/workspace/app", search: ""},
     window: {addEventListener() {}}, localStorage: {getItem: () => null}};
   const source = workspaceJs.split("\n").filter(line => !line.startsWith("applyEntryQuery();")
@@ -85,11 +98,22 @@ function harness(fetcher: typeof fetch) {
   runInNewContext(source + `\nglobalThis.hooks={render,globalSearch,auditTrail,runtimeStatus,searchResultAction,
     openInvoiceApplication,openInvoiceDetail,invoiceFormFields,orderDetailRenderMark,openFinanceMetric,financeMetricTiles,date,
     renderOrderDetailContent,orderActionCell,orderDeliveryCell,platformOverview,
+    orderAmountCell,orderPaymentCell,orderFulfillmentCell,orderFilterBar,ordersQuery,orderTableRow,orderListBody,
+    agentHubNavigation,agentHref,
+    setAgentHub:(agentId,panel="overview")=>{tierDetailId=agentId;merchant=agentId;agentHubPanel=panel;tab="tiers";viewLoadedAt.set("tiers",Date.now());},
+    getAgentHub:()=>({agentId:tierDetailId,merchant,panel:agentHubPanel,cached:viewLoadedAt.has("tiers")}),
+    restoreAgentEntry:href=>{location.search=new URL(href,location.origin).search;tierDetailId="";agentHubPanel="overview";tab="overview";
+      applyEntryQuery();return {tab,agentId:tierDetailId,panel:agentHubPanel};},
+    setOrderDates:(values={})=>{orderCreatedFrom=values.createdFrom||"";orderCreatedTo=values.createdTo||"";
+      orderPaidFrom=values.paidFrom||"";orderPaidTo=values.paidTo||"";orderPage=5;},
+    captureFilterRefresh:()=>{const calls=[];render=async options=>{calls.push(options);};return calls;},
+    captureOverviewActions:()=>{const calls=[];openFinanceMetric=(metric,day)=>calls.push(["finance",metric,day]);
+      openOrdersWithFilters=filters=>calls.push(["orders",filters]);return calls;},
     setTab:name=>{tab=name;},setSearch:(query,kind="all",page=1)=>{globalSearchText=query;globalSearchKind=kind;globalSearchPage=page;},
     identity:(role="platform_admin",permissions=["*"])=>{me={id:"test-user",role,displayName:"测试人员"};merchant=role.startsWith("agent_")?"m1":"";perms=permissions;},
     clearViews:()=>viewLoadedAt.clear(),get cache(){return responseCache;}};`, context);
   context.hooks.identity();
-  return {h: context.hooks, body, content, notice};
+  return {h: context.hooks, body, content, notice, history};
 }
 
 const searchResult = (title: string) => ({data: {total: 1, groups: [{kind: "order", label: "订单",
@@ -197,6 +221,7 @@ describe("shipped operations UI regressions", () => {
 
   it("places today's collection metrics ahead of operational queues in the real overview without changing actions or totals", async () => {
     const fetcher = overviewFetch(), {h} = harness(fetcher as typeof fetch);
+    const actions = h.captureOverviewActions();
     const nodes: UiNode[] = (await h.platformOverview({fresh: true})).filter(Boolean);
     const finance = nodes.find(node => node.classList.contains("business-layer"))!;
     const operations = nodes.find(node => node.classList.contains("operations-workspace"))!;
@@ -208,6 +233,11 @@ describe("shipped operations UI regressions", () => {
       .toEqual(["¥6348.00", "¥6103.00", "¥245.00", "¥713.00", "21", "19"]);
     expect(finance.querySelectorAll("button")).toHaveLength(6);
     expect(finance.textContent).toContain("北京时间 2026-10-02");
+    for (const button of finance.querySelectorAll("button")) await button.click();
+    expect(actions).toEqual([["finance", "receipts", "2026-10-02"], ["finance", "net_receipts", "2026-10-02"],
+      ["finance", "refunds", "2026-10-02"], ["finance", "margin", "2026-10-02"],
+      ["orders", {paidFrom: "2026-10-02", paidTo: "2026-10-02"}],
+      ["orders", {status: "succeeded", paidFrom: "2026-10-02", paidTo: "2026-10-02"}]]);
     expectOverviewActions(operations); expect(fetcher).toHaveBeenCalledTimes(4);
   });
 
@@ -237,6 +267,33 @@ describe("shipped operations UI regressions", () => {
     expect(nodes.find(node => node.classList.contains("overview-module-errors"))!.textContent).toContain("保留旧值");
     expectOverviewActions(operations); expect(fetcher).toHaveBeenCalledTimes(8);
   });
+
+  it.each([["orders", "订单履约"], ["finance", "资金佣金"], ["api", "接口能力"]])
+    ("opens the agent %s section from its real tab and restores the resulting deep link", async (panel, label) => {
+      const fetcher = vi.fn(), {h, history} = harness(fetcher as unknown as typeof fetch);
+      const agentId = "merchant-exact-008";
+      h.setAgentHub(agentId);
+      const refreshes = h.captureFilterRefresh(), nav: UiNode = h.agentHubNavigation();
+      expect(nav.tagName).toBe("nav"); expect(nav.getAttribute("aria-label")).toBe("代理商管理分区");
+      const buttons = nav.querySelectorAll("button");
+      expect(buttons.map(button => button.textContent))
+        .toEqual(["代理概览", "订单履约", "资金佣金", "开票记录", "账号权限", "接口能力", "合作设置", "售后记录"]);
+      await buttons.find(button => button.textContent === label)!.click();
+      expect(h.getAgentHub()).toEqual({agentId, merchant: agentId, panel, cached: false});
+      expect(refreshes).toEqual([{force: true}]);
+      expect(history.pushState).toHaveBeenCalledOnce();
+      const [state, , href] = history.pushState.mock.calls[0]!;
+      expect(state).toEqual({view: "tiers", agent: agentId, agentPanel: panel});
+      const url = new URL(String(href), "https://tibo.test");
+      expect(url.pathname).toBe("/workspace/app");
+      expect(Object.fromEntries(url.searchParams)).toEqual({view: "tiers", agent: agentId, agent_panel: panel});
+      expect(h.agentHref(agentId)).toBe(href);
+      const selected: UiNode = h.agentHubNavigation();
+      expect(selected.querySelectorAll("button").filter(button => button.getAttribute("aria-current") === "page")
+        .map(button => button.textContent)).toEqual([label]);
+      expect(h.restoreAgentEntry(href)).toEqual({tab: "tiers", agentId, panel});
+      expect(fetcher).not.toHaveBeenCalled();
+    });
 
   it("opens the exact wallet search result in a detail dialog instead of just navigating to a wallet list", async () => {
     const fetcher = vi.fn(), {h, body} = harness(fetcher as unknown as typeof fetch);
@@ -413,6 +470,92 @@ describe("shipped operations UI regressions", () => {
     const running: UiNode = h.orderActionCell({id: "ord4", paymentStatus: "paid", deliveryMode: "auto_recharge", fulfillmentStatus: "running"});
     expect(running.textContent).toContain("结果核对中，不可重复提交");
     expect(running.querySelectorAll("button").map(button => button.textContent)).toEqual(["详情"]);
+  });
+
+  it("keeps empty date filters collapsed and preserves all four native date inputs when opened", async () => {
+    const fetcher = vi.fn(), {h} = harness(fetcher as unknown as typeof fetch);
+    const refreshes = h.captureFilterRefresh(), bar: UiNode = h.orderFilterBar([], []);
+    const dates = bar.querySelector(".order-date-filters")!;
+    expect(dates).not.toBeNull(); expect(dates.tagName).toBe("details"); expect(dates.open).toBe(false);
+    expect(dates.querySelectorAll("input").map(field => [field.getAttribute("name"), field.getAttribute("type")]))
+      .toEqual([["orderCreatedFrom", "date"], ["orderCreatedTo", "date"], ["orderPaidFrom", "date"], ["orderPaidTo", "date"]]);
+    const summary = dates.querySelector("summary")!;
+    expect(summary.textContent.trim().length).toBeGreaterThan(0);
+    await summary.click(); expect(dates.open).toBe(true);
+    await summary.click(); expect(dates.open).toBe(false);
+    expect(dates.querySelectorAll("input").map(field => field.value)).toEqual(["", "", "", ""]);
+    expect(refreshes).toHaveLength(0); expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["createdFrom", "orderCreatedFrom"], ["createdTo", "orderCreatedTo"],
+    ["paidFrom", "orderPaidFrom"], ["paidTo", "orderPaidTo"],
+  ])("opens an existing %s filter and keeps its value through collapse, expansion and rerender", async (parameter, name) => {
+    const fetcher = vi.fn(), {h} = harness(fetcher as unknown as typeof fetch);
+    h.setOrderDates({[parameter]: "2026-10-01"});
+    const refreshes = h.captureFilterRefresh(), bar: UiNode = h.orderFilterBar([], []);
+    const dates = bar.querySelector(".order-date-filters")!, field = dates.querySelector(`[name="${name}"]`)!;
+    expect(dates.open).toBe(true); expect(field.value).toBe("2026-10-01");
+    const queryBeforeToggle = h.ordersQuery();
+    await dates.querySelector("summary")!.click(); expect(dates.open).toBe(false);
+    expect(field.value).toBe("2026-10-01"); expect(h.ordersQuery()).toBe(queryBeforeToggle);
+    await dates.querySelector("summary")!.click(); expect(dates.open).toBe(true);
+    expect(field.value).toBe("2026-10-01"); expect(refreshes).toHaveLength(0);
+    await field.change("2026-10-02");
+    const query = new URLSearchParams(h.ordersQuery());
+    expect(query.get(parameter)).toBe("2026-10-02"); expect(query.get("page")).toBe("1");
+    expect(refreshes).toEqual([{force: true}]);
+    const reloaded: UiNode = h.orderFilterBar([], []), reloadedDates = reloaded.querySelector(".order-date-filters")!;
+    expect(reloadedDates.open).toBe(true); expect(reloadedDates.querySelector(`[name="${name}"]`)!.value).toBe("2026-10-02");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("clears all date constraints only through the explicit clear action", async () => {
+    const {h} = harness(vi.fn() as unknown as typeof fetch);
+    h.setOrderDates({createdFrom: "2026-09-01", createdTo: "2026-09-30", paidFrom: "2026-10-01", paidTo: "2026-10-02"});
+    const refreshes = h.captureFilterRefresh(), bar: UiNode = h.orderFilterBar([], []);
+    await bar.querySelector(".order-date-filters")!.querySelector("summary")!.click();
+    const before = new URLSearchParams(h.ordersQuery());
+    for (const name of ["createdFrom", "createdTo", "paidFrom", "paidTo"]) expect(before.has(name)).toBe(true);
+    const clear = bar.querySelectorAll("button").find(button => button.textContent === "清除日期")!;
+    expect(clear).toBeDefined(); await clear.click();
+    const after = new URLSearchParams(h.ordersQuery());
+    for (const name of ["createdFrom", "createdTo", "paidFrom", "paidTo"]) expect(after.has(name)).toBe(false);
+    expect(after.get("page")).toBe("1"); expect(refreshes).toEqual([{force: true}]);
+    expect((h.orderFilterBar([], []) as UiNode).querySelector(".order-date-filters")!.open).toBe(false);
+  });
+
+  it.each(["platform_admin", "agent_owner"])("renders independent amount, payment and fulfillment columns for %s without dropping actions", role => {
+    const {h} = harness(vi.fn() as unknown as typeof fetch); h.identity(role);
+    const order = {id: "order-separated-001", createdAt: "2026-10-02T01:00:00Z", merchantName: "分列测试代理",
+      productCode: "chatgpt_plus_cdk_1m", saleAmount: "700.00", supplyAmount: "638.00", collectionMode: "platform_collect",
+      paymentStatus: "paid", deliveryMode: "auto_recharge", fulfillmentStatus: "failed", fulfillment: {message: "资料需重新核对"}};
+    const list: UiNode = h.orderListBody({data: [order], meta: {total: 1, page: 1, limit: 15, pages: 1}});
+    const headers = list.querySelectorAll("th").map(header => header.textContent), cells = list.querySelectorAll("td");
+    expect(headers).toEqual(["单号 / 时间", ...(role === "platform_admin" ? ["所属代理商"] : []), "套餐", "金额", "支付", "履约", "操作"]);
+    const amount = cells[headers.indexOf("金额")]!, payment = cells[headers.indexOf("支付")]!, fulfillment = cells[headers.indexOf("履约")]!;
+    expect(amount.textContent).toContain("¥700.00"); expect(amount.textContent).toContain("在线收款");
+    expect(cells[headers.indexOf("套餐")]!.textContent).not.toContain("¥700.00");
+    expect(payment.textContent).toContain("已支付"); expect(payment.textContent).not.toContain("充值失败");
+    expect(payment.textContent).not.toContain("¥700.00");
+    expect(fulfillment.textContent).toContain("充值失败"); expect(fulfillment.textContent).toContain("资料需重新核对");
+    expect(fulfillment.textContent).not.toContain("已支付");
+    expect(cells[headers.indexOf("操作")]!.querySelectorAll("button").map(button => button.textContent)).toContain("详情");
+    const pending: UiNode = h.orderListBody({data: [{...order, paymentStatus: "pending", fulfillmentStatus: null, payUrl: "/test-payment"}],
+      meta: {total: 1, page: 1, limit: 15, pages: 1}});
+    expect(pending.querySelectorAll("a").some(link => link.textContent === "继续付款" && link.getAttribute("href") === "https://tibo.test/test-payment")).toBe(true);
+  });
+
+  it("keeps refunded payment separate from successful or manually completed fulfillment", () => {
+    const {h} = harness(vi.fn() as unknown as typeof fetch);
+    const order = {paymentStatus: "refunded", fulfillmentStatus: "succeeded", saleAmount: "0.00", collectionMode: "agent_collect"};
+    const amount: UiNode = h.orderAmountCell(order), payment: UiNode = h.orderPaymentCell(order), fulfillment: UiNode = h.orderFulfillmentCell(order);
+    expect(amount.textContent).toContain("¥0.00"); expect(amount.textContent).toContain("余额支付");
+    expect(amount.textContent).not.toContain("undefined");
+    expect(payment.textContent).toContain("已退款"); expect(payment.textContent).not.toContain("充值成功");
+    expect(fulfillment.textContent).toContain("充值成功"); expect(fulfillment.textContent).not.toContain("已退款");
+    const manual: UiNode = h.orderFulfillmentCell({...order, fulfillmentStatus: "failed", completionSource: "manual"});
+    expect(manual.textContent).toContain("已完成（人工）"); expect(manual.textContent).not.toContain("充值失败");
   });
 
   it.each(["refunds", "net_receipts"])("renders %s by actual refund event time and retains negative net outflow", async metric => {

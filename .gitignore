@@ -20,6 +20,8 @@ docs/33-20260930代理资金与支付宝收款只读审计.md
 output/playwright/
 .tmp-video-frames/
 artifacts/
+.impeccable/review/
+.impeccable/cache/
 .visual-qa.sqlite*
 
 # Generated release archives and deployment bundles

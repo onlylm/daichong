@@ -9,7 +9,18 @@ import {buildApp} from "../../src/app.js";
 import {RefundService} from "../../src/modules/refund-service.js";
 import {WorkerHealthReporter} from "../../src/worker/worker-health.js";
 import {wire} from "../../src/operations/routes.js";
+import {totpCodeAt} from "../../src/operations/accounts.js";
+import {SensitivePayloadCipher} from "../../src/infra/crypto.js";
 import {publishTestRechargeProduct} from "./recharge-catalog.js";
+
+// Public, fixed synthetic authenticator seed for this memory-only fixture.
+// Read its current six-digit code without starting a server:
+// node --import tsx tests/fixtures/launch-acceptance-preview.ts --totp
+const previewMfaSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+if (process.argv.includes("--totp")) {
+  console.log(totpCodeAt(previewMfaSecret));
+  process.exit(0);
+}
 
 globalThis.fetch = async () => { throw new Error("launch_preview_external_network_forbidden"); };
 const temp = mkdtempSync(join(tmpdir(), "quefa-launch-ui-mock-"));
@@ -23,10 +34,21 @@ for (const port of [3302, 3303, 3304]) {
     PAYMENT_PROVIDER:"mock", FULFILLMENT_PROVIDER:"mock", LIVE_TEST_ENABLED:"false", LOG_LEVEL:"silent",
     PUBLIC_BASE_URL:`http://127.0.0.1:${port}`,ADMIN_BASE_URL:`http://127.0.0.1:${port}`,DEMO_WEBHOOK_URL:"",
     BACKUP_HEALTH_REPORT_PATH:backupReport});
+  if (config.nodeEnv !== "test" || config.storageDriver !== "memory" || config.executionMode !== "disabled"
+      || config.paymentProvider !== "mock" || config.fulfillmentProvider !== "mock") {
+    throw new Error("launch_preview_requires_test_memory_mock");
+  }
   const runtime = createRuntime(config);
   publishTestRechargeProduct(runtime);
   const admin = await runtime.accounts.bootstrap("launch-admin", "launch-admin-initial-only");
   await runtime.accounts.changePassword(admin,"launch-admin-initial-only","launch-admin-password-only");
+  // Seed a synthetic already-enrolled account; normal password + TOTP login,
+  // expiry, replay protection and MFA verification remain unchanged.
+  const previewAdmin = runtime.repository.getOperations("account", admin.id)!;
+  const previewCipher = new SensitivePayloadCipher(config.dataEncryptionKey, config.keyEncryptionKeyId);
+  runtime.repository.saveOperations("account", {...previewAdmin, mfaEnabled: true,
+    mfaSecret: previewCipher.encrypt(previewMfaSecret, "mfa-account:" + admin.id),
+    mfaRecoveryCodeHashes: [], mfaLastUsedStep: null, updatedAt: new Date()});
   const bundle = runtime.repository.findCredential(config.demoPartnerId,config.demoKeyId)!;
   const tenant = {merchantId:bundle.merchant.id,partnerId:bundle.merchant.partnerId,appId:bundle.app.id,keyId:bundle.key.keyId};
   const owner = await runtime.accounts.registerOwner({username:"launch-agent",displayName:"本地合成验收代理",
