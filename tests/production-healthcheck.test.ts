@@ -22,6 +22,7 @@ describe("production health monitoring",()=>{
     const script=read("deploy/production/healthcheck.sh"),caddy=read("deploy/production/Caddyfile"),deploy=read("deploy/production/deploy-production-candidate.sh");
     expect(script).toContain("http://127.0.0.1:3200/health/worker");
     expect(script).toContain("quefa-app-worker-1");
+    expect(script).not.toContain('for container in "$app_container" quefa-production-postgres-1');
     expect(script).toContain("expect_status 404 https://tibo.ink/health/worker");
     expect(script).toContain("expect_status 200 https://tibo.ink/workspace");
     expect(script).toContain("expect_status 404 https://tibo.ink/internal/admin");

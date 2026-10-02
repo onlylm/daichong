@@ -29,7 +29,9 @@ expect_status 404 https://admin.tibo.ink/v1/products
 
 app_container="${APP_CONTAINER:-quefa-app-api-1}"
 worker_container="${WORKER_CONTAINER:-quefa-app-worker-1}"
-for container in "$app_container" quefa-production-postgres-1 quefa-production-redis-1; do
+# SQLite is the active ledger. The reserved PostgreSQL container may be
+# intentionally stopped until a separate storage migration is approved.
+for container in "$app_container" quefa-production-redis-1; do
   status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
   if [ "$status" != "healthy" ]; then
     printf '%s\n' "Container is not healthy: $container=$status" >&2
